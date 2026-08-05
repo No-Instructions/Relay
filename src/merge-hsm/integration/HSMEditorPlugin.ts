@@ -83,9 +83,24 @@ export class HSMEditorPluginValue implements PluginValue {
    * integration's validity check reports the editor not-ready until then.
    */
   private bornAttachedRenderPending = false;
+  /**
+   * Whether this EditorView has been identified as an embedded sub-editor:
+   * an editor another editor spawns inside itself over the same file, like
+   * the per-cell editor Obsidian's Live Preview table widget creates when a
+   * table cell is edited. A sub-editor inherits the host view's
+   * editorInfoField, so file identity, document resolution, and
+   * source-view DOM ancestry all match the host — but its buffer holds only
+   * a fragment of the note, and the spawning machinery persists whatever is
+   * dispatched into it back into the note as a user edit. Binding one to
+   * the merge machinery would render the full document into a fragment
+   * buffer (and the widget would then write that full document into one
+   * cell of the real note) and would feed fragment text back as document
+   * content. Sticky: once detected, this instance is permanently inert.
+   */
+  private subEditor = false;
   private bindingEpoch = 0;
   private lastInitializationRetry:
-    | { file: TFile | null; live: boolean }
+    | { file: TFile | null; live: boolean; owner: EditorView | null }
     | null = null;
   private log: (...args: unknown[]) => void;
   private debug: (...args: unknown[]) => void;
@@ -227,6 +242,52 @@ export class HSMEditorPluginValue implements PluginValue {
   }
 
   /**
+   * Detect an embedded sub-editor by its container: the Live Preview table
+   * widget mounts the per-cell editor it spawns inside a
+   * `.table-cell-wrapper` element. Detection is sticky and fully inerts
+   * this instance — the widget forwards every transaction it does not
+   * recognize into the host note, so nothing may ever be dispatched into
+   * such an editor. The wrapper is only observable once the editor's DOM is
+   * attached, so a negative answer means "not detected", never "proven to
+   * be a view's own editor"; the owner-identity check in probeBornAttached
+   * covers the window before the DOM is attached.
+   */
+  private probeSubEditor(): boolean {
+    if (this.subEditor) return true;
+    if (!this.editor.dom.closest(".table-cell-wrapper")) return false;
+    this.subEditor = true;
+    this.log("Refusing to bind an embedded table-cell editor");
+    if (this.cm6Integration) {
+      this.cm6Integration.destroy();
+      this.cm6Integration = null;
+    }
+    this.clearPendingEdits();
+    this.document = null;
+    return true;
+  }
+
+  /**
+   * The EditorView that this editor's owning view considers its editor,
+   * when resolvable. An embedded sub-editor inherits its host's
+   * editorInfoField, so the field resolves to the HOST view and names the
+   * host's EditorView — a resolvable owner editor that is not this view
+   * identifies a sub-editor even before its DOM is attached. Returns null
+   * when the owner's editor is not resolvable (a view still under
+   * construction has not assigned its editor yet).
+   */
+  private ownerEditorView(): EditorView | null {
+    try {
+      const fileInfo = this.editor.state.field(editorInfoField, false);
+      const ownerEditor = fileInfo?.editor as
+        | { cm?: EditorView }
+        | undefined;
+      return ownerEditor?.cm ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Decide, once per document binding, whether this view was created while
    * the document's merge machinery was already active and holding the editor
    * lock. Decided at the first moment the editor's file identity and its
@@ -237,10 +298,26 @@ export class HSMEditorPluginValue implements PluginValue {
    */
   private probeBornAttached(): boolean {
     if (this.bornAttached === null) {
+      if (this.probeSubEditor()) return false;
       const fileInfo = this.editor.state.field(editorInfoField, false);
       if (fileInfo?.file) {
         const doc = this.resolveCurrentDocument();
         if (doc) {
+          // Born-attached is the one bind that skips the positive identity
+          // check against the view registry, so the probe itself must prove
+          // this view is a view's own editor. File identity, the info
+          // field, and source-view ancestry cannot: an embedded sub-editor
+          // (a table-cell editor) matches its host on all three. The owning
+          // view names its editor; a resolvable owner editor that is not
+          // this view is a sub-editor. Unresolvable leaves the decision
+          // open rather than deciding false: a view under construction
+          // assigns its editor only after extensions instantiate, and an
+          // in-place editor replacement names the outgoing editor until the
+          // owner adopts the new one.
+          const ownerCm = this.ownerEditorView();
+          if (ownerCm !== null && ownerCm !== this.editor) {
+            return false;
+          }
           const sourceView = this.editor.dom.closest(".markdown-source-view");
           const embed = !!sourceView?.classList.contains("mod-inside-iframe");
           this.bornAttached =
@@ -260,6 +337,7 @@ export class HSMEditorPluginValue implements PluginValue {
   initializeIfReady(): boolean {
     if (this.cm6Integration) return true;
     if (this.destroyed) return false;
+    if (this.probeSubEditor()) return false;
 
     const connectionManager = getConnectionManager(this.editor);
     if (!connectionManager) return false;
@@ -339,10 +417,6 @@ export class HSMEditorPluginValue implements PluginValue {
     this.debug(`Initialized for ${this.document.guid} (embed: ${this.embed})`);
 
     const currentText = this.editor.state.doc.toString();
-    hsm.attachEditorView(
-      { getViewData: () => this.editor.state.doc.toString() },
-      currentText,
-    );
 
     if (bornAttached) {
       // Born attached: render the authoritative document text directly and
@@ -353,6 +427,11 @@ export class HSMEditorPluginValue implements PluginValue {
       this.renderBornAttached(hsm, expectedGuid);
       return true;
     }
+
+    hsm.attachEditorView(
+      { getViewData: () => this.editor.state.doc.toString() },
+      currentText,
+    );
 
     if (this.pendingEdits.length === 0) {
       hsm.bootstrapEditorView(
@@ -393,6 +472,15 @@ export class HSMEditorPluginValue implements PluginValue {
       // must not clear or consume the next binding's pending input.
       if (epoch !== this.bindingEpoch || integration !== this.cm6Integration) return;
       this.bornAttachedRenderPending = false;
+      // By render time the editor's DOM is attached: a sub-editor that
+      // escaped the construction-time probes is detectable here, before
+      // anything is dispatched into it. The probe tears the binding down.
+      if (this.probeSubEditor()) {
+        this.log(
+          `Aborting born-attached render for ${expectedGuid}: embedded sub-editor`,
+        );
+        return;
+      }
       // Take over all pre-render input at fire time: the buffered layer
       // (including anything routed here during the render-pending window)
       // and any restores replacement transactions extracted before the
@@ -431,6 +519,16 @@ export class HSMEditorPluginValue implements PluginValue {
 
       const localText = localDoc.getText("contents").toString();
       const currentText = this.editor.state.doc.toString();
+
+      // Do not replace the HSM's legitimate sibling view reference until
+      // every late born-attached check has passed. In particular, a nested
+      // editor whose container becomes observable only after construction
+      // must abort above without leaving its fragment buffer as the HSM's
+      // source of editor truth.
+      hsm.attachEditorView(
+        { getViewData: () => this.editor.state.doc.toString() },
+        currentText,
+      );
 
       // Replace whatever the buffer holds — stale disk load, a save echo,
       // pre-bind typing — with the document text.
@@ -517,7 +615,7 @@ export class HSMEditorPluginValue implements PluginValue {
    * This is called on every editor state change.
    */
   update(update: ViewUpdate): void {
-    if (this.destroyed) return;
+    if (this.destroyed || this.subEditor) return;
     if (update.docChanged) {
       this.lastInitializationRetry = null;
     }
@@ -590,9 +688,15 @@ export class HSMEditorPluginValue implements PluginValue {
       if (!this.cm6Integration) {
         const file = this.editor.state.field(editorInfoField, false)?.file ?? null;
         const live = this.isLiveEditor();
+        const owner = this.ownerEditorView();
         const prior = this.lastInitializationRetry;
-        if (!prior || prior.file !== file || prior.live !== live) {
-          this.lastInitializationRetry = { file, live };
+        if (
+          !prior ||
+          prior.file !== file ||
+          prior.live !== live ||
+          prior.owner !== owner
+        ) {
+          this.lastInitializationRetry = { file, live, owner };
           this.initializeIfReady();
         }
       }
