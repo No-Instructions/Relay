@@ -2295,7 +2295,7 @@ export class BackgroundSync extends HasLogging {
 					})
 				: false;
 		const shouldCleanupIdleSession = () =>
-			startedDisconnected &&
+			(startedDisconnected || isCanvas(doc)) &&
 			!(doc.userLock || sharedFolder?.mergeManager?.isActive(doc.guid));
 		const cleanupIdleSession = () => {
 			if (isDocument(doc)) {
@@ -2312,8 +2312,7 @@ export class BackgroundSync extends HasLogging {
 				}
 			}
 			if (!shouldCleanupIdleSession()) return;
-			doc.disconnect();
-			sharedFolder?.tokenStore.removeFromRefreshQueue(refreshQueueKey);
+			doc.releaseIdleSession();
 		};
 		if (doc.destroyed) return false;
 		const connected = await doc.connect();
@@ -2386,7 +2385,6 @@ export class BackgroundSync extends HasLogging {
 			await this.maybeBootstrapDocumentLCA(doc, token);
 		}
 
-		// promise can take some time
 		if (shouldCleanupIdleSession()) {
 			cleanupIdleSession();
 		}

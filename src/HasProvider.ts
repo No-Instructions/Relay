@@ -552,6 +552,14 @@ export class HasProvider extends HasLogging {
 		return true;
 	}
 
+	releaseIdleSession(): void {
+		if (!this.shouldCompleteDeferredDisconnect()) return;
+		if (!this.deferDisconnectForPendingMessages()) {
+			this.disconnect();
+		}
+		this.tokenStore.removeFromRefreshQueue(S3RN.encode(this.s3rn));
+	}
+
 	disconnect() {
 		this.clearDeferredDisconnect();
 		this.abortProviderSyncWaiters(

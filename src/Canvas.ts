@@ -338,6 +338,7 @@ export class Canvas
 						await trackPromise(`canvasSync:${this.guid}`, this.onceProviderSynced());
 						if (this.destroyed || !this._materialized) return;
 						await this.markSynced();
+						this.releaseIdleSession();
 					}
 				})().catch((e) => this.warn("canvas provider sync failed", e));
 			})
@@ -657,6 +658,11 @@ export class Canvas
 				return super.connect();
 			})
 		);
+	}
+
+	protected shouldCompleteDeferredDisconnect(): boolean {
+		if (this.destroyed) return true;
+		return !this.userLock;
 	}
 
 	public get ready(): boolean {
