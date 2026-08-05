@@ -715,7 +715,7 @@ export const MACHINE: MachineDefinition = {
 			canPersistFullLca: true,
 			canUseRemoteDoc: true,
 		},
-		entry: ['replayAccumulatedEvents', 'mergeRemoteToLocal', 'repairFrontmatter', 'assertConvergence', 'reconcileForkInActive'],
+		entry: ['replayAccumulatedEvents', 'mergeRemoteToLocal', 'seedFrontmatterMap', 'repairFrontmatter', 'assertConvergence', 'reconcileForkInActive'],
 		on: {
 			CM6_CHANGE: { target: 'active.tracking', actions: ['applyCM6ToLocalDoc'] },
 			REMOTE_DOC_UPDATED: { target: 'active.tracking', actions: ['mergeRemoteToLocal', 'repairFrontmatter'] },
@@ -732,7 +732,7 @@ export const MACHINE: MachineDefinition = {
 			DISK_CHANGED: { target: 'active.tracking', actions: ['storeDiskMetadataOnly'] },
 			CONNECTED: { target: 'active.tracking', actions: ['flushPendingToRemote', 'mergeRemoteToLocal'] },
 			DISCONNECTED: { target: 'active.tracking', actions: ['setOffline'] },
-			PROVIDER_SYNCED: { target: 'active.tracking', actions: ['markProviderSynced', 'reconcileForkInActive'] },
+			PROVIDER_SYNCED: { target: 'active.tracking', actions: ['markProviderSynced', 'mergeRemoteToLocal', 'seedFrontmatterMap', 'reconcileForkInActive'] },
 			MERGE_CONFLICT: { target: 'active.conflict.bannerShown', actions: ['storeConflictData'] },
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },

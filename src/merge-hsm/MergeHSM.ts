@@ -2072,6 +2072,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 		// Use persistence's initializeWithContent which checks origin in same IDB session
 		const didEnroll = await this.localPersistence!.initializeWithContent!(cachingLoader);
+		if (didEnroll) {
+			// This transaction created the document, so its disk text is the
+			// causal baseline. Returning clients wait for provider sync before
+			// deriving a missing map from reconciled text.
+			this.seedFrontmatterMapFromCurrentText(true);
+		}
 
 		if (didEnroll && cachedDiskContent) {
 			// Enrollment happened - set LCA to match initial content
@@ -3291,6 +3297,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this.pendingEditorContent = null;
 			},
 			mergeRemoteToLocal: () => this._bridge.flushInbound(),
+			seedFrontmatterMap: () => this.seedFrontmatterMapFromCurrentText(),
 			repairFrontmatter: () => this.repairFrontmatterFromMap(),
 			absorbTextPreservingRemoteUpdate: (_hsm, event) =>
 				this.absorbTextPreservingRemoteUpdate(event as MergeEvent),
@@ -3517,9 +3524,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 								proxyDoc,
 								Y.encodeStateVector(this.localDoc),
 							);
+							const previousText = this.localDoc.getText("contents").toString();
 							this.localDoc.transact(() => {
 								Y.applyUpdate(this.localDoc!, diff, MACHINE_EDIT_ORIGIN);
-								this.syncFrontmatterToMap();
+								this.syncFrontmatterToMap(previousText);
 							}, MACHINE_EDIT_ORIGIN);
 						} finally {
 							proxyDoc.destroy();
@@ -3537,9 +3545,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					} else {
 						// Normal user edit: apply directly to localDoc
 						const ytext = this.localDoc.getText("contents");
+						const previousText = ytext.toString();
 						this.localDoc.transact(() => {
 							this.applyChangesToYText(ytext, e.changes);
-							this.syncFrontmatterToMap();
+							this.syncFrontmatterToMap(previousText);
 						}, this);
 					}
 				}
@@ -5706,7 +5715,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 			// Mirror frontmatter to Y.Map atomically with the content change
 			if (origin !== FRONTMATTER_MIRROR_ORIGIN) {
-				this.syncFrontmatterToMap();
+				this.syncFrontmatterToMap(currentText);
 			}
 		}, origin ?? this);
 	}
@@ -6363,7 +6372,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 	/**
 	 * Build a "correct" document by combining Y.Map frontmatter (LWW winners)
-	 * with Y.Text body. Returns null if Y.Map is empty or YAML is unavailable.
+	 * with Y.Text body. Returns null if YAML is unavailable or nothing
+	 * usable remains to reconstruct (empty Y.Map, or no keys survive the
+	 * text-owns-keys filter).
 	 */
 	private buildDocFromYMap(): string | null {
 		if (!this.localDoc || !this._yaml) return null;
@@ -6382,17 +6393,27 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		// apply only one side — producing duplicated frontmatter lines.
 		const text = this.localDoc.getText("contents").toString();
 		const fm = this.parseFrontmatter(text);
-		const obj: Record<string, any> = fm ? { ...fm.parsed } : {};
+		// A missing block means the text owns an empty key set. An
+		// unrecoverable block may contain the user's in-progress input even
+		// though it cannot provide a safe key set yet. In either case, let
+		// the ordinary Y.Text delta reach the editor instead of rebuilding
+		// from stale map entries and resurrecting or discarding text.
+		if (!fm) return null;
+		const obj: Record<string, any> = { ...fm.parsed };
 
+		// The text owns the key set; the Y.Map owns values. Overlay LWW
+		// values only for keys the parsed frontmatter still carries — a
+		// key present only in the map was deleted from the text, and
+		// writing it back here is what resurrected deleted fields.
+		// Duplicate-key recovery has already produced a safe parsed key set.
 		for (const [key, value] of ymap.entries()) {
+			if (!(key in obj)) continue;
 			let parsed: any;
 			try { parsed = JSON.parse(value as string); }
 			catch { parsed = value; }
 			obj[key] = parsed;
 		}
-		for (const key of Object.keys(obj)) {
-			if (!ymap.has(key)) delete obj[key];
-		}
+		if (Object.keys(obj).length === 0) return null;
 
 		const yamlBody = this._yaml.stringify(obj);
 		// Trailing `\n` on the canonical frontmatter is required so that
@@ -6402,7 +6423,13 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		// dispatch — the shape producing `---\nhello` on disk for
 		// live1/live2 butter.md after Properties toggles.
 		const frontmatter = `---\n${yamlBody}---\n`;
-		const body = fm ? text.slice(fm.end) : text;
+		// The body is everything after the frontmatter REGION, located by
+		// the frontmatter-info helper — which finds the block whether or
+		// not its YAML parses. Falling back to the whole text on a parse
+		// failure would keep the broken block and prepend a fresh one on
+		// every dispatch, stacking blocks.
+		const info = this._yaml.getFrontMatterInfo(text);
+		const body = info.exists ? text.slice(info.contentStart) : text;
 
 		return frontmatter + body;
 	}
@@ -6419,8 +6446,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	 *   end:   `contentStart` — offset where the body begins
 	 *   raw:   the YAML body text (between the `---` delimiters)
 	 *   parsed: parsed object, with on-disk key order preserved
+	 *   recovered: true when the block only parsed after de-duplicating
+	 *     repeated top-level keys (see below)
 	 */
-	private parseFrontmatter(text: string): { start: number; end: number; parsed: Record<string, any>; raw: string } | null {
+	private parseFrontmatter(text: string): { start: number; end: number; parsed: Record<string, any>; raw: string; recovered: boolean } | null {
 		if (!this._yaml) return null;
 
 		const info = this._yaml.getFrontMatterInfo(text);
@@ -6429,10 +6458,80 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		try {
 			const parsed = this._yaml.parse(info.frontmatter);
 			if (!parsed || typeof parsed !== "object") return null;
-			return { start: 0, end: info.contentStart, parsed, raw: info.frontmatter };
+			return { start: 0, end: info.contentStart, parsed, raw: info.frontmatter, recovered: false };
 		} catch {
-			return null;
+			if (!flags().enableFrontmatterDuplicateRecovery) return null;
+			// Concurrent whole-line insertions can leave the same key on
+			// two lines, and duplicate keys make the block throw in the
+			// parser. Without a recovery path both mirror directions bail
+			// out on such a document forever. Retry with a last-wins
+			// de-duplication of top-level key lines so the document can
+			// converge back to a parseable state.
+			const deduped = this.dedupeTopLevelYamlKeys(info.frontmatter);
+			if (deduped === null) return null;
+			try {
+				const parsed = this._yaml.parse(deduped);
+				if (!parsed || typeof parsed !== "object") return null;
+				return { start: 0, end: info.contentStart, parsed, raw: info.frontmatter, recovered: true };
+			} catch {
+				return null;
+			}
 		}
+	}
+
+	/**
+	 * Drop earlier occurrences of repeated top-level YAML keys, keeping
+	 * the last one (matching the last-wins reading most parsers apply
+	 * when they tolerate duplicates). A top-level entry is a column-0
+	 * `key:` line plus its indented continuation lines, so multi-line
+	 * values move with their key. Returns null when no duplicate was
+	 * found — the caller's parse failed for some other reason and this
+	 * transformation cannot help.
+	 */
+	private dedupeTopLevelYamlKeys(yamlBody: string): string | null {
+		const lines = yamlBody.split("\n");
+		type Entry = { key: string | null; lines: string[] };
+		const entries: Entry[] = [];
+		let current: Entry | null = null;
+		// A column-0 line introducing a mapping key: everything before the
+		// first `:` that is followed by whitespace or end-of-line. Quoted
+		// keys are left untouched because a colon inside the quotes is data,
+		// not the key/value separator.
+		const keyLine = /^([^\s#'"-][^:]*):(?:\s|$)/;
+		for (const line of lines) {
+			const match = line.match(keyLine);
+			if (match) {
+				current = { key: match[1], lines: [line] };
+				entries.push(current);
+			} else if (/^["']/.test(line)) {
+				// Keep a quoted top-level key as its own opaque entry. If it
+				// followed a duplicate plain key, attaching it as continuation
+				// text would delete it along with the earlier duplicate.
+				current = { key: null, lines: [line] };
+				entries.push(current);
+			} else if (current) {
+				current.lines.push(line);
+			} else {
+				entries.push({ key: null, lines: [line] });
+			}
+		}
+
+		const seen = new Set<string>();
+		let droppedAny = false;
+		// Walk backwards so the last occurrence of each key survives.
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const key = entries[i].key;
+			if (key === null) continue;
+			if (seen.has(key)) {
+				entries.splice(i, 1);
+				droppedAny = true;
+			} else {
+				seen.add(key);
+			}
+		}
+		if (!droppedAny) return null;
+
+		return entries.map((entry) => entry.lines.join("\n")).join("\n");
 	}
 
 	/**
@@ -6443,34 +6542,85 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	 * enclosing transaction exists (e.g., initial seed), the caller is
 	 * responsible for wrapping in transact().
 	 */
-	private syncFrontmatterToMap(): void {
+	private seedFrontmatterMapFromCurrentText(allowBeforeProviderSync = false): void {
+		if (!this.localDoc || !this._yaml) return;
+		if (this.localDoc.getMap("frontmatter").size > 0) return;
+		if (
+			!allowBeforeProviderSync &&
+			!this._providerSynced &&
+			!this._isProviderSynced()
+		) return;
+
+		this.localDoc.transact(() => {
+			this.syncFrontmatterToMap();
+		}, this);
+		this._bridge.flushOutbound();
+	}
+
+	private syncFrontmatterToMap(previousText?: string): void {
 		if (!this.localDoc || !this._yaml) return;
 
 		const text = this.localDoc.getText("contents").toString();
 		const fm = this.parseFrontmatter(text);
 		const ymap = this.localDoc.getMap("frontmatter");
 
-		if (!fm) return; // Can't parse — don't touch the map
+		if (!fm) {
+			// Distinguish a document with NO frontmatter block from one
+			// whose block would not parse even after recovery. The text
+			// owns key removal, so deleting the whole block prunes every
+			// key; a genuinely mangled block is left alone so the map
+			// keeps the last known-good values.
+			if (
+				ymap.size > 0 &&
+				(this._providerSynced || this._isProviderSynced()) &&
+				!this._yaml.getFrontMatterInfo(text).exists
+			) {
+				for (const key of [...ymap.keys()]) {
+					ymap.delete(key);
+				}
+			}
+			return;
+		}
 
-		const parsedKeys = Object.keys(fm.parsed);
+		let previousParsed: Record<string, any> | null = null;
+		if (previousText !== undefined) {
+			const previousInfo = this._yaml.getFrontMatterInfo(previousText);
+			if (previousInfo.exists) {
+				const previousFm = this.parseFrontmatter(previousText);
+				// A malformed previous block has no safe structured delta.
+				if (!previousFm) return;
+				previousParsed = previousFm.parsed;
+			} else {
+				previousParsed = {};
+			}
+		}
 
-		// Safety: if the parsed frontmatter has fewer keys than the Y.Map,
-		// the Y.Text is likely corrupted (e.g., double --- delimiters causing
-		// a truncated parse). Skip the sync to avoid destroying Y.Map data.
-		if (ymap.size > 0 && parsedKeys.length < ymap.size) return;
-
-		// Store each property value as a JSON string for faithful round-tripping.
-		// Y.Map uses LWW per key, so concurrent writes produce a clean winner.
+		// Store changed values as JSON strings for faithful round-tripping.
+		// Enrollment omits previousText to seed a full baseline. Edit paths
+		// provide it so unchanged stale values never become map writes.
 		for (const [key, value] of Object.entries(fm.parsed)) {
 			const serialized = JSON.stringify(value);
-			if (ymap.get(key) !== serialized) {
+			if (
+				previousParsed === null ||
+				!(key in previousParsed) ||
+				JSON.stringify(previousParsed[key]) !== serialized
+			) {
 				ymap.set(key, serialized);
 			}
 		}
-		// Only delete keys when the parsed frontmatter is plausibly complete
-		for (const key of [...ymap.keys()]) {
-			if (!(key in fm.parsed)) {
-				ymap.delete(key);
+		// The text owns key removal: a key deleted from the frontmatter
+		// must leave the map, or the next reconstruction resurrects it.
+		// Prune only while the provider is synced — before first sync the
+		// local text may simply predate map entries written by peers, and
+		// a delete issued from stale text would destroy them for everyone.
+		// An unpruned stale key is inert (reconstruction never reintroduces
+		// keys the text lacks) and is pruned at the next reconciliation by
+		// repairFrontmatterFromMap instead.
+		if (this._providerSynced || this._isProviderSynced()) {
+			for (const key of [...ymap.keys()]) {
+				if (!(key in fm.parsed)) {
+					ymap.delete(key);
+				}
 			}
 		}
 	}
@@ -6494,38 +6644,54 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		const text = this.localDoc.getText("contents").toString();
 		const fm = this.parseFrontmatter(text);
 
-		if (!fm) return; // No frontmatter block to repair
+		if (!fm) return; // No parseable frontmatter to repair against
 
 		// Mirror Obsidian's processFrontMatter: start from the parsed
-		// frontmatter (preserves on-disk key order) and mutate in place
-		// using Y.Map's LWW values. Keys absent from Y.Map are dropped.
-		// Keys present in Y.Map but absent from the parsed frontmatter
-		// are appended. This keeps Obsidian's writes and our repairs
-		// emitting the same key order so DMP only sees content-level
-		// changes, never reorders.
+		// frontmatter (preserves on-disk key order) and overlay Y.Map's
+		// LWW values in place. This keeps Obsidian's writes and our
+		// repairs emitting the same key order so DMP only sees
+		// content-level changes, never reorders.
+		//
+		// The text owns the key set. A map key the parsed frontmatter no
+		// longer carries was deleted from the text, so it is pruned from
+		// the map here rather than written back: re-inserting the line is
+		// what resurrected deleted fields, and two clients re-inserting
+		// the same line each contribute a copy the merge keeps, while two
+		// clients pruning the same map entry converge to one state.
 		const obj: Record<string, any> = { ...fm.parsed };
+		const staleKeys: string[] = [];
 		for (const [key, value] of ymap.entries()) {
+			if (!(key in obj)) {
+				staleKeys.push(key);
+				continue;
+			}
 			let parsed: any;
 			try { parsed = JSON.parse(value as string); }
 			catch { parsed = value; }
 			obj[key] = parsed;
 		}
-		for (const key of Object.keys(obj)) {
-			if (!ymap.has(key)) delete obj[key];
+
+		if (staleKeys.length > 0) {
+			this.crdtLog(
+				`frontmatter mirror: pruning ${staleKeys.length} map key(s) deleted from the text`,
+			);
+			this.localDoc.transact(() => {
+				for (const key of staleKeys) {
+					ymap.delete(key);
+				}
+			}, FRONTMATTER_MIRROR_ORIGIN);
 		}
 
-		// Corruption check: values differ, or the set of keys differs.
-		let corrupted = false;
-		const parsedKeys = Object.keys(fm.parsed);
-		const objKeys = Object.keys(obj);
-		if (parsedKeys.length !== objKeys.length) {
-			corrupted = true;
-		} else {
-			for (const key of objKeys) {
-				if (JSON.stringify(fm.parsed[key]) !== JSON.stringify(obj[key])) {
-					corrupted = true;
-					break;
-				}
+		// Corruption check: a map value differs from what the text
+		// carries. A block that only parsed after de-duplication is also
+		// rewritten — the rewrite emits the canonical single-line-per-key
+		// block, and when the values already agree that diff is pure
+		// deletion, which concurrent identical repairs apply idempotently.
+		let corrupted = fm.recovered;
+		for (const key of Object.keys(obj)) {
+			if (JSON.stringify(fm.parsed[key]) !== JSON.stringify(obj[key])) {
+				corrupted = true;
+				break;
 			}
 		}
 

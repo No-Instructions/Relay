@@ -16,6 +16,7 @@ export interface FeatureFlags {
 	enableSyncConvergenceLatch: boolean;
 	enableNoteStateInspector: boolean;
 	enableSavingFlagPolyfill: boolean;
+	enableFrontmatterDuplicateRecovery: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -165,6 +166,13 @@ export const FeatureFlagSchema: {
 		title: "Keep the file saving flag accurate",
 		description:
 			"Count overlapping writes per file so Obsidian's saving flag clears when the last write finishes; stands down on versions without the remember/restore bookkeeping.",
+	},
+	enableFrontmatterDuplicateRecovery: {
+		default: false,
+		category: "danger",
+		title: "Repair duplicate frontmatter keys",
+		description:
+			"Rewrite duplicate top-level YAML keys using last-wins recovery instead of leaving invalid frontmatter for manual repair.",
 	},
 };
 
