@@ -98,6 +98,11 @@ import {
 import { RelayDebugAPI } from "./RelayDebugAPI";
 import { isRetryableS3Error } from "./S3Error";
 import { MetadataHealth } from "./MetadataHealth";
+import { createPublicApi, publishPublicApi, type Api } from "./PublicAPI";
+import {
+	TextViewRegistry,
+	type PluginRegistrationSettings,
+} from "./TextViewRegistry";
 
 type SettingsController = {
 	open(): void | Promise<void>;
@@ -116,6 +121,7 @@ interface RelaySettings extends FeatureFlags, DebugSettings {
 	sharedFolders: SharedFolderSettings[];
 	release: ReleaseSettings;
 	endpoints: EndpointSettings;
+	plugins?: PluginRegistrationSettings;
 }
 
 const DEFAULT_SETTINGS: RelaySettings = {
@@ -138,6 +144,7 @@ declare const GIT_TAG: string;
 declare const REPOSITORY: string;
 
 export default class Live extends Plugin {
+	api!: Api;
 	appId!: string;
 	private _instanceId!: string;
 	webviewerPatched = false;
@@ -171,6 +178,8 @@ export default class Live extends Plugin {
 	public releaseSettings!: NamespacedSettings<ReleaseSettings>;
 	public loginSettings!: NamespacedSettings<LoginSettings>;
 	public endpointSettings!: NamespacedSettings<EndpointSettings>;
+	private pluginRegistrySettings!: NamespacedSettings<PluginRegistrationSettings>;
+	private textViewRegistry!: TextViewRegistry;
 	debug!: (...args: unknown[]) => void;
 	log!: (...args: unknown[]) => void;
 	warn!: (...args: unknown[]) => void;
@@ -590,6 +599,10 @@ export default class Live extends Plugin {
 		this.releaseSettings = new NamespacedSettings(this.settings, "release");
 		this.loginSettings = new NamespacedSettings(this.settings, "login");
 		this.endpointSettings = new NamespacedSettings(this.settings, "endpoints");
+		this.pluginRegistrySettings = new NamespacedSettings(
+			this.settings,
+			"plugins",
+		);
 
 		const flagManager = FeatureFlagManager.getInstance();
 		flagManager.setSettings(this.featureSettings);
@@ -826,6 +839,27 @@ export default class Live extends Plugin {
 			this.appId,
 		);
 
+		this.textViewRegistry = new TextViewRegistry(
+			this.pluginRegistrySettings,
+			(viewType) => {
+				const registry = (this.app as any).viewRegistry;
+				const probe = registry?.getViewCreatorByType;
+				if (typeof probe !== "function") return undefined;
+				return !!probe.call(registry, viewType);
+			},
+		);
+
+		const publicApi = createPublicApi(
+			this.relayManager,
+			this.loginManager,
+			this.textViewRegistry,
+			this.app.workspace,
+		);
+		this.register(() => {
+			publicApi.detach();
+		});
+		publishPublicApi(this, this.app.workspace, publicApi.api);
+
 		// Register the sync-status view factory before the workspace layout
 		// is restored. Obsidian restores leaves during boot; leaves of an
 		// unregistered type fall back to a placeholder and the pane wouldn't
@@ -879,12 +913,20 @@ export default class Live extends Plugin {
 				});
 			}
 
+			// Apply persisted view registrations before folders connect: leaves
+			// are enumerated as folders come up, with no guarantee a consumer
+			// plugin's own startup has run yet. Every enabled plugin has
+			// registered its view factories by layout-ready, so a stored
+			// registration whose view type no longer resolves is pruned here.
+			this.textViewRegistry.load();
+
 			this.sharedFolders.load();
 			this._liveViews = new LiveViewManager(
 				this.app,
 				this.sharedFolders,
 				this.loginManager,
 				this.networkStatus,
+				this.textViewRegistry,
 			);
 
 			// NOTE: Extensions list should be loaded once and then mutated.
@@ -1839,6 +1881,10 @@ export default class Live extends Plugin {
 			this._liveViews?.destroy();
 		});
 		this._liveViews = null as any;
+		teardownStep("textViewRegistry.destroy", () => {
+			this.textViewRegistry?.destroy();
+		});
+		this.textViewRegistry = null as any;
 
 		teardownStep("relayManager.destroy", () => {
 			this.relayManager?.destroy();
@@ -1952,6 +1998,10 @@ export default class Live extends Plugin {
 			this.endpointSettings.destroy();
 		});
 		this.endpointSettings = null as any;
+		teardownStep("pluginRegistrySettings.destroy", () => {
+			this.pluginRegistrySettings.destroy();
+		});
+		this.pluginRegistrySettings = null as any;
 		teardownStep("settings.destroy", () => {
 			this.settings.destroy();
 		});
