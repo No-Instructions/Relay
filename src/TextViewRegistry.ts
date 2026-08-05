@@ -44,6 +44,8 @@ export class TextViewRegistry extends HasLogging {
 	private allowed = new Set(ALLOWED_TEXT_FILE_VIEWS);
 	/** Serializes persistence writes so registrations cannot race each other. */
 	private writes: Promise<void> = Promise.resolve();
+	/** Makes release handles inert once the registry's owner unloads. */
+	private destroyed = false;
 
 	constructor(
 		private settings: NamespacedSettings<PluginRegistrationSettings>,
@@ -76,11 +78,18 @@ export class TextViewRegistry extends HasLogging {
 		this.persist((current) => upsertRegistration(current, id, type, version));
 		let released = false;
 		return () => {
-			if (released) return;
+			if (released || this.destroyed) return;
 			released = true;
 			this.unapply(id, type);
 			this.persist((current) => removeRegistration(current, id, type));
 		};
+	}
+
+	/** Release live registrations and make outstanding handles inert. */
+	destroy(): void {
+		this.destroyed = true;
+		this.applied.clear();
+		this.rebuild();
 	}
 
 	/**

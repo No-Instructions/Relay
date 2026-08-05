@@ -12,6 +12,11 @@ export interface ViewHandle<V> {
 	readonly detach: () => void;
 }
 
+export interface ViewLifecycle {
+	attached: boolean;
+	error: string;
+}
+
 export class Delivery<P> {
 	#listeners = new Set<Subscriber<P>>();
 	#trampolines = new Map<Subscriber<P>, Subscriber<P>>();

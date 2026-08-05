@@ -59,16 +59,23 @@ export interface ApiV0 {
 	registerView(pluginId: string, viewType: string): Unsubscriber;
 }
 
+/**
+ * Relay API objects and values returned from them are valid only until Relay
+ * unloads. Resolve `app.plugins.plugins["system3-relay"]?.api` when the
+ * `system3-relay:api-ready` signal fires instead of retaining an API object
+ * across reloads. Register the signal listener with `this.registerEvent` so
+ * the consuming plugin removes it during its own teardown. Reading,
+ * subscribing, or registering through a stale object throws; resolve the
+ * current API again after the next readiness signal. Unsubscribing remains
+ * safe during teardown.
+ */
 export interface Api {
 	v0: ApiV0;
 }
 
 declare module "obsidian" {
 	interface Workspace {
-		on(
-			name: "system3-relay:api-ready",
-			callback: (api: Api) => void,
-		): EventRef;
-		trigger(name: "system3-relay:api-ready", api: Api): void;
+		on(name: "system3-relay:api-ready", callback: () => void): EventRef;
+		trigger(name: "system3-relay:api-ready"): void;
 	}
 }

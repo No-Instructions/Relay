@@ -98,7 +98,7 @@ import {
 import { RelayDebugAPI } from "./RelayDebugAPI";
 import { isRetryableS3Error } from "./S3Error";
 import { MetadataHealth } from "./MetadataHealth";
-import { createPublicApi, type Api } from "./PublicAPI";
+import { createPublicApi, publishPublicApi, type Api } from "./PublicAPI";
 import {
 	TextViewRegistry,
 	type PluginRegistrationSettings,
@@ -850,11 +850,10 @@ export default class Live extends Plugin {
 			this.loginManager,
 			this.textViewRegistry,
 		);
-		this.api = publicApi.api;
 		this.register(() => {
 			publicApi.detach();
 		});
-		this.app.workspace.trigger("system3-relay:api-ready", this.api);
+		publishPublicApi(this, this.app.workspace, publicApi.api);
 
 		// Register the sync-status view factory before the workspace layout
 		// is restored. Obsidian restores leaves during boot; leaves of an
@@ -1877,6 +1876,9 @@ export default class Live extends Plugin {
 			this._liveViews?.destroy();
 		});
 		this._liveViews = null as any;
+		teardownStep("textViewRegistry.destroy", () => {
+			this.textViewRegistry?.destroy();
+		});
 		this.textViewRegistry = null as any;
 
 		teardownStep("relayManager.destroy", () => {

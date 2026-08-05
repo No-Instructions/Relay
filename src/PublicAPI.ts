@@ -11,6 +11,9 @@ import { ViewMap } from "./api/ViewMap";
 
 export type { Api, ApiV0, User };
 
+export const API_UNLOADED_ERROR =
+	'Relay plugin unloaded; resolve app.plugins.plugins["system3-relay"]?.api after the next system3-relay:api-ready signal';
+
 type UserRecord = RelayUser | SignedInUser;
 
 function toUser(record: UserRecord | undefined): User | undefined {
@@ -37,9 +40,8 @@ export interface PublicApiHandle {
  * level for the same reason as the copy helpers: a consumer keeps the api
  * for the rest of the session, and a closure created inside createPublicApi
  * would hold that call's entire context — the managers included — alive with
- * it. Detaching releases the registry, after which registering is inert: a
- * consumer calling into an unloaded Relay gets a no-op unsubscriber rather
- * than a throw, and the next api-ready event carries a live container.
+ * it. Detaching releases the registry, after which registering fails with a
+ * terminal lifecycle error.
  *
  * v0 stamps version 0 on the persisted record: the row outlives the code
  * that wrote it, and the version names the contract the registering plugin
@@ -50,7 +52,7 @@ function createRegisterView(registry: TextViewRegistry) {
 	return {
 		registerView: (pluginId: string, viewType: string) => {
 			const target = current;
-			if (!target) return () => undefined;
+			if (!target) throw new Error(API_UNLOADED_ERROR);
 			return target.register(pluginId, viewType, 0);
 		},
 		detach: () => {
@@ -59,21 +61,34 @@ function createRegisterView(registry: TextViewRegistry) {
 	};
 }
 
+/** Publish the API before notifying consumers to resolve it from the plugin. */
+export function publishPublicApi(
+	plugin: { api?: Api },
+	workspace: { trigger(name: "system3-relay:api-ready"): void },
+	api: Api,
+): void {
+	plugin.api = api;
+	workspace.trigger("system3-relay:api-ready");
+}
+
 export function createPublicApi(
 	relayManager: RelayManager,
 	loginManager: LoginManager,
 	textViewRegistry: TextViewRegistry,
 ): PublicApiHandle {
+	const lifecycle = { attached: true, error: API_UNLOADED_ERROR };
 	const users = ViewMap.create(
 		relayManager.users,
 		toUser,
 		"api.v0.identity.users",
+		lifecycle,
 	);
 
 	const currentUser = View.create<User | null>(
 		loginManager,
 		() => toUser(loginManager.user) ?? null,
 		"api.v0.identity.currentUser",
+		lifecycle,
 	);
 
 	const registration = createRegisterView(textViewRegistry);
@@ -88,6 +103,7 @@ export function createPublicApi(
 	return {
 		api,
 		detach: () => {
+			lifecycle.attached = false;
 			users.detach();
 			currentUser.detach();
 			registration.detach();
