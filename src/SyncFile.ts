@@ -249,7 +249,17 @@ export class ContentAddressedFile extends HasLogging {
 				fileMtime,
 			});
 			if (hit) {
-				// If the stored hash is for the same modification time, use it
+				// A matching local file is enough to backfill the already-landed
+				// identity field without reading its bytes again.
+				const guid = this.guidProvider?.();
+				if (guid && storedData.guid !== guid) {
+					await this.store.saveHash(
+						this.path,
+						storedData.hash,
+						storedData.modifiedAt,
+						guid,
+					);
+				}
 				return storedData.hash;
 			}
 		} catch (error) {
@@ -431,6 +441,7 @@ export class SyncFile
 			this.vault,
 			this.sharedFolder.getPath(path),
 			this.hashStore,
+			() => this.guid,
 		);
 
 		this.log("created");
@@ -538,6 +549,10 @@ export class SyncFile
 			return;
 		}
 		const hash = await this.caf.hash();
+		// Hashing requires a current file in this device's vault index. It may
+		// reuse a hash whose mtime matches that local file rather than reading
+		// the bytes again; either way the server cannot supply this evidence.
+		// That covers a file the user added here, which no download ever wrote.
 		this._refreshMeta();
 		if (this.meta?.hash === hash) {
 			this.clearCurrentUserEdit();
@@ -843,6 +858,9 @@ export class SyncFile
 				.catch((error) => {
 					this.warn("Failed to save pulled hash:", error);
 				});
+			// The bytes are down. Recorded here and not before, so that a
+			// download that never finished cannot later be read as a file
+			// the user deleted.
 			if (this.uploadError) {
 				this.uploadError = undefined;
 				this.notifyListeners();

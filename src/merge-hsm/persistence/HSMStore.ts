@@ -114,6 +114,7 @@ function sanitizeMergeState(state: PersistedMergeState): PersistedMergeState {
     disk: state.disk
       ? { hash: state.disk.hash, mtime: state.disk.mtime }
       : null,
+		diskMaterialized: state.diskMaterialized === true,
     localSnapshot,
     ...(!localSnapshot && state.localStateVector
       ? { localStateVector: state.localStateVector }
@@ -301,6 +302,7 @@ export class HSMStore {
               }
             : null,
           disk: s.disk,
+          diskMaterialized: s.diskMaterialized === true,
           localSnapshot: s.localSnapshot ?? null,
           ...(!s.localSnapshot
             ? {

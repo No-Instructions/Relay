@@ -50,6 +50,7 @@ import {
 	isSyncFileMeta,
 	isDocumentMeta,
 	isCanvasMeta,
+	isSyncFolderMeta,
 	type FileMeta,
 	type Meta,
 	type SyncFileType,
@@ -74,7 +75,7 @@ import { readNoteText } from "./diskText";
 import {
 	HSMStore,
 } from "./merge-hsm/persistence";
-import type { PersistedCanvasState } from "./merge-hsm/types";
+import type { PersistedCanvasState, PersistedStateMeta } from "./merge-hsm/types";
 import { trackPromise } from "./trackPromise";
 import {
 	RemoteActivityIndex,
@@ -185,6 +186,21 @@ export const NEW_FILE_REGISTRATION_DEBOUNCE_MS = 500;
 // Suspended registrations expire after this window so abandoned local state
 // does not remain eligible for restoration indefinitely.
 export const FOLDER_DELETION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Ceilings on how much of a folder may be missing at launch and still be
+// read as files the user deleted. Above either one, the likelier story is
+// that the files never arrived on this launch — a network volume that has
+// not mounted or finished filling in, another file-sync tool restoring over
+// the vault, a copy that was interrupted — and the two mistakes are not
+// comparable. Restoring a file the user deleted is an annoyance they can
+// repeat; deleting a file that was only temporarily out of view takes real
+// content off every device. So both arms refuse on their own, and both sit
+// well below what a person removes by hand in one sitting.
+const MAX_FILES_DELETED_WHILE_CLOSED = 10;
+const MAX_SHARE_DELETED_WHILE_CLOSED = 0.2;
+// Below this a share is not a measurement: one file of three is a third of
+// the folder and still just one file.
+const MIN_FILES_FOR_SHARE = 3;
 
 class Files extends ObservableSet<IFile> {
 	// Startup performance optimization
@@ -338,6 +354,28 @@ export class SharedFolder extends HasProvider {
 	private _convergenceDeletionInFlight: Set<string> | undefined;
 	private readonly remoteActivityIndex = new RemoteActivityIndex();
 	private readonly remoteActivitySubscribers = new Set<() => void>();
+	/** The scan for files removed while the app was closed runs once a launch. */
+	private _deletedWhileClosedScanned = false;
+	private _deletedWhileClosed?: Map<string, string>;
+	private _deletionsInFlight?: Map<string, Promise<void>>;
+	/** Unfiltered result of the initialization read, reused by the launch sweep. */
+	private _initialHsmStateMeta?: PersistedStateMeta[];
+
+	/**
+	 * Paths the scan found evidence for, mapped to the identity it vouches
+	 * for. Built on demand rather than at construction: unit suites assemble
+	 * folders with Object.create, which skips field initializers, and a map
+	 * that is undefined in one of them would take a deletion decision with
+	 * it. The same accommodation the write queues make.
+	 */
+	private get deletedWhileClosed(): Map<string, string> {
+		return (this._deletedWhileClosed ??= new Map());
+	}
+
+	/** Deletions that have been decided but have not finished reaching disk. */
+	private get deletionsInFlight(): Map<string, Promise<void>> {
+		return (this._deletionsInFlight ??= new Map());
+	}
 
 	constructor(
 		public appId: string,
@@ -547,6 +585,7 @@ export class SharedFolder extends HasProvider {
 			loadAllStates: async () => {
 				try {
 					const all = await this._hsmStore.getAllStateMeta();
+					this._initialHsmStateMeta = all;
 					// The HSM store is app-wide. Scope cold-start to this
 					// folder: records stamped with our folder guid, plus
 					// records predating folder scoping whose doc guid the
@@ -562,6 +601,7 @@ export class SharedFolder extends HasProvider {
 							(meta.folder === undefined && committed.has(meta.guid)),
 					);
 				} catch {
+					this._initialHsmStateMeta = [];
 					return [];
 				}
 			},
@@ -2465,6 +2505,27 @@ export class SharedFolder extends HasProvider {
 			}
 		}
 
+		// A deletion already decided for this path is still reaching the
+		// filesystem. Until it has, the path is spoken for: reading it as
+		// something newly added and fetching it would undo the deletion in
+		// the gap.
+		const inFlight = this.deletionsInFlight.get(path);
+		if (inFlight) {
+			return { op: "noop", path, promise: inFlight };
+		}
+
+		// The file was on this device's disk and is not there now, so the
+		// user removed it while the app was closed. Creating it again would
+		// undo that everywhere.
+		if (this.deletedWhileClosed.get(path) === guid) {
+			diffLog.push(`deleting ${path}, removed from disk while closed`);
+			return {
+				op: "delete",
+				path,
+				promise: this.propagateDeletionWhileClosed(path),
+			};
+		}
+
 		// write will trigger `create` which will read the file from disk by default.
 		// so we need to pre-empt that by loading the file into docs.
 		const promise = this._handleServerCreate(path, meta, diffLog);
@@ -2559,6 +2620,11 @@ export class SharedFolder extends HasProvider {
 							// writes stand down.
 							const doc = this.fset.find((f) => f.path === vpath);
 							if (doc) {
+								if (isSyncFile(doc)) {
+									void this.hashStore
+										.removeHash(normalizePath(join(this.path, vpath)))
+										.catch(() => {});
+								}
 								this.fset.delete(doc);
 								this.files.delete(doc.guid);
 								doc.cleanup();
@@ -2716,10 +2782,10 @@ export class SharedFolder extends HasProvider {
 
 	/**
 	 * Remove the durable records this folder owns outside its per-file IDB
-	 * databases: merge-HSM states scoped to this folder and hash-store rows
-	 * for paths inside it. Both stores are app-wide and outlive the folder
-	 * instance; explicit removal is the only point where these records
-	 * become garbage.
+	 * databases: merge-HSM states scoped to this folder, hash-store rows for
+	 * paths inside it, and its record of which files reached this device's
+	 * disk. All three stores are app-wide and outlive the folder instance;
+	 * explicit removal is the only point where these records become garbage.
 	 */
 	public async reclaimOwnedRecords(): Promise<void> {
 		try {
@@ -3073,6 +3139,225 @@ export class SharedFolder extends HasProvider {
 		this.warn("dropped stale pending-upload holds", stale);
 	}
 
+	/**
+	 * Decide which of the folder's files were deleted from disk while the
+	 * app was not running.
+	 *
+	 * The app is told about a deletion by a vault event, and no event is
+	 * raised for a file removed while it is closed. What the next launch
+	 * sees instead is a path the folder still lists with nothing on disk at
+	 * it — which is also exactly what a file that has not been downloaded
+	 * yet looks like. Left undecided the file is fetched again, so the
+	 * deletion undoes itself, on this device and then on every other one.
+	 *
+	 * The two are separated by existing-store evidence that this device
+	 * physically materialized the file. Documents require the HSM's explicit
+	 * diskMaterialized proof; server-derived enrollment metadata does not set
+	 * it. Canvases use their machine's disk field, which is populated only by
+	 * a read or completed flush. Attachments require a guid-bearing hash row
+	 * written after a read or write. Without the relevant proof the file is
+	 * fetched.
+	 *
+	 * Runs once a launch, after the folder's own view has caught up with the
+	 * server; every deletion after that raises its own event.
+	 */
+	private async scanForDeletionsWhileClosed(): Promise<void> {
+		if (this._deletedWhileClosedScanned) return;
+		// The same readiness both neighbouring destructive passes require.
+		// The stored view of the folder can be arbitrarily far behind what
+		// the server holds, and a deletion decided from a stale list of
+		// files is a deletion of files that were never missing.
+		if (!(this._provider?.synced && this._persistence?.synced)) return;
+
+		this._deletedWhileClosedScanned = true;
+		type ExistingEvidence = { guid: string; path: string; vaultAbsolute: boolean };
+		const evidenceByGuid = new Map<string, ExistingEvidence>();
+		const committed = new Set(this.syncStore.getCommittedSubdocGuids());
+		// Unlike the subdoc set above, this includes every committed file type
+		// (File, Image, PDF, Audio, Video and Base included). Hash evidence is
+		// vault-wide, so current folder membership is its attribution boundary.
+		const attachmentCommitted = new Set<string>();
+		this.syncStore.forEach((meta) => {
+			if (
+				!isDocumentMeta(meta) &&
+				!isCanvasMeta(meta) &&
+				!isSyncFolderMeta(meta)
+			) {
+				attachmentCommitted.add(meta.id);
+			}
+		});
+		try {
+			const states = this._initialHsmStateMeta ?? [];
+			this._initialHsmStateMeta = undefined;
+			for (const state of states) {
+				const attributable =
+					state.folder === this.guid ||
+					(state.folder === undefined && committed.has(state.guid));
+				if (
+					!attributable ||
+					!state.disk ||
+					(state.kind !== "canvas" && state.diskMaterialized !== true)
+				) continue;
+				evidenceByGuid.set(state.guid, {
+					guid: state.guid,
+					path: state.path,
+					vaultAbsolute: false,
+				});
+			}
+		} catch (error) {
+			this.warn(
+				"cannot read document disk evidence; leaving those files to be fetched",
+				error,
+			);
+		}
+		try {
+			const hashes = await this.hashStore.getAllEntries();
+			for (const entry of hashes) {
+				if (!entry.guid || !attachmentCommitted.has(entry.guid)) continue;
+				evidenceByGuid.set(entry.guid, {
+					guid: entry.guid,
+					path: entry.path,
+					vaultAbsolute: true,
+				});
+			}
+		} catch (error) {
+			this.warn(
+				"cannot read attachment disk evidence; leaving those files to be fetched",
+				error,
+			);
+		}
+		if (this.destroyed || evidenceByGuid.size === 0) return;
+
+		const deleted: string[] = [];
+		// A path staged for commit is listed both under its staged metadata
+		// and its committed metadata, and counting it twice would move the
+		// thresholds below under the folder rather than with it.
+		const seen = new Set<string>();
+		let listed = 0;
+		let present = 0;
+		this.syncStore.forEach((meta, path) => {
+			if (!meta || meta.type === SyncType.Folder) return;
+			if (seen.has(path)) return;
+			seen.add(path);
+			// forEach also exposes old-client document tombstones. Use the
+			// authoritative lookup so paths the store itself considers deleted
+			// do not inflate either the denominator or the refusal count.
+			const currentMeta = this.syncStore.getMeta(path);
+			if (!currentMeta) return;
+			listed += 1;
+			if (this.existsSync(path)) {
+				present += 1;
+				return;
+			}
+			// A path the user is still publishing, or one already on its way
+			// out, is not this pass's to decide about.
+			if (this.pendingUpload?.has(path)) return;
+			if (this.pendingCreates?.has(path)) return;
+			if (this.pendingDeletes?.has(path)) return;
+			const evidence = evidenceByGuid.get(currentMeta.id);
+			// Missing evidence is absolute: this device cannot prove that it ever
+			// materialized the file, so fetch it. Inverting this fallback would
+			// delete the server's copy from every device on an uncertainty.
+			if (!evidence) return;
+			// The record names where the file was when it was last written.
+			// If something is still there, the file moved rather than went
+			// away, and a move is not this pass's business.
+			if (
+				this.vault.getAbstractFileByPath(
+					evidence.vaultAbsolute
+						? normalizePath(evidence.path)
+						: normalizePath(join(this.path, evidence.path)),
+				)
+			) {
+				return;
+			}
+			deleted.push(path);
+		});
+		if (deleted.length === 0) return;
+
+		const refusal = this.refuseMassDisappearance(deleted.length, listed, present);
+		if (refusal) {
+			this.warn(
+				`${deleted.length} of ${listed} synced files are missing from disk — ` +
+					`${refusal}. Leaving them in place and fetching them back rather ` +
+					`than deleting them everywhere; delete them with the app running ` +
+					`if that is what you want.`,
+				deleted.slice(0, 10),
+			);
+			return;
+		}
+
+		deleted.forEach((path) => {
+			const meta = this.syncStore.getMeta(path);
+			if (meta) this.deletedWhileClosed.set(path, meta.id);
+		});
+		this.log("files deleted while the app was closed", deleted);
+	}
+
+	/**
+	 * Why a disappearance should be treated as files that have not arrived
+	 * rather than files the user deleted, or nothing when it should not be.
+	 */
+	private refuseMassDisappearance(
+		missing: number,
+		listed: number,
+		present: number,
+	): string | undefined {
+		if (!this.vault.getAbstractFileByPath(normalizePath(this.path))) {
+			return "the folder itself is not on disk";
+		}
+		if (present === 0) {
+			return "none of the folder's files are on disk";
+		}
+		if (missing > MAX_FILES_DELETED_WHILE_CLOSED) {
+			return "that is more files at once than this reads as deletions";
+		}
+		if (
+			missing >= MIN_FILES_FOR_SHARE &&
+			missing >= listed * MAX_SHARE_DELETED_WHILE_CLOSED
+		) {
+			return "that is too large a share of the folder at once";
+		}
+		return undefined;
+	}
+
+	/**
+	 * Carry out a deletion the scan decided on, and stay claimable until it
+	 * is done.
+	 *
+	 * The file is re-checked against the filesystem first, because the scan
+	 * reads the app's own index of the vault and an index can be behind the
+	 * disk — and this is the one operation with no way back. The promise is
+	 * held for the path until the whole thing has finished, so a pass that
+	 * runs while the check is still outstanding waits on it instead of
+	 * reading the missing file as something newly added and fetching it.
+	 */
+	private propagateDeletionWhileClosed(path: string): Promise<void> {
+		const running = this.deletionsInFlight.get(path);
+		if (running) return running;
+		const promise = this.vault.adapter
+			.exists(normalizePath(join(this.path, path)))
+			.then((exists) => {
+				if (exists) {
+					this.warn(
+						"the file is on disk after all; leaving it in place",
+						path,
+					);
+					return;
+				}
+				this.deleteFiles([path]);
+			})
+			.catch((error) => {
+				this.warn("could not delete a file removed while closed", path, error);
+			})
+			.finally(() => {
+				this.deletionsInFlight.delete(path);
+				this.deletedWhileClosed.delete(path);
+			});
+		this.deletionsInFlight.set(path, promise);
+		return promise;
+	}
+
 	syncFileTree(): Promise<void> {
 		// If a sync is already running, mark that we want another sync after
 		if (this.syncFileTreePromise) {
@@ -3098,6 +3383,8 @@ export class SharedFolder extends HasProvider {
 			try {
 				if (!this.mergeManager || this.destroyed) return;
 				await this.mergeManager.initialize();
+				if (this.destroyed) return;
+				await this.scanForDeletionsWhileClosed();
 				if (this.destroyed) return;
 
 				// When file types are newly enabled, enqueue their local
@@ -3132,10 +3419,15 @@ export class SharedFolder extends HasProvider {
 
 				const creates = ops.filter((op) => op.op === "create");
 				const renames = ops.filter((op) => op.op === "rename");
+				// Deletions decided by this pass are awaited alongside the
+				// rest: the pass that authorised one is the pass that has to
+				// see it through, or the next one meets a path that is still
+				// listed, still missing, and no longer spoken for.
+				const deletions = ops.filter((op) => op.op === "delete");
 
 				// Ensure these complete before checking for deletions
 				await Promise.all(
-					[...creates, ...renames].map((op) =>
+					[...creates, ...renames, ...deletions].map((op) =>
 						withTimeoutWarning<IFile | void>(
 							op.promise,
 							this.timeProvider,
@@ -3234,9 +3526,7 @@ export class SharedFolder extends HasProvider {
 			return doc.writeEngineContents(content);
 		}
 		this.log("writing to ", normalizePath(vaultPath));
-		return this.vault.adapter
-			.write(normalizePath(vaultPath), content)
-			.then(() => true);
+		return this.vault.adapter.write(normalizePath(vaultPath), content).then(() => true);
 	}
 
 	getPath(path: string): string {
@@ -4452,6 +4742,13 @@ export class SharedFolder extends HasProvider {
 			return;
 		}
 		const cleanupGuids = new Map<string, string>();
+		for (const vpath of paths) {
+			// The file is gone; the record that it was here goes with it, so
+			// it cannot vouch for a later path carrying the same identity.
+			void this.hashStore
+				?.removeHash(normalizePath(join(this.path, vpath)))
+				.catch(() => {});
+		}
 		this.folderDoc.transact(() => {
 			for (const vpath of paths) {
 				this.pendingUpload.delete(vpath);
@@ -4570,6 +4867,9 @@ export class SharedFolder extends HasProvider {
 				// The nested folder moves are done in bulk in the sync store, but the tfile
 				// events come in individually.
 				this.syncStore.resolveMove(oldVPath);
+				// Live child objects move their already-existing HSM/hash evidence in
+				// file.move above. Sync-store-only children have no local object and
+				// therefore cannot acquire evidence from a directory rename.
 			}
 		}
 	}

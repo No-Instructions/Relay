@@ -229,6 +229,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		priorRemoteStateVector: Uint8Array | null;
 	} | null = null;
 	private _disk: MergeMetadata | null = null;
+	/** Monotonic proof that this device physically observed the document. */
+	private _diskMaterialized = false;
 	private _localStateVector: Uint8Array | null = null;
 	private _remoteStateVector: Uint8Array | null = null;
 	private _error: Error | undefined;
@@ -907,6 +909,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (typeof observed.hash === "string") {
 			// The observation is complete: it identifies the current bytes.
 			this._disk = { hash: observed.hash, mtime: observed.mtime };
+			this._diskMaterialized = true;
 			this._needsDiskContentLoad = false;
 			return;
 		}
@@ -2098,6 +2101,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				hash,
 				mtime,
 				stateVector,
+				diskMaterialized: true,
 			});
 		}
 
@@ -2105,6 +2109,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	async completeInitialEnrollmentFromDisk(disk: {
+		/** Content physically read from this device; server-derived bytes are invalid here. */
 		content: string;
 		hash: string;
 		mtime: number;
@@ -2129,6 +2134,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			hash: disk.hash,
 			mtime: disk.mtime,
 			stateVector: Y.encodeStateVector(this.localDoc),
+			diskMaterialized: true,
 		});
 		return this._lca !== null;
 	}
@@ -2162,6 +2168,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		this.rememberEnrolledLocalHead(snapshotFromDoc(this.localDoc).snapshot, stateVector);
 		this._localDocSnapshotSafe = true;
 		this._disk = { hash: disk.hash, mtime: disk.mtime };
+		this._diskMaterialized = true;
 		this._localStateVector = stateVector;
 		if (this.remoteDoc) {
 			this._remoteStateVector = Y.encodeStateVector(this.remoteDoc);
@@ -2215,6 +2222,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			hash,
 			mtime: this.timeProvider.now(),
 			stateVector: Y.encodeStateVector(this.localDoc),
+			diskMaterialized: false,
 		});
 		return this._lca !== null;
 	}
@@ -2224,6 +2232,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		hash: string;
 		mtime: number;
 		stateVector: Uint8Array;
+		diskMaterialized: boolean;
 	}): void {
 		this.send({
 			type: "ENROLLMENT_COMPLETE",
@@ -2233,6 +2242,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				stateVector: input.stateVector,
 			},
 			localStateVector: input.stateVector,
+			diskMaterialized: input.diskMaterialized,
 			remoteStateVector: this.remoteDoc
 				? Y.encodeStateVector(this.remoteDoc)
 				: null,
@@ -2887,6 +2897,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			storeDiskMetadata: (_hsm, event) => {
 				const e = event as any;
 				this._disk = { hash: e.hash, mtime: e.mtime };
+				this._diskMaterialized = true;
 				this.setPendingDiskContents(e.contents, "disk-event", e.hash);
 				this._needsDiskContentLoad = false;
 			},
@@ -2894,6 +2905,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				const e = event as any;
 				if (typeof e.hash === "string") {
 					this._disk = { hash: e.hash, mtime: e.mtime };
+					this._diskMaterialized = true;
 					this._needsDiskContentLoad = false;
 					return;
 				}
@@ -2904,6 +2916,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				if (!disk) return;
 				this._needsDiskContentLoad = false;
 				this._disk = { hash: disk.hash, mtime: disk.mtime };
+				this._diskMaterialized = true;
 				if (this._fork) {
 					// A restored fork's localDoc reflects the prior session. Preserve the
 					// session-fresh disk bytes so they are ingested before reconciliation.
@@ -3113,6 +3126,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this._persistenceStateLoaded = false;
 				this._lcaGcPinCache = null;
 				this._disk = null;
+				this._diskMaterialized = false;
 				this._remoteStateVector = null;
 				this._needsDiskContentLoad = false;
 				this._restoredForkNeedsDiskRead = false;
@@ -3130,6 +3144,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this.rememberEnrolledLocalHead(localSnapshot, localStateVector);
 				if (e.disk !== undefined) {
 					this._disk = e.disk ?? null;
+					this._diskMaterialized = e.diskMaterialized === true;
 				}
 				this.applyObservedDiskAtLoad(e.observedDisk);
 				if (e.deferredConflict !== undefined) {
@@ -3165,10 +3180,14 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					this.rememberEnrolledLocalHead(null, e.localStateVector);
 					this._localDocSnapshotSafe = false;
 				}
+				// Remote enrollment needs asserted metadata to finish the machine's
+				// baseline transition, but only disk-derived enrollment may turn it
+				// into physical-materialization evidence.
 				this._disk = {
 					hash: e.lca.meta.hash,
 					mtime: e.lca.meta.mtime,
 				};
+				this._diskMaterialized = e.diskMaterialized === true;
 				this._localStateVector = e.localStateVector;
 				if (e.remoteStateVector !== undefined) {
 					this._remoteStateVector = e.remoteStateVector;
@@ -3654,6 +3673,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			storeDiskMetadataOnly: (_hsm, event) => {
 				const e = event as any;
 				this._disk = { hash: e.hash, mtime: e.mtime };
+				this._diskMaterialized = true;
 				this.setPendingDiskContents(e.contents, "disk-event", e.hash);
 				this._needsDiskContentLoad = false;
 
@@ -4942,9 +4962,15 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		hash: string;
 		mtime: number;
 	}): void {
+		const newlyMaterialized = !this._diskMaterialized;
 		this._disk = identity;
+		this._diskMaterialized = true;
 		this._needsDiskContentLoad = false;
 		this.discardSupersededPendingDiskContents();
+		// The proof must survive an unclean exit. Enrollment guards prevent a
+		// proven, enrolled document from lowering the flag, so this costs at
+		// most one extra state write per document load.
+		if (newlyMaterialized) this.emitPersistState();
 	}
 
 	/**
@@ -6451,6 +6477,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					}
 				: null,
 			disk: this._disk,
+			diskMaterialized: this._diskMaterialized,
 			localSnapshot,
 			...(!localSnapshot && localStateVector
 				? { localStateVector }

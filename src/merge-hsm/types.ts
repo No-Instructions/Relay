@@ -391,6 +391,8 @@ export interface PersistenceLoadedEvent {
 	lca: LCAState | null;
 	/** Last known disk metadata from persisted HSM state. */
 	disk?: MergeMetadata | null;
+	/** Persisted proof that this device physically observed the document. */
+	diskMaterialized?: boolean;
 	/**
 	 * Metadata for the file as observed in THIS session, captured by the
 	 * caller at the moment it requested the persisted record.
@@ -426,6 +428,8 @@ export interface PersistenceSyncedEvent {
 export interface EnrollmentCompleteEvent {
 	type: "ENROLLMENT_COMPLETE";
 	lca: LCAState;
+	/** True only when enrollment content was observed on this device's disk. */
+	diskMaterialized?: boolean;
 	localStateVector: Uint8Array;
 	remoteStateVector?: Uint8Array | null;
 }
@@ -726,6 +730,8 @@ export interface PersistedMergeState {
 		stateVector?: Uint8Array;
 	} | null;
 	disk: MergeMetadata | null;
+	/** This device physically read or successfully wrote the document. */
+	diskMaterialized?: boolean;
 	localSnapshot?: Uint8Array | null;
 	/** Existing records may have only state vectors; new writes use snapshots. */
 	localStateVector?: Uint8Array | null;
@@ -821,6 +827,7 @@ export interface PersistedStateMeta {
 	folder?: string;
 	lcaMeta: LCAMeta | null;
 	disk: MergeMetadata | null;
+	diskMaterialized?: boolean;
 	localSnapshot?: Uint8Array | null;
 	/** Existing records may have only state vectors; new metadata uses snapshots. */
 	localStateVector?: Uint8Array | null;

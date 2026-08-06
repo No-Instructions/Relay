@@ -936,6 +936,7 @@ export class MergeManager {
         type: 'PERSISTENCE_LOADED',
         lca: restorePersistedLCAMeta(persistedMeta.lcaMeta),
         disk: persistedMeta.disk,
+		diskMaterialized: persistedMeta.diskMaterialized,
         localSnapshot: persistedMeta.localSnapshot ?? null,
         localStateVector: persistedMeta.localSnapshot
           ? null
@@ -961,6 +962,7 @@ export class MergeManager {
         type: 'PERSISTENCE_LOADED',
         lca,
         disk: state?.disk ?? null,
+		diskMaterialized: state?.diskMaterialized,
         // The session's own look at the file rides along with the persisted
         // record so the load-time guards cannot reach a verdict without it.
         // Sent separately it was silently discarded whenever mode
@@ -2321,6 +2323,7 @@ export class MergeManager {
           folder: effect.state.folder,
           lcaMeta: restoredLCA ? lcaToMeta(restoredLCA) : null,
           disk: effect.state.disk,
+          diskMaterialized: effect.state.diskMaterialized,
           localSnapshot: effect.state.localSnapshot ?? null,
           ...(!effect.state.localSnapshot
             ? { localStateVector: effect.state.localStateVector ?? null }
