@@ -472,13 +472,28 @@ export class HSMEditorPluginValue implements PluginValue {
       // must not clear or consume the next binding's pending input.
       if (epoch !== this.bindingEpoch || integration !== this.cm6Integration) return;
       this.bornAttachedRenderPending = false;
-      // By render time the editor's DOM is attached: a sub-editor that
-      // escaped the construction-time probes is detectable here, before
-      // anything is dispatched into it. The probe tears the binding down.
+      const abort = (reason: string): void => {
+        this.log(`Aborting born-attached render for ${expectedGuid}: ${reason}`);
+      };
+      // Either discriminator may become available before the deferred render.
+      // Check ancestry first: a known table-cell container makes the instance
+      // permanently inert. Owner identity also catches a still-detached
+      // fragment, but that refusal stays retryable for legitimate view adoption.
       if (this.probeSubEditor()) {
-        this.log(
-          `Aborting born-attached render for ${expectedGuid}: embedded sub-editor`,
-        );
+        abort("embedded sub-editor");
+        return;
+      }
+      const ownerCm = this.ownerEditorView();
+      if (ownerCm !== null && ownerCm !== this.editor) {
+        abort("embedded sub-editor");
+        if (this.cm6Integration) {
+          this.cm6Integration.destroy();
+          this.cm6Integration = null;
+        }
+        this.clearPendingEdits();
+        this.document = null;
+        this.bornAttached = null;
+        this.lastInitializationRetry = null;
         return;
       }
       // Take over all pre-render input at fire time: the buffered layer
@@ -489,9 +504,6 @@ export class HSMEditorPluginValue implements PluginValue {
       const baseText = this.pendingEditBaseText;
       const editedText = this.pendingEdits.at(-1)?.docText;
       this.clearPendingEdits();
-      const abort = (reason: string): void => {
-        this.log(`Aborting born-attached render for ${expectedGuid}: ${reason}`);
-      };
       if (this.destroyed || !this.cm6Integration) {
         abort("integration destroyed");
         return;
