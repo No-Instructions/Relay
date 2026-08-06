@@ -63,6 +63,14 @@ export interface BackgroundSyncFailure {
 	kind: "sync" | "download" | "local";
 	message: string;
 	sharedFolder: SharedFolder;
+	/**
+	 * Whether the recorded error was a transient class (5xx, throttling,
+	 * network-level). Transient failures stay claimable: the periodic pass
+	 * re-enqueues them once the reclaim interval has elapsed. Permanent
+	 * classes (auth/permission) are never re-driven automatically.
+	 */
+	retryable: boolean;
+	recordedAt: number;
 }
 
 export interface SyncGroup {
@@ -127,6 +135,11 @@ const BACKGROUND_SYNC_QUEUE_PUMP_INTERVAL_MS = 1000;
 const BACKGROUND_SYNC_FOLDER_POLL_INTERVAL_MS = 5000;
 const BACKGROUND_SYNC_DRAIN_BUDGET_MS = 8;
 const LOCAL_AHEAD_RETRY_INTERVAL_MS = 5 * 60_000;
+// How long a terminally-failed file transfer rests before the periodic pass
+// re-enqueues it. Short-lived blips are already absorbed by the queue's own
+// backoff retries; this interval is the long-tail self-heal for outages that
+// outlast them, so it can be generous without stranding files until reload.
+const SYNC_FILE_RECLAIM_INTERVAL_MS = 5 * 60_000;
 // A provider-bound sync or download operation that has not settled in this long
 // is treated as timed out. Generous by design — a healthy but slow transfer
 // must never trip it — because the deadline only detects a wedged await (a dead
@@ -271,6 +284,7 @@ export class BackgroundSync extends HasLogging {
 			this.sharedFolders.forEach((folder) => {
 				folder.poll();
 			});
+			this.reclaimStalledSyncFiles();
 		}, BACKGROUND_SYNC_FOLDER_POLL_INTERVAL_MS);
 
 		this.subscriptions.push(
@@ -633,8 +647,88 @@ export class BackgroundSync extends HasLogging {
 		return true;
 	}
 
+	private requeueRetryableDownload(
+		item: QueueItem,
+		error: Error,
+	): boolean {
+		const retries = (item.retryAttempts ?? 0) + 1;
+		item.retryAttempts = retries;
+		if (retries > MAX_PROVIDER_SYNC_RETRIES) {
+			item.nextAttemptAt = undefined;
+			item.retryReason = undefined;
+			this.warn(
+				`[download] retryable download failed after ${MAX_PROVIDER_SYNC_RETRIES} retries for ${item.path}: ${error.message}`,
+			);
+			return false;
+		}
+
+		const delayMs = Math.min(30_000, 1000 * 2 ** Math.min(retries - 1, 5));
+		const reason = this.retryReason(error);
+		item.status = "pending";
+		item.nextAttemptAt = this.timeProvider.now() + delayMs;
+		item.retryReason = reason;
+		metrics.recordBgSyncRetry("download", reason, retries, delayMs / 1000);
+
+		this.clearFailure(this.failureKey("download", item.guid));
+		if (!this.downloadQueue.some((queued) => queued.guid === item.guid)) {
+			this.downloadQueue.push(item);
+			this.sortByPath(this.downloadQueue, "download", "retry");
+		}
+		this.debug(
+			`[download] retryable download failure for ${item.path}: ${error.message}; retrying in ${delayMs}ms`,
+		);
+		metrics.setBgSyncQueueLength("download", this.downloadQueue.length);
+		this.queueStatusChanged.notifyListeners();
+		return true;
+	}
+
 	private retryReason(error: Error): "provider" | "s3" {
 		return isRetryableProviderSyncError(error) ? "provider" : "s3";
+	}
+
+	/**
+	 * A file transfer that exhausted its queue retries must stay claimable:
+	 * nothing else re-enqueues an unchanged file within a session (the folder
+	 * poll covers documents and canvases; membership deltas only fire when
+	 * metadata changes), so without this pass one outage lasting longer than
+	 * the backoff window strands the file until plugin reload. Re-enqueue
+	 * transient failures once the reclaim interval has elapsed. Permanent
+	 * classes stay parked: retrying cannot heal an auth or permission
+	 * refusal, and re-driving them would ping the server forever.
+	 */
+	reclaimStalledSyncFiles(): void {
+		const now = this.timeProvider.now();
+		for (const failure of this.failures.values()) {
+			if (failure.kind === "local" || !failure.retryable) continue;
+			if (now - failure.recordedAt < SYNC_FILE_RECLAIM_INTERVAL_MS) continue;
+			const file = failure.sharedFolder.files.get(failure.guid);
+			if (!isSyncFile(file) || file.destroyed) continue;
+			if (
+				!failure.sharedFolder.connected ||
+				failure.sharedFolder.intent === "disconnected"
+			) {
+				continue;
+			}
+			if (
+				this.inProgressSyncs.has(failure.guid) ||
+				this.inProgressDownloads.has(failure.guid)
+			) {
+				continue;
+			}
+			this.debug(
+				`[reclaim] re-enqueueing stalled file transfer for ${failure.path}`,
+			);
+			if (failure.kind === "download") {
+				this.enqueueDownload(file, false).catch(() => {
+					// The failure is re-recorded by the queue; the next reclaim
+					// pass paces itself from the fresh record.
+				});
+			} else {
+				this.enqueueSync(file).catch(() => {
+					// Same: the queue re-records the failure on rejection.
+				});
+			}
+		}
 	}
 
 	private recordTickDelay(
@@ -840,6 +934,8 @@ export class BackgroundSync extends HasLogging {
 					kind: "local",
 					message,
 					sharedFolder,
+					retryable: false,
+					recordedAt: this.timeProvider.now(),
 				});
 			} else {
 				this.clearFailure(id);
@@ -1253,9 +1349,12 @@ export class BackgroundSync extends HasLogging {
 
 			metrics.setBgSyncQueueLength("download", this.downloadQueue.length);
 
-			// Filter for items with connected folders
-			const connectableItems = this.downloadQueue.filter((item) =>
-				this.isDrainable(item),
+			// Filter for items with connected folders whose backoff has elapsed
+			const now = this.timeProvider.now();
+			const connectableItems = this.downloadQueue.filter(
+				(item) =>
+					this.isDrainable(item) &&
+					(item.nextAttemptAt === undefined || item.nextAttemptAt <= now),
 			);
 
 			while (
@@ -1271,6 +1370,8 @@ export class BackgroundSync extends HasLogging {
 				);
 
 				this.observeItemStart("download", item, this.timeProvider.now());
+				item.nextAttemptAt = undefined;
+				item.retryReason = undefined;
 				itemsStarted++;
 				item.status = "running";
 				const opStart = performance.now();
@@ -1319,6 +1420,13 @@ export class BackgroundSync extends HasLogging {
 								return;
 							}
 
+							if (
+								isRetryableSyncError(error) &&
+								this.requeueRetryableDownload(item, error)
+							) {
+								return;
+							}
+
 							item.status = "failed";
 							metrics.incBgSyncOps("download", "failed");
 
@@ -1337,8 +1445,12 @@ export class BackgroundSync extends HasLogging {
 							metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
 							this.activeDownloads.delete(item);
 							metrics.setBgSyncActive("download", this.activeDownloads.size);
-							this.inProgressDownloads.delete(item.guid);
-							this.cancelledDownloads.delete(item.guid);
+							// A requeued retry keeps its in-progress entry so callers
+							// sharing the completion promise stay attached to it.
+							if (!this.downloadQueue.some((queued) => queued.guid === item.guid)) {
+								this.inProgressDownloads.delete(item.guid);
+								this.cancelledDownloads.delete(item.guid);
+							}
 
 							// Continue queue draining without relying on throttled timers.
 							queueMicrotask(() => {
@@ -1356,6 +1468,16 @@ export class BackgroundSync extends HasLogging {
 						metrics.setBgSyncActive("download", this.activeDownloads.size);
 						this.inProgressDownloads.delete(item.guid);
 						this.cancelledDownloads.delete(item.guid);
+						continue;
+					}
+
+					if (
+						isRetryableSyncError(error) &&
+						this.requeueRetryableDownload(item, error)
+					) {
+						metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
+						this.activeDownloads.delete(item);
+						metrics.setBgSyncActive("download", this.activeDownloads.size);
 						continue;
 					}
 
@@ -3016,6 +3138,8 @@ export class BackgroundSync extends HasLogging {
 			kind,
 			message: this.errorMessage(error),
 			sharedFolder: item.sharedFolder,
+			retryable: isRetryableSyncError(error),
+			recordedAt: this.timeProvider.now(),
 		});
 	}
 
@@ -3027,8 +3151,11 @@ export class BackgroundSync extends HasLogging {
 			existing.path === failure.path &&
 			existing.kind === failure.kind &&
 			existing.message === failure.message &&
-			existing.sharedFolder === failure.sharedFolder
+			existing.sharedFolder === failure.sharedFolder &&
+			existing.retryable === failure.retryable
 		) {
+			// Keep the original recordedAt: an identical failure re-recorded
+			// paces its reclaim from the first occurrence, not the latest.
 			return;
 		}
 		this.failures.set(failure.id, failure);

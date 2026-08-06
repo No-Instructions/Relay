@@ -853,9 +853,13 @@ export class SyncFile
 				metaHash: shortHash(this.meta.hash),
 				size: content.byteLength,
 			});
-		} catch (e) {
-			this.log(e);
-			return;
+		} catch (error) {
+			// A failed pull must stay visible and claimable: swallowing the
+			// error here reported the download as complete, so nothing above
+			// ever retried and the file stayed missing until plugin reload.
+			this.uploadError = formatUserFacingError(error, "Failed to pull file");
+			this.notifyListeners();
+			throw error instanceof Error ? error : errorFromUnknown(error);
 		}
 	}
 

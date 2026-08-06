@@ -1048,8 +1048,13 @@ export default class Live extends Plugin {
 									.setTitle("Relay: Download")
 									.setIcon("cloud-download")
 									.onClick(async () => {
-										await ifile.pull();
-										new Notice(`Download complete: ${ifile.name}`);
+										try {
+											await ifile.pull();
+											new Notice(`Download complete: ${ifile.name}`);
+										} catch (e) {
+											this.warn("manual download failed", ifile.path, e);
+											new Notice(`Download failed: ${ifile.name}`);
+										}
 									});
 							});
 							if (this.debugSettings.get().debugging) {
