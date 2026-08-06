@@ -321,6 +321,10 @@ export class SharedFolder extends HasProvider {
 	private _firstSyncConverged = false;
 	private _firstSyncConvergedPromise: Promise<void> | undefined;
 	private _resolveFirstSyncConverged: (() => void) | undefined;
+	/** One-shot flag for the first-sync offline-delete scan. */
+	private _offlineDeleteScanDone = false;
+	/** Paths the scan approved for deletion propagation; valid for one tree sync. */
+	private _approvedOfflineDeletes = new Set<string>();
 	/** Paths removed by provider-applied membership updates before convergence. */
 	private _preConvergenceRemoteDeletes: Set<string> | undefined;
 	/** Deleted paths that had a local publication hold when convergence opened. */
@@ -2465,6 +2469,23 @@ export class SharedFolder extends HasProvider {
 			}
 		}
 
+		// The offline-delete scan approved this path: the file was materialized
+		// here and removed from disk while the plugin was not running, so
+		// re-creating it would silently reverse a deletion. Propagate the
+		// delete instead.
+		if (this._approvedOfflineDeletes.has(path)) {
+			this._approvedOfflineDeletes.delete(path);
+			diffLog.push(`propagating offline deletion of ${path}`);
+			const promise = this.vault.adapter
+				.exists(normalizePath(join(this.path, path)))
+				.then((exists) => {
+					if (exists) return;
+
+					this.deleteFiles([path]);
+				});
+			return { op: "delete", path, promise };
+		}
+
 		// write will trigger `create` which will read the file from disk by default.
 		// so we need to pre-empt that by loading the file into docs.
 		const promise = this._handleServerCreate(path, meta, diffLog);
@@ -3073,6 +3094,52 @@ export class SharedFolder extends HasProvider {
 		this.warn("dropped stale pending-upload holds", stale);
 	}
 
+	/**
+	 * Files deleted from disk while the plugin was not running never fire a
+	 * vault delete event, and a committed meta path with no local file is
+	 * otherwise indistinguishable from a download that has not happened yet,
+	 * so the deletion silently reverses ("zombie files"). The persisted HSM
+	 * record is the missing witness: one mapping this guid to the same path
+	 * with disk metadata means this client had the file materialized.
+	 * Runs once, on the first tree sync after the local folder doc loads;
+	 * everything later is covered by live vault events.
+	 */
+	private prepareOfflineDeleteScan(): void {
+		if (this._offlineDeleteScanDone) return;
+		if (!this._persistence?.synced) return;
+		const mergeManager = this.mergeManager;
+		if (!mergeManager) return;
+
+		this._offlineDeleteScanDone = true;
+		const candidates: string[] = [];
+		let metaCount = 0;
+		this.syncStore.forEach((meta, path) => {
+			metaCount += 1;
+			if (this.existsSync(path)) return;
+			const record = mergeManager.getPersistedStateMeta(meta.id);
+			if (!record?.disk || record.path !== path) return;
+			if (record.folder && record.folder !== this.guid) return;
+			candidates.push(path);
+		});
+		if (candidates.length === 0) return;
+
+		// A wholesale disappearance looks less like deletion intent and more
+		// like a moved or half-restored vault (e.g. restored from an old
+		// backup while IndexedDB kept the newer records); restore (current
+		// behavior) rather than propagate a mass delete. The cap is absolute:
+		// wrongful refusal only means today's resurrection behavior, while
+		// wrongful propagation deletes fleet-wide.
+		if (candidates.length > 20) {
+			this.warn(
+				`offline-delete scan: ${candidates.length} of ${metaCount} synced files are missing locally; ` +
+					"refusing to propagate deletions at this scale",
+			);
+			return;
+		}
+		candidates.forEach((path) => this._approvedOfflineDeletes.add(path));
+		this.log("offline-delete scan: propagating deletions", candidates);
+	}
+
 	syncFileTree(): Promise<void> {
 		// If a sync is already running, mark that we want another sync after
 		if (this.syncFileTreePromise) {
@@ -3099,6 +3166,7 @@ export class SharedFolder extends HasProvider {
 				if (!this.mergeManager || this.destroyed) return;
 				await this.mergeManager.initialize();
 				if (this.destroyed) return;
+				this.prepareOfflineDeleteScan();
 
 				// When file types are newly enabled, enqueue their local
 				// files for syncing before the rest of the tree sync runs.
@@ -3162,6 +3230,8 @@ export class SharedFolder extends HasProvider {
 				}
 				this.sweepStalePendingUploads();
 			} finally {
+				// Approvals are only valid for the sync pass that computed them.
+				this._approvedOfflineDeletes.clear();
 				// Reset the promise after completion (success or failure)
 				this.syncFileTreePromise = null;
 			}

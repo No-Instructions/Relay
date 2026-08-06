@@ -1188,6 +1188,11 @@ export class MergeManager {
     this._updateWakeQueueMetrics();
   }
 
+  /** Bulk-loaded record metadata for a document or managed file. */
+  getPersistedStateMeta(guid: string): PersistedStateMeta | undefined {
+    return this._stateMetaCache.get(guid) ?? this._managedMetaCache.get(guid);
+  }
+
   /** Bulk-loaded record metadata for a managed file (cold-start input). */
   getManagedMeta(guid: string): PersistedStateMeta | undefined {
     return this._managedMetaCache.get(guid);
