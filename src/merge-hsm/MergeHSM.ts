@@ -2186,6 +2186,18 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		}
 
 		const hash = await this.hashFn(content);
+		// Re-asked after the await: a disk change that arrived while the hash
+		// was computing must not be settled by an enrollment that started
+		// before it. Completing here would take the ancestor from the server,
+		// record the enrollment's own hash and mtime as the disk's, and erase
+		// the only record that the file had already moved on.
+		if (!this.acceptsRemoteEnrollment) {
+			this.hsmWarn(
+				`initial remote enrollment refused after hashing: the document is no longer in a state that accepts one | ` +
+					`guid=${this._guid} state=${this._statePath}`,
+			);
+			return false;
+		}
 		this.sendEnrollmentComplete({
 			contents: content,
 			hash,
