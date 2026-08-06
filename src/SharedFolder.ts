@@ -2400,7 +2400,19 @@ export class SharedFolder extends HasProvider {
 
 			// XXX file meta typing
 			if (file && isSyncFile(file) && file.shouldPull(meta as FileMeta)) {
-				return { op: "update", path, promise: file.pull() };
+				// Route through the download queue: it retries transient
+				// failures with backoff and records terminal ones for the
+				// periodic reclaim pass, so a failed pull stays claimable
+				// instead of spending its single attempt here.
+				const promise = this.backgroundSync
+					.enqueueDownload(file, false)
+					.then(
+						() => undefined,
+						(error) => {
+							this.warn(`pull failed for ${path}`, error);
+						},
+					);
+				return { op: "update", path, promise };
 			}
 
 			// GUID mismatch — file at this path is mapped under a different
@@ -4154,7 +4166,9 @@ export class SharedFolder extends HasProvider {
 		}
 		const file = this.getOrCreateSyncFile(guid, vpath, meta.hash);
 
-		this.backgroundSync.enqueueSync(file);
+		this.backgroundSync.enqueueSync(file).catch((error) => {
+			this.warn(`sync failed for ${vpath}`, error);
+		});
 
 		this.files.set(guid, file);
 		this.fset.add(file, update);
@@ -4179,7 +4193,9 @@ export class SharedFolder extends HasProvider {
 		}
 		const file = this.getOrCreateSyncFile(guid, vpath, meta.hash);
 
-		this.backgroundSync.enqueueDownload(file);
+		this.backgroundSync.enqueueDownload(file, false).catch((error) => {
+			this.warn(`initial download failed for ${vpath}`, error);
+		});
 
 		this.files.set(guid, file);
 		this.fset.add(file, update);
@@ -4260,7 +4276,12 @@ export class SharedFolder extends HasProvider {
 				metaHash: meta.hash,
 				metaSynctime: meta.synctime,
 			});
-			file.pull();
+			// The queue retries transient failures and records terminal ones
+			// for the periodic reclaim pass; a bare pull() would spend its one
+			// attempt and strand the file if the server blipped.
+			this.backgroundSync.enqueueDownload(file, false).catch((error) => {
+				this.warn(`initial pull failed for ${vpath}`, error);
+			});
 		}
 
 		this.files.set(guid, file);

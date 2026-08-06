@@ -9,6 +9,7 @@ export interface S3ErrorDetails {
 
 const RETRYABLE_S3_CODES = new Set([
 	"InternalError",
+	"NetworkingError",
 	"RequestTimeout",
 	"ServiceUnavailable",
 	"SlowDown",
@@ -57,8 +58,40 @@ export function s3ApiErrorFromResponse(
 		...parsed,
 		status,
 		operation,
-		message: parsed?.message,
+		message: parsed?.message ?? jsonErrorMessage(body),
 	});
+}
+
+/**
+ * Wrap a network-level transport failure (the request never produced an HTTP
+ * response: DNS, connection reset, dropped socket) as a retryable error.
+ * Returns null for anything that is not recognizably network-level, so a
+ * programming error is never classified as transient. Follows the AWS SDK
+ * convention of classifying such failures as a retryable "NetworkingError".
+ */
+export function s3NetworkFailureFromUnknown(
+	error: unknown,
+	operation?: string,
+): S3ApiError | null {
+	if (error instanceof S3ApiError) return null;
+	const text = errorText(error);
+	if (!text || !NETWORK_FAILURE_PATTERN.test(text)) return null;
+	return new S3ApiError(
+		{ code: "NetworkingError", operation, message: text },
+		error,
+	);
+}
+
+const NETWORK_FAILURE_PATTERN =
+	/net::ERR_|Failed to fetch|fetch failed|\bLoad failed\b|NetworkError|network error|socket hang up|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ENOTFOUND|EPIPE|EAI_AGAIN/i;
+
+function jsonErrorMessage(body: string): string | undefined {
+	try {
+		const parsed = JSON.parse(body) as { error?: unknown };
+		return typeof parsed?.error === "string" ? parsed.error : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 export function s3ApiErrorFromUnknown(
@@ -114,6 +147,8 @@ function userMessageForS3Error(details: S3ErrorDetails): string {
 			return "Attachment storage is busy. Relay will retry the upload.";
 		case "RequestTimeout":
 			return "Attachment storage timed out. Relay will retry the upload.";
+		case "NetworkingError":
+			return "Could not reach attachment storage. Relay will retry.";
 		case "AccessDenied":
 			return "Relay could not access attachment storage.";
 		case "ExpiredToken":

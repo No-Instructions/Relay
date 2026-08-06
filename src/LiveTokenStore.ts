@@ -15,6 +15,7 @@ import {
 	S3RemoteCanvas,
 } from "./S3RN";
 import { customFetch, getRelayRequestHeaders } from "./customFetch";
+import { s3ApiErrorFromResponse } from "./S3Error";
 
 function getJwtExpiryFromClientToken(clientToken: ClientToken): number {
 	// lol this is so fake
@@ -235,9 +236,12 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 		});
 
 		if (!response.ok) {
-			debug(response.status, await response.text());
-			const responseJSON = await response.json();
-			throw new Error(responseJSON.error);
+			// Read the body once — it can only be consumed a single time — and
+			// classify by HTTP status so callers can tell a transient server
+			// failure (retryable) from a permission-class refusal (not).
+			const body = await response.text();
+			debug(response.status, body);
+			throw s3ApiErrorFromResponse(response.status, body, "file token");
 		}
 
 		const clientToken = (await response.json()) as FileToken;
