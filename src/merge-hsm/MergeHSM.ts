@@ -6396,13 +6396,20 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 		const yamlBody = this._yaml.stringify(obj);
 		// Trailing `\n` on the canonical frontmatter is required so that
-		// concatenation with `text.slice(fm.end)` (which begins with the
+		// concatenation with the body slice (which begins with the
 		// blank-line `\n`) preserves the `\n\n` frontmatter-to-body
 		// separator. Omitting it drops the blank line on every Y.Map
 		// dispatch — the shape producing `---\nhello` on disk for
 		// live1/live2 butter.md after Properties toggles.
 		const frontmatter = `---\n${yamlBody}---\n`;
-		const body = fm ? text.slice(fm.end) : text;
+		// Slice from past any frontmatter debris (stray sibling blocks, or an
+		// unparseable first block) so the editor sees the same canonical form
+		// repairFrontmatterFromMap writes to the Y.Text — otherwise the buffer
+		// re-saves the debris to disk and the doc diverges into a conflict.
+		const info = this._yaml.getFrontMatterInfo(text);
+		const body = info.exists
+			? text.slice(this.frontmatterDebrisEnd(text, info.contentStart, ymap))
+			: text;
 
 		return frontmatter + body;
 	}
@@ -6452,13 +6459,6 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 		if (!fm) return; // Can't parse — don't touch the map
 
-		const parsedKeys = Object.keys(fm.parsed);
-
-		// Safety: if the parsed frontmatter has fewer keys than the Y.Map,
-		// the Y.Text is likely corrupted (e.g., double --- delimiters causing
-		// a truncated parse). Skip the sync to avoid destroying Y.Map data.
-		if (ymap.size > 0 && parsedKeys.length < ymap.size) return;
-
 		// Store each property value as a JSON string for faithful round-tripping.
 		// Y.Map uses LWW per key, so concurrent writes produce a clean winner.
 		for (const [key, value] of Object.entries(fm.parsed)) {
@@ -6467,11 +6467,50 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				ymap.set(key, serialized);
 			}
 		}
-		// Only delete keys when the parsed frontmatter is plausibly complete
+		// A second `---` block immediately after the parsed one means the parse
+		// was likely truncated (double-delimiter corruption), so its key set is
+		// partial — don't treat the missing keys as deletions. A clean
+		// single-block parse is trusted in full, including key deletions;
+		// a count-based guard here mistakes ordinary deletions for corruption
+		// and leaves stale keys in the Y.Map forever (the armed state of the
+		// frontmatter append loop).
+		if (text.slice(fm.end).trimStart().startsWith("---")) return;
+
 		for (const key of [...ymap.keys()]) {
 			if (!(key in fm.parsed)) {
+				this.crdtLog(`pruning frontmatter key deleted from text: ${key}`);
 				ymap.delete(key);
 			}
+		}
+	}
+
+	/**
+	 * Find where frontmatter debris ends. Concurrent frontmatter rewrites can
+	 * CRDT-merge into stray sibling `---` blocks right after the real one;
+	 * this returns the offset past every such block so a repair can collapse
+	 * all of them. A block is only treated as debris when its interior parses
+	 * as a YAML mapping sharing a key with the Y.Map — a horizontal rule or
+	 * other legitimate body content is never consumed.
+	 */
+	private frontmatterDebrisEnd(
+		text: string,
+		contentStart: number,
+		ymap: Y.Map<unknown>,
+	): number {
+		let end = contentStart;
+		const blockRe = /^\s*---\r?\n([\s\S]*?)\r?\n---(\r?\n|$)/;
+		for (;;) {
+			const match = text.slice(end).match(blockRe);
+			if (!match) return end;
+			let parsed: unknown;
+			try {
+				parsed = this._yaml!.parse(match[1]);
+			} catch {
+				return end;
+			}
+			if (!parsed || typeof parsed !== "object") return end;
+			if (!Object.keys(parsed).some((key) => ymap.has(key))) return end;
+			end += match[0].length;
 		}
 	}
 
@@ -6479,6 +6518,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	 * Detect frontmatter corruption by comparing Y.Text frontmatter against
 	 * Y.Map("frontmatter"). If mismatched, reconstruct from Y.Map and apply.
 	 * Called after merging remote updates into localDoc.
+	 *
+	 * Also the recovery path for frontmatter that no longer parses (duplicate
+	 * keys) or has grown stray sibling blocks — both states are produced by
+	 * concurrent repairs merging badly, and neither can heal through the
+	 * parse-dependent sync path.
 	 */
 	private repairFrontmatterFromMap(): void {
 		if (!this.localDoc || !this._yaml) return;
@@ -6492,9 +6536,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (ymap.size === 0) return;
 
 		const text = this.localDoc.getText("contents").toString();
-		const fm = this.parseFrontmatter(text);
+		const info = this._yaml.getFrontMatterInfo(text);
+		if (!info.exists) return; // No frontmatter block to repair
 
-		if (!fm) return; // No frontmatter block to repair
+		const fm = this.parseFrontmatter(text);
+		const debrisEnd = this.frontmatterDebrisEnd(text, info.contentStart, ymap);
 
 		// Mirror Obsidian's processFrontMatter: start from the parsed
 		// frontmatter (preserves on-disk key order) and mutate in place
@@ -6502,8 +6548,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		// Keys present in Y.Map but absent from the parsed frontmatter
 		// are appended. This keeps Obsidian's writes and our repairs
 		// emitting the same key order so DMP only sees content-level
-		// changes, never reorders.
-		const obj: Record<string, any> = { ...fm.parsed };
+		// changes, never reorders. When the block doesn't parse at all
+		// (duplicate keys), the Y.Map is the only readable truth.
+		const obj: Record<string, any> = fm ? { ...fm.parsed } : {};
 		for (const [key, value] of ymap.entries()) {
 			let parsed: any;
 			try { parsed = JSON.parse(value as string); }
@@ -6514,35 +6561,42 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			if (!ymap.has(key)) delete obj[key];
 		}
 
-		// Corruption check: values differ, or the set of keys differs.
-		let corrupted = false;
-		const parsedKeys = Object.keys(fm.parsed);
-		const objKeys = Object.keys(obj);
-		if (parsedKeys.length !== objKeys.length) {
-			corrupted = true;
-		} else {
-			for (const key of objKeys) {
-				if (JSON.stringify(fm.parsed[key]) !== JSON.stringify(obj[key])) {
-					corrupted = true;
-					break;
+		// Corruption check: unparseable block, stray sibling blocks,
+		// differing values, or a differing key set.
+		let corrupted = !fm || debrisEnd > info.contentStart;
+		if (!corrupted) {
+			const parsedKeys = Object.keys(fm!.parsed);
+			const objKeys = Object.keys(obj);
+			if (parsedKeys.length !== objKeys.length) {
+				corrupted = true;
+			} else {
+				for (const key of objKeys) {
+					if (JSON.stringify(fm!.parsed[key]) !== JSON.stringify(obj[key])) {
+						corrupted = true;
+						break;
+					}
 				}
 			}
 		}
 
 		if (!corrupted) return;
 
-		this.crdtLog("frontmatter corruption detected — repairing from Y.Map");
+		this.crdtLog(
+			`frontmatter corruption detected — repairing from Y.Map ` +
+			`(parseable=${!!fm}, debris=${debrisEnd - info.contentStart}, ` +
+			`textKeys=[${fm ? Object.keys(fm.parsed) : ""}], mapKeys=[${[...ymap.keys()]}])`,
+		);
 
 		const yamlBody = this._yaml.stringify(obj);
 		// Obsidian's getFrontMatterInfo sets contentStart to the position
-		// immediately after the closing `---\n`, so text.slice(fm.end)
+		// immediately after the closing `---\n`, so text.slice(debrisEnd)
 		// begins with the blank-line `\n` (or with body text when the file
 		// has no separator). The canonical frontmatter block must therefore
 		// end with its own `\n` to preserve the blank-line separator when
 		// concatenated — omitting it drops the blank line and produces
 		// `---\nbody` on disk.
 		const canonicalFrontmatter = `---\n${yamlBody}---\n`;
-		const newText = canonicalFrontmatter + text.slice(fm.end);
+		const newText = canonicalFrontmatter + text.slice(debrisEnd);
 
 		this.applyContentToLocalDoc(newText, FRONTMATTER_MIRROR_ORIGIN);
 	}
