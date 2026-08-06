@@ -64,6 +64,7 @@ import { BackgroundSync } from "./BackgroundSync";
 import { HSMStore } from "./merge-hsm/persistence";
 import { trackAsyncCleanup } from "./reloadUtils";
 import { isDestroyedError } from "./DestroyedError";
+import { handleVaultCreate } from "./vaultCreate";
 import { FeatureFlagToggleModal } from "./ui/FeatureFlagModal";
 import { DebugModal } from "./ui/DebugModal";
 import {
@@ -1351,25 +1352,7 @@ export default class Live extends Plugin {
 
 		this.registerEvent(
 			this.app.vault.on("create", (tfile) => {
-				// NOTE: this is called on every file at startup...
-				const folder = this.sharedFolders.lookup(tfile.path);
-				if (folder) {
-					// A known file materializes immediately; a new file's registration settles
-					// for a debounce window so a short-lived atomic-write temp
-					// file vanishes before it is place-held and uploaded.
-					if (folder.notifyVaultCreateLegacy(tfile)) {
-						folder.whenReady()
-							.then((folder) => {
-								folder.getFile(tfile);
-							})
-							.catch((error) => {
-								if (isDestroyedError(error)) {
-									return;
-								}
-								this.warn("folder ready failed after file create", error);
-							});
-					}
-				}
+				handleVaultCreate(this, tfile);
 			}),
 		);
 

@@ -66,7 +66,7 @@ import { ContentAddressedStore } from "./CAS";
 import { SyncSettingsManager, type SyncFlags } from "./SyncSettings";
 import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
 import { Canvas, isCanvas } from "./Canvas";
-import { flags } from "./flagManager";
+import { FeatureFlagManager, flags } from "./flagManager";
 import { MergeManager } from "./merge-hsm/MergeManager";
 import {
 	E2ERecordingBridge,
@@ -249,6 +249,7 @@ export class SharedFolder extends HasProvider {
 	// subscription delivers its first snapshot.
 	private _lastCanWriteContent: boolean | null = null;
 	private _lastCanManageFiles: boolean | null = null;
+	private _roleSnapshotReceived = false;
 	/** Cached tri-state role-policy answer; undefined means invalidated. */
 	private _canWriteContentAnswerCache: boolean | null | undefined = undefined;
 	/** Cached folder-structure policy answer; undefined means invalidated. */
@@ -362,6 +363,8 @@ export class SharedFolder extends HasProvider {
 	private readonly remoteActivitySubscribers = new Set<() => void>();
 	private connectionAttempt: Promise<boolean> | null = null;
 	private startupConnectRequested = false;
+	/** UI consumers watching the current user's folder permissions flip. */
+	private readonly folderPermissionSubscribers = new Set<() => void>();
 
 	constructor(
 		public appId: string,
@@ -515,39 +518,7 @@ export class SharedFolder extends HasProvider {
 		// to the current user's write permission drives the HSM immediately and
 		// forces a token refresh so the provider transport catches up.
 		this._lastCanWriteContent = null;
-		let roleSnapshotReceived = false;
-		const onRoleChange = () => {
-			if (!flags().enableReadOnlyPermissions) {
-				// Flag-off role notifications retain legacy behavior and avoid
-				// paying for a policy derivation nobody consumes.
-				this._canWriteContentAnswerCache = undefined;
-				this._canManageFilesAnswerCache = undefined;
-				this._lastCanWriteContent = null;
-				this._lastCanManageFiles = null;
-				return;
-			}
-			const writeAnswer = this.deriveCanWriteContentAnswer();
-			const manageAnswer = this.deriveCanManageFilesAnswer();
-			this._canWriteContentAnswerCache = writeAnswer;
-			this._canManageFilesAnswerCache = manageAnswer;
-			const canWrite = writeAnswer ?? true;
-			const canManage = manageAnswer ?? true;
-			if (!roleSnapshotReceived) {
-				roleSnapshotReceived = true;
-				this._lastCanWriteContent = canWrite;
-				this._lastCanManageFiles = canManage;
-				return;
-			}
-			const changed =
-				this._lastCanWriteContent !== canWrite ||
-				this._lastCanManageFiles !== canManage;
-			this._lastCanWriteContent = canWrite;
-			this._lastCanManageFiles = canManage;
-			if (!changed) {
-				return;
-			}
-			this.refreshDocumentTokensForPermissionChange();
-		};
+		const onRoleChange = () => this.handleRoleRecordsChanged();
 		this.unsubscribes.push(
 			this.relayManager.folderRoles.subscribe(onRoleChange),
 		);
@@ -1957,11 +1928,52 @@ export class SharedFolder extends HasProvider {
 
 	/** Whether local create, rename, move, and delete intent may change membership. */
 	public get canManageFiles(): boolean {
-		if (!flags().enableReadOnlyPermissions) return true;
+		if (
+			!FeatureFlagManager.getInstance().getFlag("enableReadOnlyPermissions")
+		) {
+			return true;
+		}
 		if (this._canManageFilesAnswerCache === undefined) {
 			this._canManageFilesAnswerCache = this.deriveCanManageFilesAnswer();
 		}
 		return this._canManageFilesAnswerCache ?? true;
+	}
+
+	private handleRoleRecordsChanged(): void {
+		if (!flags().enableReadOnlyPermissions) {
+			// Flag-off role notifications retain legacy behavior and avoid
+			// paying for a policy derivation nobody consumes.
+			this._canWriteContentAnswerCache = undefined;
+			this._canManageFilesAnswerCache = undefined;
+			this._lastCanWriteContent = null;
+			this._lastCanManageFiles = null;
+			return;
+		}
+		const writeAnswer = this.deriveCanWriteContentAnswer();
+		const manageAnswer = this.deriveCanManageFilesAnswer();
+		this._canWriteContentAnswerCache = writeAnswer;
+		this._canManageFilesAnswerCache = manageAnswer;
+		const canWrite = writeAnswer ?? true;
+		const canManage = manageAnswer ?? true;
+		if (!this._roleSnapshotReceived) {
+			this._roleSnapshotReceived = true;
+			this._lastCanWriteContent = canWrite;
+			this._lastCanManageFiles = canManage;
+			if (!canWrite || !canManage) {
+				this.notifyFolderPermissionSubscribers();
+			}
+			return;
+		}
+		const changed =
+			this._lastCanWriteContent !== canWrite ||
+			this._lastCanManageFiles !== canManage;
+		this._lastCanWriteContent = canWrite;
+		this._lastCanManageFiles = canManage;
+		if (!changed) {
+			return;
+		}
+		this.refreshDocumentTokensForPermissionChange();
+		this.notifyFolderPermissionSubscribers();
 	}
 
 	private rejectReaderFolderChange(paths: string[]): boolean {
@@ -1970,6 +1982,28 @@ export class SharedFolder extends HasProvider {
 			this.recordReaderEditOverwrite("", this.getPath(path));
 		}
 		return true;
+	}
+
+	/**
+	 * Watch for the current user's permissions on this folder to change
+	 * (e.g. a Reader promoted to Member). Fires after the role-derived
+	 * policy caches update, so subscribers read fresh answers.
+	 */
+	public subscribeToPermissionChanges(callback: () => void): () => void {
+		if (this.destroyed) {
+			return () => {};
+		}
+		this.folderPermissionSubscribers.add(callback);
+		return () => {
+			this.folderPermissionSubscribers.delete(callback);
+		};
+	}
+
+	private notifyFolderPermissionSubscribers(): void {
+		if (this.destroyed) return;
+		for (const subscriber of [...this.folderPermissionSubscribers]) {
+			subscriber();
+		}
 	}
 
 	/**
