@@ -207,6 +207,7 @@ export class SyncStore extends Observable<SyncStore> {
 		this.assertVPath(vpath);
 		const guid = uuidv4();
 		this.pendingUpload.set(vpath, guid);
+		this.log("minted identity", vpath, guid);
 		return guid;
 	}
 
@@ -329,6 +330,13 @@ export class SyncStore extends Observable<SyncStore> {
 			const pendingGuid = this.pendingUpload.get(vpath);
 			if (pendingGuid && pendingGuid === meta.id) {
 				this.pendingUpload.delete(vpath);
+			} else if (pendingGuid) {
+				// The pending-upload hold is now stale; if nothing clears it,
+				// the path re-publishes when this committed entry is deleted.
+				this.warn("committed claim shadows a pending-upload hold", vpath, {
+					pending: pendingGuid,
+					committed: meta.id,
+				});
 			}
 		});
 	}
@@ -540,6 +548,11 @@ export class SyncStore extends Observable<SyncStore> {
 
 		if (!meta && this.legacyIds.has(vpath)) {
 			const guid = this.legacyIds.get(vpath)!;
+			this.warn(
+				"meta missing but legacy docs entry remains; scheduling meta re-creation",
+				vpath,
+				guid,
+			);
 			const newMeta = makeDocumentMeta(guid);
 			this.overlay.set(vpath, newMeta);
 			return newMeta;
