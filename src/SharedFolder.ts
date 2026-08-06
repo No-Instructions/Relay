@@ -3031,6 +3031,48 @@ export class SharedFolder extends HasProvider {
 		this.fset.update();
 	}
 
+	/**
+	 * A pending-upload hold whose path already has committed metadata is
+	 * finished business: a matching guid means the publication completed and
+	 * the clear was missed; a different guid means the claim lost its race
+	 * and adoption has had its chance by the end of a converged sync. A
+	 * leaked hold is not inert — it shields the local file from
+	 * remote-delete cleanup and re-publishes the path on the first tree
+	 * sync after its committed meta is deleted (deleted files silently
+	 * reappear) — and its backing storage preserves it across sessions
+	 * indefinitely.
+	 */
+	private sweepStalePendingUploads(): void {
+		if (!(this._provider?.synced && this._persistence?.synced)) return;
+
+		const stale: {
+			vpath: string;
+			pending: string;
+			committed: string;
+			enrolledUnderPending: boolean;
+		}[] = [];
+		this.syncStore.pendingUpload.forEach((guid, vpath) => {
+			if (this._pendingRemaps.has(vpath)) return;
+			if (this._convergencePublicationRuns?.has(vpath)) return;
+			const committed = this.syncStore.getCommittedMeta(vpath);
+			if (!committed) return;
+			// A live instance still enrolled under the losing guid means
+			// adoption stalled; clearing the hold lets path lookups resolve
+			// to the committed identity and the reconciliation sweep re-key
+			// it.
+			stale.push({
+				vpath,
+				pending: guid,
+				committed: committed.id,
+				enrolledUnderPending: !!this.files.get(guid),
+			});
+		});
+		if (stale.length === 0) return;
+
+		stale.forEach(({ vpath }) => this.pendingUpload.delete(vpath));
+		this.warn("dropped stale pending-upload holds", stale);
+	}
+
 	syncFileTree(): Promise<void> {
 		// If a sync is already running, mark that we want another sync after
 		if (this.syncFileTreePromise) {
@@ -3118,6 +3160,7 @@ export class SharedFolder extends HasProvider {
 				if (diffLog.length > 0) {
 					this.log("syncFileTree diff:\n" + diffLog.join("\n"));
 				}
+				this.sweepStalePendingUploads();
 			} finally {
 				// Reset the promise after completion (success or failure)
 				this.syncFileTreePromise = null;
