@@ -2533,9 +2533,26 @@ export class SharedFolder extends HasProvider {
 				if (synced) {
 					diffLog.push(`deleted local file ${vpath} for remotely deleted doc`);
 					this.markPendingDelete(vpath);
-					const promise = this.vault.adapter.trashLocal(file.path).finally(() => {
-						this.clearPendingDelete(vpath);
-					});
+					const promise = this.vault.adapter
+						.trashLocal(file.path)
+						.then(() => {
+							// The suppressed delete echo leaves the live doc in
+							// place, and a surviving doc's next engine write
+							// re-creates the file (createIfMissing) and re-mints
+							// it as a new identity. Tear it down the way a
+							// processed vault delete would.
+							const doc = this.fset.find((f) => f.path === vpath);
+							if (doc) {
+								this.fset.delete(doc);
+								this.files.delete(doc.guid);
+								doc.cleanup();
+								doc.destroy();
+								this.teardownDocState(doc.guid);
+							}
+						})
+						.finally(() => {
+							this.clearPendingDelete(vpath);
+						});
 					deletes.push({
 						op: "delete",
 						path: vpath,
