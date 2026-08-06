@@ -11,7 +11,7 @@
  *    (e.g. after a sync event delivers new remote/disk content).
  */
 
-import { diff3Merge } from "node-diff3";
+import { adaptiveDiff3Merge } from "./diff3";
 import type { ConflictRegion, PositionedConflict, PositionedChange, StatePath } from "./types";
 
 export interface ConflictData {
@@ -155,8 +155,12 @@ export function computeConflict(
 	ours: string,
 	theirs: string,
 ): { hasConflict: boolean; regions: ConflictRegion[]; merged?: string } {
+	if (ours === theirs) return { hasConflict: false, regions: [], merged: ours };
+	if (ours === base) return { hasConflict: false, regions: [], merged: theirs };
+	if (theirs === base) return { hasConflict: false, regions: [], merged: ours };
+
 	const tok = (s: string) => s.split(/(\n)/);
-	const result = diff3Merge(tok(ours), tok(base), tok(theirs));
+	const result = adaptiveDiff3Merge(tok(ours), tok(base), tok(theirs));
 	const hasConflict = result.some(
 		(r: { ok?: string[]; conflict?: { a: string[]; o: string[]; b: string[] } }) =>
 			"conflict" in r,
@@ -166,7 +170,11 @@ export function computeConflict(
 	}
 	const mergedTokens: string[] = [];
 	for (const region of result) {
-		if ("ok" in region && region.ok) mergedTokens.push(...region.ok);
+		// Index loop rather than spread: spread throws past ~64k elements,
+		// which a large document's token regions can exceed.
+		if ("ok" in region && region.ok) {
+			for (const token of region.ok) mergedTokens.push(token);
+		}
 	}
 	return { hasConflict: false, regions: [], merged: mergedTokens.join("") };
 }
