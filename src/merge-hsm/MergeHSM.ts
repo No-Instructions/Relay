@@ -498,29 +498,32 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		this.pendingDiskHash = null;
 	}
 
+	// Returns null when a baseline was captured, otherwise the name of the
+	// precondition that refused — so callers on paths where refusal means the
+	// baseline is lost for good can surface it instead of failing silently.
 	private capturePendingDiskLCA(
 		contents: string,
 		options: { allowViewData?: boolean } = {},
-	): void {
+	): string | null {
+		if (this._fork) return "fork-active";
+		if (this._conflict) return "conflict-active";
+		if (!this.localDoc) return "no-local-doc";
+		if (!this._disk) return "no-disk-identity";
 		if (
-			this._fork ||
-			this._conflict ||
-			!this.localDoc ||
-			!this._disk ||
-			(
-				this.pendingDiskSource !== "disk-event" &&
-				!(options.allowViewData && this.pendingDiskSource === "view-data")
-			) ||
-			this.pendingDiskContents === null ||
-			this.pendingDiskContents !== contents ||
-			this.pendingDiskHash === null ||
-			this.pendingDiskHash !== this._disk.hash
+			this.pendingDiskSource !== "disk-event" &&
+			!(options.allowViewData && this.pendingDiskSource === "view-data")
 		) {
-			return;
+			return this.pendingDiskSource === null
+				? "no-pending-disk-source"
+				: `pending-disk-source-${this.pendingDiskSource}`;
 		}
+		if (this.pendingDiskContents === null) return "no-pending-disk-contents";
+		if (this.pendingDiskContents !== contents) return "pending-disk-contents-mismatch";
+		if (this.pendingDiskHash === null) return "no-pending-disk-hash";
+		if (this.pendingDiskHash !== this._disk.hash) return "pending-disk-hash-stale";
 
 		if (this.localDoc.getText("contents").toString() !== contents) {
-			return;
+			return "local-doc-text-mismatch";
 		}
 
 		this._setLCA({
@@ -530,6 +533,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		});
 		this.clearPendingDiskContents();
 		this.emitPersistState();
+		return null;
 	}
 
 	private clearSettledDiskContents(): void {
@@ -3438,13 +3442,22 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			storeTwoWayConflict: (_hsm, event) => {
 				const data = (event as any).data;
 				// The invoke loaded the file to compare against, so its disk
-				// identity is confirmed even when no disk event preceded the
-				// conflict. Record it now: a resolution that picks the on-disk
-				// text produces no later save or disk event, and the capture
-				// path refuses without a confirmed hash to attach.
+				// identity — content, hash, and mtime together — is confirmed
+				// even when no disk event preceded the conflict. Record all of
+				// it now: a resolution that picks the on-disk text produces no
+				// later save or disk event, and the capture path refuses unless
+				// the confirmed content and hash are both on hand. When nothing
+				// primed the pending disk state before the merge, the invoke's
+				// own read is the priming.
 				if (data.disk) {
 					this._disk = { hash: data.disk.hash, mtime: data.disk.mtime };
-					if (this.pendingDiskContents === data.disk.content) {
+					if (this.pendingDiskContents === null) {
+						this.setPendingDiskContents(
+							data.disk.content,
+							"disk-event",
+							data.disk.hash,
+						);
+					} else if (this.pendingDiskContents === data.disk.content) {
 						this.pendingDiskHash = data.disk.hash;
 					}
 				}
@@ -5962,7 +5975,21 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		// Resolution can be a no-op for the editor when the selected text is
 		// already on disk. Capture through the normal confirmed-disk path now,
 		// because that case produces no later save or disk event to do it.
-		this.capturePendingDiskLCA(resolvedText, { allowViewData: true });
+		// When the capture refuses and the resolution also did not dirty the
+		// editor, no later save-confirm runs either and the note is left with
+		// no baseline — so name the precondition that refused instead of
+		// failing silently.
+		const captureRefusal = this.capturePendingDiskLCA(resolvedText, {
+			allowViewData: true,
+		});
+		if (captureRefusal !== null) {
+			this.emitEffect({
+				type: "DIAGNOSTIC",
+				code: "RESOLVE_BASELINE_NOT_CAPTURED",
+				message: `conflict resolution did not capture a baseline: ${captureRefusal}`,
+				detail: { reason: captureRefusal },
+			});
+		}
 		this.clearPendingDiskContents();
 		this.pendingEditorContent = null;
 		return resolvedText;
