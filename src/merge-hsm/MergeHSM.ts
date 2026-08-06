@@ -24,7 +24,7 @@
  */
 
 import * as Y from "yjs";
-import { diff3Merge } from "node-diff3";
+import { adaptiveDiff3Merge } from "./diff3";
 import { diff_match_patch } from "diff-match-patch";
 import {
 	Conflict,
@@ -3319,7 +3319,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				// the merged result. If disk already matched merged, the editor
 				// is already showing the correct content.
 				if (data.patches && data.patches.length > 0 && data.diskText !== data.merged) {
-					const editorPatches = computeDiffMatchPatchChanges(data.diskText, data.merged);
+					const editorPatches = computeEditorDiffChanges(data.diskText, data.merged);
 					if (editorPatches.length > 0) {
 						this.emitEffect({ type: "DISPATCH_CM6", changes: editorPatches });
 					}
@@ -3756,7 +3756,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				// Dispatch granular changes to editor if content changed
 				const editorContent = this.readCurrentEditorText() ?? localContent;
 				if (mergeResult.merged !== editorContent) {
-					const changes = this.computeDiffChanges(editorContent, mergeResult.merged);
+					const changes = computeEditorDiffChanges(editorContent, mergeResult.merged);
 					if (changes.length > 0) {
 						this.emitEffect({ type: "DISPATCH_CM6", changes });
 					}
@@ -6792,7 +6792,7 @@ async function defaultHashFn(contents: string): Promise<string> {
 // 3-Way Merge Implementation
 // =============================================================================
 
-function performThreeWayMerge(
+export function performThreeWayMerge(
 	lca: string,
 	local: string,
 	remote: string,
@@ -6801,7 +6801,27 @@ function performThreeWayMerge(
 		return {
 			success: true,
 			merged: local,
-			patches: computeDiffMatchPatchChanges(local, local),
+			patches: computePositionedChanges(local, local),
+		};
+	}
+
+	// One-sided changes need no diff: when a side is byte-identical to the
+	// LCA, the merge result is exactly the other side (the token diff below
+	// would reproduce it byte-for-byte, at super-linear cost on large
+	// documents). This is the common shape of a synced document being
+	// rewritten remotely while the local copy sits unedited.
+	if (local === lca) {
+		return {
+			success: true,
+			merged: remote,
+			patches: computePositionedChanges(local, remote),
+		};
+	}
+	if (remote === lca) {
+		return {
+			success: true,
+			merged: local,
+			patches: computePositionedChanges(local, local),
 		};
 	}
 
@@ -6810,7 +6830,7 @@ function performThreeWayMerge(
 	const localTokens = tok(local);
 	const remoteTokens = tok(remote);
 
-	const result = diff3Merge(localTokens, lcaTokens, remoteTokens);
+	const result = adaptiveDiff3Merge(localTokens, lcaTokens, remoteTokens);
 
 	const hasConflict = result.some(
 		(region: {
@@ -6832,12 +6852,16 @@ function performThreeWayMerge(
 	const mergedTokens: string[] = [];
 	for (const region of result) {
 		if ("ok" in region && region.ok) {
-			mergedTokens.push(...region.ok);
+			for (const token of region.ok) mergedTokens.push(token);
 		}
 	}
 	const merged = mergedTokens.join("");
 
-	const patches = computeDiffMatchPatchChanges(local, merged);
+	// Consumers only use `patches` to tell whether `local` and `merged`
+	// differ (editor patches are recomputed against the live editor text at
+	// dispatch time), so the single trimmed replacement suffices — a full
+	// character-level diff here costs ~1s on a large rewrite.
+	const patches = computePositionedChanges(local, merged);
 
 	return {
 		success: true,
@@ -6935,6 +6959,31 @@ function computeTwoWayConflictRegions(
 	flushHunk();
 
 	return regions;
+}
+
+/** Maximum exact diff size for the editor-only dispatch fast path. */
+const EXACT_CHAR_DIFF_LIMIT = 65536;
+
+/**
+ * Compute an editor dispatch. Its operation shape is disposable because the
+ * editor receives only the resulting text; above the limit, avoid spending
+ * about a second in diff-match-patch and emit one spanning replacement.
+ * CRDT-mutating and machine-edit callers use computeDiffMatchPatchChanges,
+ * whose exact delete/insert shape is load-bearing for idempotence and matching.
+ */
+/** @internal Exported only for direct operation-shape tests. */
+export function computeEditorDiffChanges(
+	before: string,
+	after: string,
+): PositionedChange[] {
+	if (before === after) return [];
+	const spanning = computePositionedChanges(before, after);
+	if (spanning.length === 1) {
+		const span = spanning[0];
+		const changed = Math.max(span.to - span.from, span.insert.length);
+		if (changed > EXACT_CHAR_DIFF_LIMIT) return spanning;
+	}
+	return computeDiffMatchPatchChanges(before, after);
 }
 
 export function computeDiffMatchPatchChanges(
