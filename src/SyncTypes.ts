@@ -138,6 +138,20 @@ export function isSyncFileMeta(meta?: Meta): meta is FileMeta {
 	return meta?.type === SyncType.File;
 }
 
+const fileMetaTypes: ReadonlySet<SyncType> = new Set<SyncType>([
+	SyncType.Image,
+	SyncType.PDF,
+	SyncType.Audio,
+	SyncType.Video,
+	SyncType.Base,
+	SyncType.File,
+]);
+
+/** True for any content-addressed file meta, whatever its file type. */
+export function isFileMetas(meta?: Meta): meta is FileMetas {
+	return !!meta && fileMetaTypes.has(meta.type);
+}
+
 export function isImageMeta(meta?: Meta): meta is ImageMeta {
 	return meta?.type === SyncType.Image;
 }
