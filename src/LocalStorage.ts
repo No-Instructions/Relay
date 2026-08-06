@@ -70,7 +70,7 @@ export class LocalStorage<T> implements Map<string, T> {
 
 	public has(key: string): boolean {
 		const storageKey = this.fullKey(key);
-		return this.storage.getItem(storageKey) !== null;
+		return this.keyIndex.has(storageKey);
 	}
 
 	public set(key: string, value: T): this {
