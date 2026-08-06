@@ -74,6 +74,8 @@ import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./typ
 import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture } from "./undo";
 import {
 	isEmptyDoc,
+	snapshotContains,
+	snapshotDeleteSetContains,
 	snapshotFromDoc,
 	snapshotsEqual,
 	snapshotIsAhead,
@@ -393,6 +395,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	// Whether PROVIDER_SYNCED has been received during the current lock cycle
 	private _providerSynced = false;
 	private _providerHasSynced = false;
+	private _remoteSnapshotRefusal: string | null = null;
 
 	// Async operation tracking with cancellation support
 	private _asyncOps = new Map<string, { controller: AbortController; promise: Promise<void> }>();
@@ -2593,7 +2596,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				if (!this._lca) {
 					return this.noLCACanSettleAsSyncedAtLoad();
 				}
-				return !this.hasLocalChangedSinceLCA() && !this.hasDiskChangedSinceLCA() && !this.hasRemoteChangedSinceLCA();
+				const remoteChanged = this.hasRemoteChangedSinceLCAAtLoad();
+				if (remoteChanged === null) return false;
+				return !this.hasLocalChangedSinceLCA() && !this.hasDiskChangedSinceLCA() && !remoteChanged;
 			},
 			localAheadAtLoad: () => {
 				// Persisted fork means we were in localAhead before — go straight
@@ -2604,7 +2609,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					if (this.pendingIdleUpdates !== null || (this.remoteDoc && !isEmptyDoc(this.remoteDoc))) return false;
 					return this.hasEnrolledLocalCRDT();
 				}
-				return this.hasLocalChangedSinceLCA() && !this.hasDiskChangedSinceLCA() && !this.hasRemoteChangedSinceLCA();
+				const remoteChanged = this.hasRemoteChangedSinceLCAAtLoad();
+				if (remoteChanged === null) return false;
+				return this.hasLocalChangedSinceLCA() && !this.hasDiskChangedSinceLCA() && !remoteChanged;
 			},
 			restoredForkHasFreshDiskContents: () =>
 				this._fork !== null && this.hasSessionFreshDiskContents(),
@@ -2619,16 +2626,22 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			remoteAheadAtLoad: () => {
 				if (this.needsDiskContentAtLoad()) return false;
 				if (!this._lca) return false;
-				return (this.pendingIdleUpdates !== null || this.hasRemoteChangedSinceLCA()) && !this.hasDiskChangedSinceLCA() && !this.hasLocalChangedSinceLCA();
+				const remoteChanged = this.hasRemoteChangedSinceLCAAtLoad();
+				if (remoteChanged === null) return false;
+				return (this.pendingIdleUpdates !== null || remoteChanged) && !this.hasDiskChangedSinceLCA() && !this.hasLocalChangedSinceLCA();
 			},
 			diskAheadAtLoad: () => {
 				if (!this._lca) return false;
-				return this.hasDiskChangedSinceLCA() && !this.hasRemoteChangedSinceLCA() && !this.hasLocalChangedSinceLCA() && this.hasFreshPendingDiskContents();
+				const remoteChanged = this.hasRemoteChangedSinceLCAAtLoad();
+				if (remoteChanged === null) return false;
+				return this.hasDiskChangedSinceLCA() && !remoteChanged && !this.hasLocalChangedSinceLCA() && this.hasFreshPendingDiskContents();
 			},
 			diskContentsNeededAtLoad: () => {
 				return this.needsDiskContentAtLoad();
 			},
 			divergedAtLoad: () => {
+				// This is the conservative live route when a snapshot-only remote
+				// verdict is unavailable and no one-sided local route applies.
 				return this._lca !== null;
 			},
 
@@ -2666,6 +2679,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				return this.localDoc.getText("contents").toString() === e.contents;
 			},
 			providerSyncedRemoteAhead: () => this.providerSyncedRemoteAhead(),
+			providerSyncedRemoteVerdictUnavailable: () =>
+				this.providerSyncedRemoteVerdictUnavailable(),
 			providerSyncedRemoteAheadNeedsDiskVerification: () =>
 				this.providerSyncedRemoteAhead() &&
 				this._fork === null &&
@@ -3114,6 +3129,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this._lcaGcPinCache = null;
 				this._disk = null;
 				this._remoteStateVector = null;
+				this._remoteSnapshotRefusal = null;
 				this._needsDiskContentLoad = false;
 				this._restoredForkNeedsDiskRead = false;
 				this.clearEnrolledLocalHead();
@@ -4684,8 +4700,6 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (!remoteDoc) {
 			return { success: false, awaitingProvider: true };
 		}
-		const crdtContent = remoteDoc.getText("contents").toString();
-
 		// If the provider hasn't synced yet, remoteDoc may not reflect the
 		// server's CRDT state.  Defer the merge until PROVIDER_SYNCED
 		// delivers the real remote content.
@@ -4694,13 +4708,30 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		}
 
 		const diskContent = this.pendingDiskContents ?? lcaContent;
-
 		// Snapshot and clear — new events accumulate fresh during await
 		this.pendingIdleUpdates = null;
 		this.clearPendingDiskContents();
 
-		// 3-way merge: lca (base), disk (local changes), crdt (remote changes)
-		const mergeResult = performThreeWayMerge(lcaContent, diskContent, crdtContent);
+		// Combine both live heads through Yjs before reconciling with disk.
+		// CRDT update union is exact and cannot produce a text-merge conflict,
+		// so neither head can bypass the disk merge below.
+		const remoteUpdate = Y.encodeStateAsUpdate(
+			remoteDoc,
+			Y.encodeStateVector(localDoc),
+		);
+		const candidateDoc = new Y.Doc();
+		Y.applyUpdate(candidateDoc, Y.encodeStateAsUpdate(localDoc));
+		Y.applyUpdate(candidateDoc, remoteUpdate);
+		const combinedHeadContent = candidateDoc.getText("contents").toString();
+		candidateDoc.destroy();
+
+		// Then materialize the combined CRDT head together with any offline file
+		// edit. This is the value written to disk and synchronized to both docs.
+		const mergeResult = performThreeWayMerge(
+			lcaContent,
+			diskContent,
+			combinedHeadContent,
+		);
 
 		if (!mergeResult.success) {
 			// When LCA exists, create a fork so fork-reconcile can attempt
@@ -4733,10 +4764,6 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 		// Preserve the CRDT identities behind the remote side of the successful
 		// text merge. A later remote update remains buffered for the next pass.
-		const remoteUpdate = Y.encodeStateAsUpdate(
-			remoteDoc,
-			Y.encodeStateVector(localDoc),
-		);
 		const hash = await this.hashFn(mergeResult.merged);
 		if (signal.aborted) return { success: false };
 		const diskWrite = this.diskWritePlanForHash(hash);
@@ -5222,26 +5249,78 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		return stateVectorIsAhead(remoteSV, lcaSV);
 	}
 
+	/**
+	 * Load-time remote comparison. Only full snapshots can establish whether
+	 * the baseline covers the remote head. Before provider sync, only received
+	 * deletion history is actionable: insertions may come from an incomplete
+	 * replica and are deferred until provider sync makes the full snapshot
+	 * authoritative. When either snapshot is unavailable, refuse the verdict
+	 * instead of weakening it.
+	 */
+	private hasRemoteChangedSinceLCAAtLoad(): boolean | null {
+		if (!this._lca) return false;
+		// The remote document is optional while idle. Its absence is no
+		// observation, rather than unreadable evidence of a changed head.
+		if (!this.remoteDoc) return false;
+		if (!(this._providerSynced || this._isProviderSynced())) {
+			if (!this._lca.snapshot) {
+				return this.refuseRemoteSnapshotVerdict("persisted baseline snapshot is missing");
+			}
+			try {
+				return !snapshotDeleteSetContains(
+					{ snapshot: this._lca.snapshot },
+					snapshotFromDoc(this.remoteDoc),
+				);
+			} catch {
+				return this.refuseRemoteSnapshotVerdict("persisted baseline snapshot is unreadable");
+			}
+		}
+		return this.remoteDocAheadOfLCA();
+	}
+
+	/**
+	 * Snapshot-only comparison of the live remote doc against the persisted
+	 * baseline. The baseline must cover the entire remote history; a divergent
+	 * head counts, not only a dominating one.
+	 */
+	private remoteDocAheadOfLCA(): boolean | null {
+		if (!this._lca || !this.remoteDoc) return false;
+		if (!this._lca.snapshot) {
+			return this.refuseRemoteSnapshotVerdict("persisted baseline snapshot is missing");
+		}
+		try {
+			return !snapshotContains(
+				{ snapshot: this._lca.snapshot },
+				snapshotFromDoc(this.remoteDoc),
+			);
+		} catch {
+			return this.refuseRemoteSnapshotVerdict("persisted baseline snapshot is unreadable");
+		}
+	}
+
+	private refuseRemoteSnapshotVerdict(reason: string): null {
+		if (this._remoteSnapshotRefusal !== reason) {
+			this._remoteSnapshotRefusal = reason;
+			this.hsmWarn(
+				`remote snapshot verdict unavailable: ${reason}; ` +
+					`routing classification conservatively | ` +
+					`guid=${this._guid} path=${this.path}`,
+			);
+		}
+		return null;
+	}
+
 	private providerSyncedRemoteAhead(): boolean {
 		if (!this._lca || !this.remoteDoc) return false;
 		if (this.hasDiskChangedSinceLCA() || this.hasLocalChangedSinceLCA()) {
 			return false;
 		}
-		if (this._lca.snapshot) {
-			try {
-				return snapshotIsAhead(
-					snapshotFromDoc(this.remoteDoc),
-					{ snapshot: this._lca.snapshot },
-				);
-			} catch {
-				// Fall back to state vectors if persisted snapshot data is unreadable.
-			}
-		}
+		return this.remoteDocAheadOfLCA() === true;
+	}
 
-		return stateVectorIsAhead(
-			Y.encodeStateVector(this.remoteDoc),
-			this._lca.stateVector,
-		);
+	private providerSyncedRemoteVerdictUnavailable(): boolean {
+		if (!this._lca || !this.remoteDoc) return false;
+		return this.remoteDocAheadOfLCA() === null;
 	}
 
 

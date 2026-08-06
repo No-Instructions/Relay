@@ -231,6 +231,7 @@ export const MACHINE: MachineDefinition = {
 			],
 			PROVIDER_SYNCED: [
 				{ target: 'idle.loadingDiskContents', guard: 'providerSyncedRemoteAhead', actions: ['preserveRemoteAheadForDiskVerification', 'markProviderSynced', 'refreshRemoteStateVector'] },
+				{ target: 'idle.loadingDiskContents', guard: 'providerSyncedRemoteVerdictUnavailable', actions: ['preserveRemoteAheadForDiskVerification', 'markProviderSynced', 'refreshRemoteStateVector'] },
 				{ target: 'idle.synced', actions: ['markProviderSynced'] },
 			],
 			CM6_CHANGE: { target: 'idle.synced', actions: ['accumulateCM6Change'] },

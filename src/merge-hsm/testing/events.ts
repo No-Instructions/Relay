@@ -296,19 +296,27 @@ export async function sha256(contents: string): Promise<string> {
 
 /**
  * Create an LCAState for testing.
+ *
+ * The default snapshot models a fresh insertion-only history. Tests whose
+ * baseline contains tombstones must replace it with a snapshot captured from
+ * the actual baseline document.
  */
 export async function createLCA(
 	contents: string,
 	mtime: number,
 	stateVector?: Uint8Array,
 ): Promise<LCAState> {
+	const baselineState = stateVector ?? new Uint8Array([0]);
 	return {
 		contents,
 		meta: {
 			hash: await sha256(contents),
 			mtime,
 		},
-		stateVector: stateVector ?? new Uint8Array([0]),
+		stateVector: baselineState,
+		snapshot: Y.encodeSnapshot(
+			Y.createSnapshot(Y.createDeleteSet(), Y.decodeStateVector(baselineState)),
+		),
 	};
 }
 

@@ -269,6 +269,19 @@ export function snapshotContains(superset: YjsSnapshot, subset: YjsSnapshot): bo
 }
 
 /**
+ * Check whether snapshot `superset` contains every tombstone in `subset`.
+ */
+export function snapshotDeleteSetContains(
+	superset: YjsSnapshot,
+	subset: YjsSnapshot,
+): boolean {
+	return deleteSetContains(
+		decodeSnapshotData(superset).ds.clients,
+		decodeSnapshotData(subset).ds.clients,
+	);
+}
+
+/**
  * Check if two snapshots are exactly equal.
  */
 export function snapshotsEqual(a: YjsSnapshot, b: YjsSnapshot): boolean {
