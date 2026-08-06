@@ -283,6 +283,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	private pendingRecoverLCADisk: RecoverLCADisk | null = null;
 	private _needsDiskContentLoad = false;
 	private _restoredForkNeedsDiskRead = false;
+	private _remoteAheadBeforeDiskVerification = false;
 
 	// Editor content from ACQUIRE_LOCK event, used for merge during reconciliation
 	private pendingEditorContent: string | null = null;
@@ -391,6 +392,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 	// Whether PROVIDER_SYNCED has been received during the current lock cycle
 	private _providerSynced = false;
+	private _providerHasSynced = false;
 
 	// Async operation tracking with cancellation support
 	private _asyncOps = new Map<string, { controller: AbortController; promise: Promise<void> }>();
@@ -804,6 +806,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	prepareForHibernate(): void {
+		// No file observation survives hibernation. A buffered remote update can
+		// wake this machine without any provider lifecycle event, so the disk
+		// record must be treated as unverified before the docs are detached.
+		if (this._lca && this._disk) this._needsDiskContentLoad = true;
 		this.captureLocalHeadForPersistence();
 		this.clearSettledDiskContents();
 		if (
@@ -2576,6 +2582,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			// Idle state determination (for always transitions in idle.loading)
 			allSyncedAtLoad: () => {
 				if (this.needsDiskContentAtLoad()) return false;
+				if (
+					this.pendingIdleUpdates !== null ||
+					this._remoteAheadBeforeDiskVerification
+				) return false;
 				if (!this._lca) {
 					return this.noLCACanSettleAsSyncedAtLoad();
 				}
@@ -2605,7 +2615,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			remoteAheadAtLoad: () => {
 				if (this.needsDiskContentAtLoad()) return false;
 				if (!this._lca) return false;
-				return this.hasRemoteChangedSinceLCA() && !this.hasDiskChangedSinceLCA() && !this.hasLocalChangedSinceLCA();
+				return (this.pendingIdleUpdates !== null || this.hasRemoteChangedSinceLCA()) && !this.hasDiskChangedSinceLCA() && !this.hasLocalChangedSinceLCA();
 			},
 			diskAheadAtLoad: () => {
 				if (!this._lca) return false;
@@ -2626,8 +2636,24 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 			// Idle event guards (for REMOTE_UPDATE candidates)
 			diskChangedSinceLCA: () => this.hasDiskChangedSinceLCA(),
+			// Idle updates can arrive from a hibernation buffer with no transport
+			// event at all. Require session-observed bytes at the consumption point;
+			// a pending disk event already supplies them, otherwise load the file.
 			diskContentsNeededBeforeRemoteMerge: () =>
-				this._lca !== null && this._disk === null,
+				this._lca !== null &&
+				this.pendingDiskContents === null &&
+				(this._disk === null ||
+					this._needsDiskContentLoad ||
+					(!this._isProviderSynced() && this._providerHasSynced)),
+			// Open notes retain their synchronous fast path while the provider is
+			// established. A recorded gap or the provider's live unsynced level
+			// routes the first reconnect update through verification before dispatch.
+			remoteUpdateNeedsDiskVerification: () =>
+				this._lca !== null &&
+				this._fork === null &&
+				this._statePath === "active.tracking" &&
+				(this._needsDiskContentLoad ||
+					(!this._isProviderSynced() && this._providerHasSynced)),
 			diskMatchesConvergedDocs: (_hsm, event) => {
 				const e = event as any;
 				if (typeof e.contents !== "string") return false;
@@ -2636,6 +2662,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				return this.localDoc.getText("contents").toString() === e.contents;
 			},
 			providerSyncedRemoteAhead: () => this.providerSyncedRemoteAhead(),
+			providerSyncedRemoteAheadNeedsDiskVerification: () =>
+				this.providerSyncedRemoteAhead() &&
+				this._fork === null &&
+				(this._needsDiskContentLoad || this._providerSynced) &&
+				this.pendingDiskContents === null,
 			providerSyncNeedsForkReconcileRestart: () =>
 				!this._providerSynced || this._activeInvoke?.id !== "fork-reconcile",
 			remoteOrLocalAhead: () =>
@@ -2910,7 +2941,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			applyIdleMergeResult: (_hsm, event) => {
 				const result = (event as any).data;
 				this.idleMergeLog(`[idle-merge-debug] ${this._guid} applyIdleMergeResult: success=${result?.success} noop=${result?.noop} hasMergedContent=${result?.mergedContent !== undefined} hasUpdates=${!!result?.updates} hasRemoteUpdate=${!!result?.remoteUpdate} localDoc=${!!this.localDoc}`);
-				if (!result?.success || result.noop) return;
+				if (!result?.success) return;
+				this._remoteAheadBeforeDiskVerification = false;
+				if (result.noop) return;
 
 				if (
 					result.remoteUpdate &&
@@ -2957,6 +2990,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			},
 			resetIdleRetryCount: () => {
 				this.idleRetryCount = 0;
+				this._remoteAheadBeforeDiskVerification = false;
 				// Convergence clears the supersession bookkeeping and any error the
 				// re-classify/re-arm loops were working through — reaching this action
 				// means the note settled.
@@ -2972,6 +3006,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this.emitEffect({ type: "REQUEST_HIBERNATE", guid: this._guid });
 			},
 			materializeIdleConflict: () => {
+				this._remoteAheadBeforeDiskVerification = false;
 				this.materializeIdleConflict();
 			},
 			clearConflictForRecompute: () => {
@@ -3324,6 +3359,37 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this.clearPendingDiskContents();
 				this.pendingEditorContent = null;
 			},
+			applyActiveReconnectMergeResult: (_hsm, event) => {
+				const data = (event as any).data;
+				if (!data || !this.localDoc) return;
+				const needsFrontmatterBaseline =
+					this.localDoc.getMap("frontmatter").size === 0;
+
+				const editorText =
+					this.readCurrentEditorText() ??
+					this.lastKnownEditorText ??
+					this.localDoc.getText("contents").toString();
+				this.withLocalObserverSuppressed(() => {
+					this.applyRemoteStateThenMergedContent(data.remoteUpdate, data.merged);
+				});
+				this._bridge.flushOutbound();
+				if (editorText !== data.merged) {
+					const changes = computeDiffMatchPatchChanges(editorText, data.merged);
+					if (changes.length > 0) {
+						this.emitEffect({ type: "DISPATCH_CM6", changes });
+					}
+				}
+				this.lastKnownEditorText = data.merged;
+				// Returning clients seed structured frontmatter only after provider,
+				// editor, and freshly-read disk text have been reconciled. A conflict
+				// never reaches this action and therefore remains deliberately unseeded.
+				this.seedFrontmatterMapFromCurrentText(false, needsFrontmatterBaseline);
+				if (!this._disk || data.disk.mtime >= this._disk.mtime) {
+					this._disk = { hash: data.disk.hash, mtime: data.disk.mtime };
+				}
+				this._needsDiskContentLoad = false;
+				this.clearPendingDiskContents();
+			},
 			storeThreeWayConflict: (_hsm, event) => {
 				const data = (event as any).data;
 				this._conflict = new Conflict({
@@ -3591,9 +3657,29 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this._providerSynced = false;
 				this._bridge.providerSynced = false;
 			},
+			markDiskUnverified: () => {
+				if (this._lca) {
+					this._needsDiskContentLoad = true;
+					// Retained bytes predate the gap and cannot stand in for a fresh
+					// read after it.
+					this.clearPendingDiskContents();
+				}
+			},
+			refreshRemoteStateVector: () => {
+				if (this.remoteDoc) {
+					this._remoteStateVector = Y.encodeStateVector(this.remoteDoc);
+				}
+			},
 			markProviderSynced: () => {
 				this._providerSynced = true;
+				this._providerHasSynced = true;
 				this._bridge.providerSynced = true;
+				if (this._statePath === "idle.synced" && this._lca) {
+					this._needsDiskContentLoad = true;
+				}
+			},
+			preserveRemoteAheadForDiskVerification: () => {
+				this._remoteAheadBeforeDiskVerification = true;
 			},
 			maybeSignalPersistenceSyncedForRecovery: () => {
 				this.maybeSignalPersistenceReady("event");
@@ -3785,6 +3871,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				'cleanup': neverResolve,
 				'three-way-merge': neverResolve,
 				'two-way-merge': neverResolve,
+				'active-reconnect-merge': neverResolve,
 			};
 		}
 		return {
@@ -3793,6 +3880,53 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				const disk = await this._diskLoader();
 				if (signal.aborted) return { success: false };
 				return { success: true, disk };
+			},
+			'active-reconnect-merge': async (_hsm, signal) => {
+				this.assertMachineResources("before active reconnect merge");
+				const localDoc = this.requireLocalDoc("active reconnect merge");
+				const remoteDoc = this.requireRemoteDoc("active reconnect merge");
+				const baseText = this.requireLcaContents("active reconnect merge");
+				if (!localDoc || !remoteDoc || baseText === null) {
+					throw new Error("active reconnect merge: required state unavailable");
+				}
+
+				const disk = await this._diskLoader();
+				if (signal.aborted) return { success: false };
+				const remoteUpdate = Y.encodeStateAsUpdate(
+					remoteDoc,
+					Y.encodeStateVector(localDoc),
+				);
+				const candidateDoc = new Y.Doc();
+				Y.applyUpdate(candidateDoc, Y.encodeStateAsUpdate(localDoc));
+				Y.applyUpdate(candidateDoc, remoteUpdate);
+				const remoteText = candidateDoc.getText("contents").toString();
+				candidateDoc.destroy();
+				const mergeResult = performThreeWayMerge(
+					baseText,
+					remoteText,
+					disk.content,
+				);
+				if (signal.aborted) return { success: false };
+				if (mergeResult.success) {
+					return {
+						success: true,
+						merged: mergeResult.merged,
+						baseText,
+						localText: remoteText,
+						diskText: disk.content,
+						disk,
+						remoteUpdate,
+					};
+				}
+				return {
+					success: false,
+					conflictRegions: mergeResult.conflictRegions,
+					baseText,
+					localText: remoteText,
+					diskText: disk.content,
+					disk,
+					remoteUpdate,
+				};
 			},
 			'three-way-merge': async (_hsm, signal) => {
 				this.assertMachineResources("before three-way-merge");
@@ -4290,20 +4424,26 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 		let updates = this.pendingIdleUpdates;
 		const updatesWereBuffered = updates !== null;
-		if (!updates) {
-			if (!this.remoteDoc) {
-				this.idleMergeLog(`[idle-merge-debug] ${this._guid} waiting: no pending updates or remoteDoc`);
-				return { success: false, awaitingProvider: true };
-			}
+		// Event bytes identify why the merge started, but remoteDoc is the current
+		// head. Fold in its remainder so a catch-up download that lands during a
+		// disk read cannot be lost merely because it had no REMOTE_UPDATE event.
+		if (this.remoteDoc) {
 			const derivedUpdates = Y.encodeStateAsUpdate(
 				this.remoteDoc,
 				Y.encodeStateVector(localDoc),
 			);
 			if (derivedUpdates.byteLength > 0 && !this.updateHasNoChanges(derivedUpdates)) {
-				updates = derivedUpdates;
-			} else {
-				return this.buildSettledRemoteAheadResult(signal, localDoc);
+				updates = updates
+					? Y.mergeUpdates([updates, derivedUpdates])
+					: derivedUpdates;
 			}
+		}
+		if (!updates) {
+			if (!this.remoteDoc) {
+				this.idleMergeLog(`[idle-merge-debug] ${this._guid} waiting: no pending updates or remoteDoc`);
+				return { success: false, awaitingProvider: true };
+			}
+			return this.buildSettledRemoteAheadResult(signal, localDoc);
 		}
 
 		// Block automatic writes when there is no LCA, UNLESS there is no file on
@@ -5046,6 +5186,20 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 	private hasRemoteChangedSinceLCA(): boolean {
 		if (!this._lca) return false;
+		if (
+			this._remoteAheadBeforeDiskVerification &&
+			this.remoteDoc &&
+			this._lca.snapshot
+		) {
+			try {
+				return snapshotIsAhead(
+					snapshotFromDoc(this.remoteDoc),
+					{ snapshot: this._lca.snapshot },
+				);
+			} catch {
+				// Fall back to state vectors if persisted snapshot data is unreadable.
+			}
+		}
 		const lcaSV = this._lca.stateVector;
 		const remoteSV = this._remoteStateVector;
 
@@ -6542,9 +6696,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	 * enclosing transaction exists (e.g., initial seed), the caller is
 	 * responsible for wrapping in transact().
 	 */
-	private seedFrontmatterMapFromCurrentText(allowBeforeProviderSync = false): void {
+	private seedFrontmatterMapFromCurrentText(
+		allowBeforeProviderSync = false,
+		forceBaseline = false,
+	): void {
 		if (!this.localDoc || !this._yaml) return;
-		if (this.localDoc.getMap("frontmatter").size > 0) return;
+		if (!forceBaseline && this.localDoc.getMap("frontmatter").size > 0) return;
 		if (
 			!allowBeforeProviderSync &&
 			!this._providerSynced &&

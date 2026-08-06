@@ -228,6 +228,7 @@ export interface TestableHSM {
 	): () => void;
 	awaitCleanup(): Promise<void>;
 	awaitCleanupSettled(): Promise<void>;
+	awaitAsync(invokeId: string): Promise<void>;
 	awaitIdleAutoMerge(): Promise<void>;
 	awaitForkReconcile(): Promise<void>;
 	hasFork(): boolean;

@@ -14,6 +14,7 @@ import type { MergeEffect } from "../types";
 import { ProviderIntegration } from "../integration/ProviderIntegration";
 import { reconnectProvider } from "../integration/ProviderLifecycle";
 import { MockYjsProvider } from "./MockYjsProvider";
+import { sha256 } from "./events";
 
 // =============================================================================
 // Types
@@ -82,21 +83,30 @@ export async function createCrossVaultTest(
 
 	// Both vaults share the same document GUID (same file, two vaults)
 	const docGuid = "cross-vault-doc";
+	const diskA: SimulatedDisk = { content: null, mtime: 0 };
+	const diskB: SimulatedDisk = { content: null, mtime: 0 };
 
 	const hsmA = await createTestHSM({
 		guid: docGuid,
 		path: "shared.md",
 		vaultId: "vault-A",
+		diskLoader: async () => ({
+			content: diskA.content ?? "",
+			hash: await sha256(diskA.content ?? ""),
+			mtime: diskA.mtime,
+		}),
 	});
 
 	const hsmB = await createTestHSM({
 		guid: docGuid,
 		path: "shared.md",
 		vaultId: "vault-B",
+		diskLoader: async () => ({
+			content: diskB.content ?? "",
+			hash: await sha256(diskB.content ?? ""),
+			mtime: diskB.mtime,
+		}),
 	});
-
-	const diskA: SimulatedDisk = { content: null, mtime: 0 };
-	const diskB: SimulatedDisk = { content: null, mtime: 0 };
 
 	// Connection state
 	let aConnected = true;
@@ -325,6 +335,10 @@ export async function createCrossVaultTest(
 	if (options.useProviderIntegration) {
 		const providerA = new MockYjsProvider(remoteDocA, server);
 		const providerB = new MockYjsProvider(remoteDocB, server);
+		providerA.on("sync", () => hsmA.setProviderSynced(true));
+		providerB.on("sync", () => hsmB.setProviderSynced(true));
+		providerA.on("connection-error", () => hsmA.setProviderSynced(false));
+		providerB.on("connection-error", () => hsmB.setProviderSynced(false));
 
 		const integrationA = new ProviderIntegration(
 			hsmA.hsm as any,
