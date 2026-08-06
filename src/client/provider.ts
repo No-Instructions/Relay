@@ -19,6 +19,8 @@ import { decode as decodeCBOR } from "cbor-x";
 import { metrics, curryLog } from "../debug";
 import type { TimeProvider } from "../TimeProvider";
 
+declare const GIT_TAG: string;
+
 const providerError = curryLog("[YSweetProvider]", "error");
 const providerLog = curryLog("[YSweetProvider]", "log");
 const providerDebug = curryLog("[YSweetProvider]", "debug");
@@ -1134,7 +1136,7 @@ export class YSweetProvider extends Observable<string> {
 		while (serverUrl[serverUrl.length - 1] === "/") {
 			serverUrl = serverUrl.slice(0, serverUrl.length - 1);
 		}
-		const params = { token };
+		const params = { token, v: GIT_TAG };
 		const encodedParams = url.encodeQueryParams(params);
 		const newUrl =
 			serverUrl +

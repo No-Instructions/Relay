@@ -16,6 +16,8 @@ import { encodeClientToken } from "./client/types";
 import type { TimeProvider } from "./TimeProvider";
 import { Awareness } from "y-protocols/awareness";
 
+declare const GIT_TAG: string;
+
 export interface Subscription {
 	on: () => void;
 	off: () => void;
@@ -53,6 +55,7 @@ function makeProvider(
 ): YSweetProvider {
 	const params = {
 		token: clientToken.token,
+		v: GIT_TAG,
 	};
 	// Configure the initial state before YSweetProvider subscribes to awareness
 	// updates. A sync-only provider then starts absent without buffering a
