@@ -47,10 +47,11 @@ import {
 	makeDocumentMeta,
 	makeFileMeta,
 	makeFolderMeta,
-	isSyncFileMeta,
+	isFileMetas,
 	isDocumentMeta,
 	isCanvasMeta,
 	type FileMeta,
+	type FileMetas,
 	type Meta,
 	type SyncFileType,
 } from "./SyncTypes";
@@ -2510,8 +2511,8 @@ export class SharedFolder extends HasProvider {
 				const localGuid = localIdentity?.guid;
 				const localFile = localIdentity?.file;
 
-				if (localGuid && localFile && isSyncFile(localFile) && isSyncFileMeta(meta)) {
-					const promise = this.remapIfHashMatches(
+				if (localGuid && localFile && isSyncFile(localFile) && isFileMetas(meta)) {
+					const promise = this.resolveLostFileClaim(
 						localFile,
 						localGuid,
 						guid,
@@ -2558,29 +2559,139 @@ export class SharedFolder extends HasProvider {
 		return { op: "create", path, promise };
 	}
 
-	private async remapIfHashMatches(
+	/**
+	 * Resolve a content-addressed file whose local identity lost its claim
+	 * race: committed metadata names another identity for the path, so the
+	 * local mint can never publish. Matching bytes adopt the committed
+	 * identity in place. When bytes diverge, the committed claim wins: the
+	 * resolver logs the discarded local hash, adopts temporarily, and pulls
+	 * the committed bytes before releasing the losing hold. A failed pull
+	 * rolls the identity back so reconciliation can retry. Every resolution
+	 * releases the pending-upload hold: a lost claim left held shields its
+	 * path from remote deletions indefinitely and republishes the losing
+	 * identity the moment the committed entry is deleted.
+	 */
+	private async resolveLostFileClaim(
 		localFile: SyncFile,
 		localGuid: string,
 		remoteGuid: string,
 		path: string,
-		remoteMeta: Meta,
+		remoteMeta: FileMetas,
 	): Promise<void> {
+		// One reconciliation owns a path at a time (the remap discipline):
+		// a second sweep re-detecting the same lost claim mid-resolution
+		// must stand down rather than preserve the same bytes twice.
+		if (this._pendingRemaps.has(path)) {
+			this.log(
+				`[${path}] lost-claim resolution deferred: another reconciliation owns this path`,
+			);
+			return;
+		}
+		this._pendingRemaps.add(path);
 		try {
-			const localHash = await localFile.caf.hash();
-			if (localHash === remoteMeta.hash) {
-				// Same content! Remap to use remote GUID
+			this.backgroundSync.cancelDocumentWork(localGuid);
+			if (!localFile.caf.exists()) {
+				// No local bytes to adopt or preserve. Release the losing
+				// enrollment and its hold; the next reconciliation pass
+				// materializes the committed file through the server-create
+				// path.
 				this.files.delete(localGuid);
 				this.pendingUpload.delete(path);
-				this.files.set(remoteGuid, localFile);
-				localFile.guid = remoteGuid;
+				this.fset.delete(localFile);
+				localFile.cleanup();
+				localFile.destroy();
 				this.log(
-					`Remapped file ${path} from local GUID ${localGuid} to remote GUID ${remoteGuid}`,
+					`Released lost claim for missing local file ${path} (${localGuid})`,
 				);
+				return;
 			}
+			const localHash = await localFile.caf.hash();
+			const diverged = localHash !== remoteMeta.hash;
+			if (diverged) {
+				this.warn(
+					`[${path}] discarding divergent local content ${localHash}; committed content ${remoteMeta.hash} won the claim`,
+				);
+				await this.adoptAndPullCommittedFile(
+					localFile,
+					localGuid,
+					remoteGuid,
+				);
+				this.pendingUpload.delete(path);
+				this.log(
+					`Discarded divergent local content ${localHash} at ${path} after pulling committed content`,
+				);
+				return;
+			}
+			this.files.delete(localGuid);
+			this.pendingUpload.delete(path);
+			this.enrollUnderCommittedGuid(localFile, remoteGuid);
+			this.log(
+				`Remapped file ${path} from local GUID ${localGuid} to remote GUID ${remoteGuid}`,
+			);
 		} catch (error) {
 			this.error("Error during GUID remapping:", error);
 			throw error;
+		} finally {
+			this._pendingRemaps.delete(path);
 		}
+	}
+
+	/**
+	 * Temporarily enroll a divergent file under the committed identity and
+	 * pull the committed bytes. The losing hold remains until the pull has
+	 * succeeded. If the queue gives up, restore the losing enrollment so no
+	 * later sync can publish the divergent bytes under the winner's identity.
+	 */
+	private async adoptAndPullCommittedFile(
+		localFile: SyncFile,
+		localGuid: string,
+		remoteGuid: string,
+	): Promise<void> {
+		const existing = this.files.get(remoteGuid);
+		if (existing && existing !== localFile) {
+			if (!isSyncFile(existing)) {
+				throw new Error(`committed identity ${remoteGuid} is not a file`);
+			}
+			await this.backgroundSync.enqueueDownload(existing, false);
+			this.files.delete(localGuid);
+			this.fset.delete(localFile);
+			localFile.cleanup();
+			localFile.destroy();
+			return;
+		}
+
+		this.files.delete(localGuid);
+		this.files.set(remoteGuid, localFile);
+		localFile.guid = remoteGuid;
+		try {
+			await this.backgroundSync.enqueueDownload(localFile, false);
+		} catch (error) {
+			this.files.delete(remoteGuid);
+			this.files.set(localGuid, localFile);
+			localFile.guid = localGuid;
+			throw error;
+		}
+	}
+
+	/**
+	 * Enroll the surviving instance under the committed identity. When a
+	 * live instance already owns that identity the losing instance stands
+	 * down instead — two instances must never share a guid.
+	 */
+	private enrollUnderCommittedGuid(
+		localFile: SyncFile,
+		remoteGuid: string,
+	): SyncFile | undefined {
+		const existing = this.files.get(remoteGuid);
+		if (existing && existing !== localFile) {
+			this.fset.delete(localFile);
+			localFile.cleanup();
+			localFile.destroy();
+			return isSyncFile(existing) ? existing : undefined;
+		}
+		this.files.set(remoteGuid, localFile);
+		localFile.guid = remoteGuid;
+		return localFile;
 	}
 
 	private async _upgradeToCanvas(
@@ -2950,6 +3061,19 @@ export class SharedFolder extends HasProvider {
 						fromGuid: pendingGuid,
 						toGuid: committedMeta.id,
 					}),
+				};
+			}
+			if (isFileMetas(committedMeta) && pendingFile && isSyncFile(pendingFile)) {
+				return {
+					op: "update",
+					path,
+					promise: this.resolveLostFileClaim(
+						pendingFile,
+						pendingGuid,
+						committedMeta.id,
+						path,
+						committedMeta,
+					),
 				};
 			}
 			return { op: "noop", path, promise: Promise.resolve() };
