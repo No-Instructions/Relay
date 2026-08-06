@@ -2265,6 +2265,7 @@ export class BackgroundSync extends HasLogging {
 			headers: headers,
 			throw: false,
 			relayNetworkDomain: "relay",
+			relayPurpose: "sync",
 		});
 
 		if (response.status === 200) {
@@ -2325,6 +2326,7 @@ export class BackgroundSync extends HasLogging {
 			headers,
 			throw: false,
 			relayNetworkDomain: "relay",
+			relayPurpose: "sync",
 		});
 
 		if (response.status !== 200) {

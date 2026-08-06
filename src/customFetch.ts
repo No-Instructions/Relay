@@ -26,12 +26,37 @@ const networkDomainOrigins: Record<"api" | "auth", Set<string>> = {
 
 type RelayRequestDomain = NetworkDomain;
 
+// Wire-level attribution: every request leaving these wrappers carries a
+// purpose header so traffic observers can attribute the plugin's transfer
+// volume by category instead of guessing by hostname. Call sites annotate
+// the interesting categories; anything unannotated falls back to a value
+// derived from its network domain. WebSocket traffic is not tagged.
+export type RelayRequestPurpose =
+	| "sync"
+	| "attachment"
+	| "token"
+	| "update-check"
+	| "control"
+	| "external";
+
+export const RELAY_PURPOSE_HEADER = "Relay-Purpose";
+
+const DOMAIN_DEFAULT_PURPOSE: Record<RelayRequestDomain, RelayRequestPurpose> =
+	{
+		auth: "control",
+		api: "control",
+		relay: "sync",
+		external: "external",
+	};
+
 export interface RelayRequestInit extends RequestInit {
 	relayNetworkDomain?: RelayRequestDomain;
+	relayPurpose?: RelayRequestPurpose;
 }
 
 export interface RelayRequestUrlParam extends RequestUrlParam {
 	relayNetworkDomain?: RelayRequestDomain;
+	relayPurpose?: RelayRequestPurpose;
 }
 
 initializeNetworkDomainOrigins();
@@ -161,9 +186,14 @@ export async function requestUrlWithMetrics(
 	params: RelayRequestUrlParam,
 ): Promise<RequestUrlResponse> {
 	const domain = classifyNetworkDomain(params.url, params.relayNetworkDomain);
+	const purpose = params.relayPurpose ?? DOMAIN_DEFAULT_PURPOSE[domain];
 	const method = params.method ?? "GET";
-	const requestParams: RequestUrlParam = { ...params };
+	const requestParams: RequestUrlParam = {
+		...params,
+		headers: { ...params.headers, [RELAY_PURPOSE_HEADER]: purpose },
+	};
 	delete (requestParams as RelayRequestUrlParam).relayNetworkDomain;
+	delete (requestParams as RelayRequestUrlParam).relayPurpose;
 	const startMs = getNowMs();
 	try {
 		const response = await obsidianRequestUrl(requestParams);
@@ -227,11 +257,13 @@ export const customFetch = async (
 
 	const method = config?.method || "GET";
 	const domain = classifyNetworkDomain(urlString, config?.relayNetworkDomain);
+	const purpose = config?.relayPurpose ?? DOMAIN_DEFAULT_PURPOSE[domain];
 
 	const headers = Object.assign(
 		{},
 		config?.headers,
 		getRelayRequestHeaders(),
+		{ [RELAY_PURPOSE_HEADER]: purpose },
 	) as Record<string, string>;
 
 	// Prepare the request parameters

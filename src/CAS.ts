@@ -56,6 +56,7 @@ export class ContentAddressedStore extends HasLogging {
 					method: "HEAD",
 					headers: { Authorization: `Bearer ${token.token}` },
 					relayNetworkDomain: "relay",
+					relayPurpose: "attachment",
 				}),
 			"verify attachment",
 		);
@@ -81,6 +82,7 @@ export class ContentAddressedStore extends HasLogging {
 				method: "GET",
 				headers: { Authorization: `Bearer ${token.token}` },
 				relayNetworkDomain: "relay",
+				relayPurpose: "attachment",
 			});
 			if (!response.ok) {
 				this.debug(
@@ -91,7 +93,11 @@ export class ContentAddressedStore extends HasLogging {
 			const responseJson = await response.json();
 			const presignedUrl = responseJson.downloadUrl;
 			const downloadResponse = await this.s3Request(
-				() => customFetch(presignedUrl, { relayNetworkDomain: "external" }),
+				() =>
+					customFetch(presignedUrl, {
+						relayNetworkDomain: "external",
+						relayPurpose: "attachment",
+					}),
 				"download attachment",
 			);
 			if (!downloadResponse.ok) {
@@ -153,6 +159,7 @@ export class ContentAddressedStore extends HasLogging {
 			method: "POST",
 			headers: { Authorization: `Bearer ${token.token}` },
 			relayNetworkDomain: "relay",
+			relayPurpose: "attachment",
 		});
 		if (response.status !== 200) {
 			throw await this.s3ResponseError(response, "upload attachment url");
@@ -166,6 +173,7 @@ export class ContentAddressedStore extends HasLogging {
 					headers: { "Content-Type": syncFile.mimetype },
 					body: content,
 					relayNetworkDomain: "external",
+					relayPurpose: "attachment",
 				}),
 			"upload attachment",
 		);

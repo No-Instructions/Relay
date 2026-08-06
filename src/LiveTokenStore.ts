@@ -90,6 +90,7 @@ async function refresh(
 			headers: headers,
 			body: payload,
 			relayNetworkDomain: "api",
+			relayPurpose: "token",
 		});
 
 		if (!response.ok) {
@@ -233,6 +234,7 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 			headers: headers,
 			body: payload,
 			relayNetworkDomain: "api",
+			relayPurpose: "token",
 		});
 
 		if (!response.ok) {

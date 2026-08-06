@@ -39,6 +39,12 @@ export interface ReleaseSettings {
 	channel: "stable" | "beta";
 }
 
+// GitHub returns releases newest-first. The beta channel resolves to the
+// newest prerelease, which can trail several stable releases, so the page
+// must be deep enough to include it — but nothing needs the full release
+// history, and each release entry is several kilobytes of assets and notes.
+const RELEASES_PER_PAGE = 10;
+
 function normalizeVersion(tag: string) {
 	if (tag.startsWith("v")) {
 		return tag.slice(1);
@@ -116,13 +122,14 @@ export class UpdateManager extends Observable<UpdateManager> {
 	}
 
 	private async fetchReleases(): Promise<Release[]> {
-		const apiUrl = `https://api.github.com/repos/${REPOSITORY}/releases`;
+		const apiUrl = `https://api.github.com/repos/${REPOSITORY}/releases?per_page=${RELEASES_PER_PAGE}`;
 
 		const response = await customFetch(apiUrl, {
 			headers: {
 				Accept: "application/vnd.github.v3+json",
 				"User-Agent": "Relay-Obsidian-Plugin",
 			},
+			relayPurpose: "update-check",
 		});
 
 		if (!response.ok) {
@@ -149,6 +156,7 @@ export class UpdateManager extends Observable<UpdateManager> {
 				headers: {
 					"User-Agent": "Relay-Obsidian-Plugin",
 				},
+				relayPurpose: "update-check",
 			});
 			if (!response.ok) {
 				throw new Error(`GitHub API error: ${response.status}`);
@@ -329,7 +337,9 @@ export class UpdateManager extends Observable<UpdateManager> {
 			this.debug(`Fetching ${fileUrl}`);
 
 			// Fetch both manifests in parallel
-			const response = await customFetch(fileUrl);
+			const response = await customFetch(fileUrl, {
+				relayPurpose: "update-check",
+			});
 
 			if (!response.ok) {
 				throw new Error("unable to fetch manifest");
@@ -362,6 +372,7 @@ export class UpdateManager extends Observable<UpdateManager> {
 					Accept: "application/octet-stream",
 					"User-Agent": "Relay-Obsidian-Plugin",
 				},
+				relayPurpose: "update-check",
 			});
 
 			if (!response.ok) {
