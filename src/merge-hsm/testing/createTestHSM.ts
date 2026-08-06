@@ -231,6 +231,7 @@ export interface TestableHSM {
 	awaitAsync(invokeId: string): Promise<void>;
 	awaitIdleAutoMerge(): Promise<void>;
 	awaitForkReconcile(): Promise<void>;
+	confirmDiskWrite(identity: { hash: string; mtime: number }): void;
 	hasFork(): boolean;
 	awaitState(predicate: (statePath: string) => boolean): Promise<void>;
 	getConflictData(options?: { fresh?: boolean }): ConflictData | null;

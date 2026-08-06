@@ -21,6 +21,7 @@ export type {
 	CrossVaultTest,
 	VaultHandle,
 	SimulatedDisk,
+	SimulatedWriteSkips,
 } from "./createCrossVaultTest";
 export type { TestHSM, TestHSMOptions, TestableHSM } from "./createTestHSM";
 
