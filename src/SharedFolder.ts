@@ -67,7 +67,7 @@ import { ContentAddressedStore } from "./CAS";
 import { SyncSettingsManager, type SyncFlags } from "./SyncSettings";
 import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
 import { Canvas, isCanvas } from "./Canvas";
-import { flags } from "./flagManager";
+import { FeatureFlagManager, flags } from "./flagManager";
 import { MergeManager } from "./merge-hsm/MergeManager";
 import {
 	E2ERecordingBridge,
@@ -370,6 +370,8 @@ export class SharedFolder extends HasProvider {
 	private readonly remoteActivitySubscribers = new Set<() => void>();
 	private connectionAttempt: Promise<boolean> | null = null;
 	private startupConnectRequested = false;
+	/** UI consumers watching the current user's folder permissions flip. */
+	private readonly folderPermissionSubscribers = new Set<() => void>();
 
 	constructor(
 		public appId: string,
@@ -1926,9 +1928,11 @@ export class SharedFolder extends HasProvider {
 	}
 
 	/**
-	 * Content-write permission for documents in this folder. Unknown states
-	 * default to write — the server enforces real authorization, and failing
-	 * open avoids stranding writes on missing client state.
+	 * Content-write permission for documents in this folder. The role-derived
+	 * answer is primary; before roles arrive the folder answers from the
+	 * authorization the server last granted this device, and a device with
+	 * no remembered answer is writable. The server enforces real
+	 * authorization either way.
 	 */
 	public get canWriteContent(): boolean {
 		if (!flags().enableReadOnlyPermissions) {
@@ -1943,7 +1947,11 @@ export class SharedFolder extends HasProvider {
 
 	/** Whether local create, rename, move, and delete intent may change membership. */
 	public get canManageFiles(): boolean {
-		if (!flags().enableReadOnlyPermissions) return true;
+		// Read the live flag object rather than calling flags(): this getter
+		// runs once per file while the tree is decorated, and flags() copies.
+		if (!FeatureFlagManager.getInstance().flags.enableReadOnlyPermissions) {
+			return true;
+		}
 		if (this._canManageFilesAnswerCache === undefined) {
 			this._canManageFilesAnswerCache = this.deriveCanManageFilesAnswer();
 		}
@@ -1956,6 +1964,28 @@ export class SharedFolder extends HasProvider {
 			this.recordReaderEditOverwrite("", this.getPath(path));
 		}
 		return true;
+	}
+
+	/**
+	 * Watch for the current user's permissions on this folder to change
+	 * (e.g. a Reader promoted to Member). Fires after the role-derived
+	 * policy caches update, so subscribers read fresh answers.
+	 */
+	public subscribeToPermissionChanges(callback: () => void): () => void {
+		if (this.destroyed) {
+			return () => {};
+		}
+		this.folderPermissionSubscribers.add(callback);
+		return () => {
+			this.folderPermissionSubscribers.delete(callback);
+		};
+	}
+
+	private notifyFolderPermissionSubscribers(): void {
+		if (this.destroyed) return;
+		for (const subscriber of [...this.folderPermissionSubscribers]) {
+			subscriber();
+		}
 	}
 
 	/**
@@ -1989,6 +2019,13 @@ export class SharedFolder extends HasProvider {
 				// Documents have been answering from the remembered grant; the
 				// roles disagree, so the held tokens are suspect too.
 				this.refreshDocumentTokensForPermissionChange();
+				this.notifyFolderPermissionSubscribers();
+				return;
+			}
+			// Nothing was authorized yet, so no token churn; consumers that
+			// paint by permission still need the restrictive answer.
+			if (!canWrite || !canManage) {
+				this.notifyFolderPermissionSubscribers();
 			}
 			return;
 		}
@@ -2001,6 +2038,7 @@ export class SharedFolder extends HasProvider {
 			return;
 		}
 		this.refreshDocumentTokensForPermissionChange();
+		this.notifyFolderPermissionSubscribers();
 	}
 
 	private refreshDocumentTokensForPermissionChange(): void {
@@ -2144,6 +2182,7 @@ export class SharedFolder extends HasProvider {
 		}
 		if (!flags().enableReadOnlyPermissions) return;
 		if (this.canWriteContentAnswer !== null) return;
+		this.notifyFolderPermissionSubscribers();
 		this.files.forEach((file) => {
 			if (isDocument(file)) file.notifyAccessModeChanged();
 		});
