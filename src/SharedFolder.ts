@@ -362,6 +362,8 @@ export class SharedFolder extends HasProvider {
 	private readonly remoteActivitySubscribers = new Set<() => void>();
 	private connectionAttempt: Promise<boolean> | null = null;
 	private startupConnectRequested = false;
+	/** UI consumers watching the current user's folder permissions flip. */
+	private readonly folderPermissionSubscribers = new Set<() => void>();
 
 	constructor(
 		public appId: string,
@@ -1928,6 +1930,24 @@ export class SharedFolder extends HasProvider {
 		return true;
 	}
 
+	/** Fires after canWriteContent or canManageFiles changes. */
+	public subscribeToPermissionChanges(callback: () => void): () => void {
+		if (this.destroyed) {
+			return () => {};
+		}
+		this.folderPermissionSubscribers.add(callback);
+		return () => {
+			this.folderPermissionSubscribers.delete(callback);
+		};
+	}
+
+	private notifyFolderPermissionSubscribers(): void {
+		if (this.destroyed) return;
+		for (const subscriber of [...this.folderPermissionSubscribers]) {
+			subscriber();
+		}
+	}
+
 	private refreshPermissionPolicy(before = this.answers): void {
 		this._canWriteContentAnswerCache = this.deriveCanWriteContentAnswer();
 		this._canManageFilesAnswerCache = this.deriveCanManageFilesAnswer();
@@ -1947,6 +1967,7 @@ export class SharedFolder extends HasProvider {
 		const after = this.answers;
 		if (before.write === after.write && before.manage === after.manage) return;
 		this.refreshDocumentTokensForPermissionChange();
+		this.notifyFolderPermissionSubscribers();
 	}
 
 	private refreshDocumentTokensForPermissionChange(): void {

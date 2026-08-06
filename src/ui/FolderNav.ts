@@ -514,29 +514,69 @@ class NotSyncedPillDecoration {
 	}
 }
 
-class NotSyncedPillVisitor extends BaseVisitor<NotSyncedPillDecoration> {
+export interface NotSyncedPillState {
+	label: string;
+	reason: string;
+}
+
+/**
+ * Why a file inside a shared folder is not being synced, if any reason
+ * applies. Storage and file-type reasons win over the read-only reason. The
+ * read-only reason marks a file with no membership record in a folder
+ * where this user cannot manage files, so it exists only on this device.
+ */
+export function notSyncedPillState(
+	sharedFolder: SharedFolder,
+	file: TFile,
+): NotSyncedPillState | null {
+	if (!sharedFolder.checkPath(file.path)) {
+		return null;
+	}
+	if (sharedFolder.isStorageBlockedTFile(file)) {
+		return {
+			label: "Attachment storage is required to sync this file",
+			reason: "storage-required",
+		};
+	}
+	if (!sharedFolder.isSyncableTFile(file)) {
+		return {
+			label: "Syncing this file type is disabled",
+			reason: "file-type-disabled",
+		};
+	}
+	if (
+		sharedFolder.ready &&
+		!sharedFolder.canManageFiles &&
+		!sharedFolder.syncStore.has(sharedFolder.getVirtualPath(file.path))
+	) {
+		return {
+			label: "This file is only on this device: the folder is read-only for you",
+			reason: "read-only-folder",
+		};
+	}
+	return null;
+}
+
+export class NotSyncedPillVisitor extends BaseVisitor<NotSyncedPillDecoration> {
 	visitFile(
 		file: TFile,
 		item: FileItem,
 		storage?: NotSyncedPillDecoration,
 		sharedFolder?: SharedFolder,
 	): NotSyncedPillDecoration | null {
-		if (
-			sharedFolder &&
-			sharedFolder.checkPath(file.path) &&
-			(sharedFolder.isStorageBlockedTFile(file) ||
-				!sharedFolder.isSyncableTFile(file))
-		) {
-			const storageBlocked = sharedFolder.isStorageBlockedTFile(file);
-			const label = storageBlocked
-				? "Attachment storage is required to sync this file"
-				: "Syncing this file type is disabled";
-			const reason = storageBlocked ? "storage-required" : "file-type-disabled";
+		const state = sharedFolder
+			? notSyncedPillState(sharedFolder, file)
+			: null;
+		if (state) {
 			if (storage) {
-				storage.setLabel(label, reason);
+				storage.setLabel(state.label, state.reason);
 				return storage;
 			}
-			return new NotSyncedPillDecoration(item.selfEl, label, reason);
+			return new NotSyncedPillDecoration(
+				item.selfEl,
+				state.label,
+				state.reason,
+			);
 		}
 		if (storage) {
 			storage.destroy();
@@ -1032,6 +1072,11 @@ export class FolderNavigationDecorations {
 					folder.syncStore.subscribe(() => this.quickRefresh(folder)),
 				);
 				folder.onDestroy(
+					folder.subscribeToPermissionChanges(() =>
+						this.quickRefresh(folder),
+					),
+				);
+				folder.onDestroy(
 					folder.mergeManager.syncStatus.subscribeChanges(
 						(_statuses, changed) =>
 							this.syncStatusChanged(folder, changed),
@@ -1140,6 +1185,11 @@ export class FolderNavigationDecorations {
 			this.pendingQuickRefreshFolders.clear();
 		}
 		this.scheduleQuickRefresh();
+	}
+
+	/** Repaint a newly created row even when folder membership stays unchanged. */
+	fileCreated(folder: SharedFolder): void {
+		this.quickRefresh(folder);
 	}
 
 	private flushQuickRefresh(): void {
