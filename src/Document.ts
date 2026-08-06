@@ -147,6 +147,10 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			getCurrentDiskMetadata: () =>
 				this.sharedFolder.getCurrentDiskMetadata(this),
 			isFolderConnected: () => this.sharedFolder.connected,
+			// Read the provider object at consumption time. The provider may not
+			// exist yet when the HSM is constructed and may be replaced later, so
+			// this must remain a closure over the document rather than a snapshot.
+			isProviderSynced: () => this._provider?.synced === true,
 			getPersistenceMetadata: () => ({
 				path: this.path,
 				relay: this.sharedFolder.relayId || "",
@@ -1263,11 +1267,11 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			!this._activeProviderIntegration &&
 			(this._idleProviderIntegrationRefs ?? 0) === 0
 		) {
-			this._providerIntegration.destroy();
-			this._providerIntegration = null;
 			if (disconnect) {
 				this.disconnect();
 			}
+			this._providerIntegration.destroy();
+			this._providerIntegration = null;
 		}
 	}
 

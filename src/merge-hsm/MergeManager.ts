@@ -843,6 +843,7 @@ export class MergeManager {
     getCurrentDiskMetadata?: () => { mtime: number; hash?: string } | null;
     getPersistenceMetadata?: () => PersistenceMetadata;
     isFolderConnected?: () => boolean;
+    isProviderSynced?: () => boolean;
   }): MergeHSM {
     const {
       guid,
@@ -852,6 +853,7 @@ export class MergeManager {
       getCurrentDiskMetadata,
       getPersistenceMetadata,
       isFolderConnected,
+      isProviderSynced,
     } = config;
 
     // Get lightweight metadata from cache (bulk-loaded during initialize())
@@ -868,6 +870,7 @@ export class MergeManager {
       persistenceMetadata: getPersistenceMetadata?.(),
       diskLoader: getDiskContent,
       isFolderConnected,
+      isProviderSynced,
       yaml: this._yaml ?? undefined,
     });
 

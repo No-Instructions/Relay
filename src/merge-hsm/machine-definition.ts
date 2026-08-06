@@ -215,6 +215,7 @@ export const MACHINE: MachineDefinition = {
 		},
 		entry: ['resetIdleRetryCount', 'clearSettledDiskContents', 'persistSettledState'],
 		on: {
+			DISCONNECTED: { target: 'idle.synced', actions: ['setOffline', 'markDiskUnverified'] },
 			REMOTE_UPDATE: [
 				{ target: 'idle.localAhead', guard: 'hasFork', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 				{ target: 'idle.loadingDiskContents', guard: 'diskContentsNeededBeforeRemoteMerge', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
@@ -229,7 +230,7 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.diskAhead', actions: ['storeDiskMetadata'] },
 			],
 			PROVIDER_SYNCED: [
-				{ target: 'idle.remoteAhead', guard: 'providerSyncedRemoteAhead', actions: ['markProviderSynced'], reenter: true },
+				{ target: 'idle.loadingDiskContents', guard: 'providerSyncedRemoteAhead', actions: ['preserveRemoteAheadForDiskVerification', 'markProviderSynced', 'refreshRemoteStateVector'] },
 				{ target: 'idle.synced', actions: ['markProviderSynced'] },
 			],
 			CM6_CHANGE: { target: 'idle.synced', actions: ['accumulateCM6Change'] },
@@ -572,6 +573,41 @@ export const MACHINE: MachineDefinition = {
 		},
 	},
 
+	'active.reconnectVerifying': {
+		resources: {
+			residency: ['awake'],
+			localDoc: 'present',
+			remoteDoc: 'present',
+			lcaMetadata: 'present',
+			lcaContents: 'present',
+			pendingDiskContents: 'optional',
+			fork: 'absent',
+			conflict: 'absent',
+		},
+		invoke: {
+			src: 'active-reconnect-merge',
+			onDone: [
+				{ target: 'active.tracking', guard: 'threeWayMergeSucceeded', actions: ['applyActiveReconnectMergeResult'] },
+				{ target: 'active.conflict.bannerShown', guard: 'threeWayMergeConflict', actions: ['storeThreeWayConflict'] },
+			],
+			onError: { target: 'active.tracking', actions: ['storeError', 'mergeRemoteToLocal', 'repairFrontmatter'] },
+		},
+		on: {
+			REMOTE_UPDATE: { target: 'active.reconnectVerifying', actions: ['applyRemoteToRemoteDoc'], reenter: true },
+			REMOTE_DOC_UPDATED: { target: 'active.reconnectVerifying', reenter: true },
+			CM6_CHANGE: { target: 'active.reconnectVerifying', actions: ['applyCM6ToLocalDoc'] },
+			DISK_CHANGED: { target: 'active.reconnectVerifying', actions: ['storeDiskMetadata'], reenter: true },
+			SAVE_COMPLETE: { target: 'active.reconnectVerifying', actions: ['updateDiskFromSave'], reenter: true },
+			PROVIDER_SYNCED: { target: 'active.reconnectVerifying', actions: ['markProviderSynced', 'refreshRemoteStateVector'], reenter: true },
+			CONNECTED: { target: 'active.reconnectVerifying', actions: ['flushPendingToRemote'] },
+			DISCONNECTED: { target: 'active.reconnectVerifying', actions: ['setOffline'], reenter: true },
+			MERGE_CONFLICT: { target: 'active.conflict.bannerShown', actions: ['storeConflictData'] },
+			ERROR: { target: 'active.tracking', actions: ['storeError'] },
+			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
+			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
+		},
+	},
+
 	'active.conflict.bannerShown': {
 		resources: {
 			residency: ['awake'],
@@ -719,20 +755,26 @@ export const MACHINE: MachineDefinition = {
 		on: {
 			CM6_CHANGE: { target: 'active.tracking', actions: ['applyCM6ToLocalDoc'] },
 			REMOTE_DOC_UPDATED: { target: 'active.tracking', actions: ['mergeRemoteToLocal', 'repairFrontmatter'] },
-			REMOTE_UPDATE: {
-				target: 'active.tracking',
-				actions: [
-					'applyRemoteToRemoteDoc',
-					'mergeRemoteToLocal',
-					'repairFrontmatter',
-					'absorbTextPreservingRemoteUpdate',
-				],
-			},
+			REMOTE_UPDATE: [
+				{ target: 'active.reconnectVerifying', guard: 'remoteUpdateNeedsDiskVerification', actions: ['applyRemoteToRemoteDoc'] },
+				{
+					target: 'active.tracking',
+					actions: [
+						'applyRemoteToRemoteDoc',
+						'mergeRemoteToLocal',
+						'repairFrontmatter',
+						'absorbTextPreservingRemoteUpdate',
+					],
+				},
+			],
 			SAVE_COMPLETE: { target: 'active.tracking', actions: ['updateDiskFromSave'] },
 			DISK_CHANGED: { target: 'active.tracking', actions: ['storeDiskMetadataOnly'] },
 			CONNECTED: { target: 'active.tracking', actions: ['flushPendingToRemote', 'mergeRemoteToLocal'] },
-			DISCONNECTED: { target: 'active.tracking', actions: ['setOffline'] },
-			PROVIDER_SYNCED: { target: 'active.tracking', actions: ['markProviderSynced', 'mergeRemoteToLocal', 'seedFrontmatterMap', 'reconcileForkInActive'] },
+			DISCONNECTED: { target: 'active.tracking', actions: ['setOffline', 'markDiskUnverified'] },
+			PROVIDER_SYNCED: [
+				{ target: 'active.reconnectVerifying', guard: 'providerSyncedRemoteAheadNeedsDiskVerification', actions: ['markProviderSynced', 'refreshRemoteStateVector'] },
+				{ target: 'active.tracking', actions: ['markProviderSynced', 'mergeRemoteToLocal', 'seedFrontmatterMap', 'reconcileForkInActive'] },
+			],
 			MERGE_CONFLICT: { target: 'active.conflict.bannerShown', actions: ['storeConflictData'] },
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },

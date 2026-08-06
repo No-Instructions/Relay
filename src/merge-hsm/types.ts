@@ -235,6 +235,7 @@ export type StatePath =
 	| "active.entering.awaitingPersistence"
 	| "active.entering.reconciling"
 	| "active.tracking"
+	| "active.reconnectVerifying"
 	| "active.merging.twoWay"
 	| "active.merging.threeWay"
 	| "active.conflict.bannerShown"

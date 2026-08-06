@@ -5,6 +5,14 @@
  * live Obsidian instances. Each vault has its own MergeHSM, localDoc,
  * remoteDoc, and simulated disk. The server Y.Doc acts as the relay,
  * propagating updates between vaults when sync() is called.
+ *
+ * WRITE_DISK effects go through a simulated executor that mirrors the
+ * document executor's contract: a write that goes through updates the
+ * simulated disk and confirms back to the machine with the written hash
+ * and resulting mtime; a skipped write leaves the disk untouched and
+ * never confirms, so the machine's baseline holds at the last content
+ * the file really has. Tests model an unwritable document by setting
+ * flags on the vault's `writeSkips`.
  */
 
 import * as Y from "yjs";
@@ -14,6 +22,7 @@ import type { MergeEffect } from "../types";
 import { ProviderIntegration } from "../integration/ProviderIntegration";
 import { reconnectProvider } from "../integration/ProviderLifecycle";
 import { MockYjsProvider } from "./MockYjsProvider";
+import { sha256 } from "./events";
 
 // =============================================================================
 // Types
@@ -24,11 +33,28 @@ export interface SimulatedDisk {
 	mtime: number;
 }
 
+/**
+ * Skip conditions of the simulated write executor, mirroring the document
+ * executor's stand-down checks. While any flag is set, WRITE_DISK effects
+ * neither touch the simulated disk nor confirm — exactly like a write that
+ * found the document active, pending delete, or destroyed.
+ */
+export interface SimulatedWriteSkips {
+	/** The user holds the document open; idle writes must stand down. */
+	userLock: boolean;
+	/** The file is queued for deletion. */
+	pendingDelete: boolean;
+	/** The document was torn down. */
+	destroyed: boolean;
+}
+
 export interface VaultHandle {
 	/** The underlying TestHSM */
 	hsm: TestHSM;
 	/** Simulated disk state */
 	disk: SimulatedDisk;
+	/** Executor skip conditions for this vault's WRITE_DISK effects */
+	writeSkips: SimulatedWriteSkips;
 	/** Shortcut: send event to HSM */
 	send: TestHSM["send"];
 	/** Simulate user typing (sends CM6_CHANGE; HSM applies to localDoc) */
@@ -82,21 +108,30 @@ export async function createCrossVaultTest(
 
 	// Both vaults share the same document GUID (same file, two vaults)
 	const docGuid = "cross-vault-doc";
+	const diskA: SimulatedDisk = { content: null, mtime: 0 };
+	const diskB: SimulatedDisk = { content: null, mtime: 0 };
 
 	const hsmA = await createTestHSM({
 		guid: docGuid,
 		path: "shared.md",
 		vaultId: "vault-A",
+		diskLoader: async () => ({
+			content: diskA.content ?? "",
+			hash: await sha256(diskA.content ?? ""),
+			mtime: diskA.mtime,
+		}),
 	});
 
 	const hsmB = await createTestHSM({
 		guid: docGuid,
 		path: "shared.md",
 		vaultId: "vault-B",
+		diskLoader: async () => ({
+			content: diskB.content ?? "",
+			hash: await sha256(diskB.content ?? ""),
+			mtime: diskB.mtime,
+		}),
 	});
-
-	const diskA: SimulatedDisk = { content: null, mtime: 0 };
-	const diskB: SimulatedDisk = { content: null, mtime: 0 };
 
 	// Connection state
 	let aConnected = true;
@@ -174,24 +209,58 @@ export async function createCrossVaultTest(
 
 	syncFn = sync;
 
-	// Track WRITE_DISK effects to update simulated disks
-	hsmA.hsm.subscribe((effect: MergeEffect) => {
-		if (effect.type === "WRITE_DISK") {
-			diskA.content = effect.contents;
-			diskA.mtime = effect.mtime ?? Date.now();
-		}
-	});
+	const writeSkipsA: SimulatedWriteSkips = {
+		userLock: false,
+		pendingDelete: false,
+		destroyed: false,
+	};
+	const writeSkipsB: SimulatedWriteSkips = {
+		userLock: false,
+		pendingDelete: false,
+		destroyed: false,
+	};
 
-	hsmB.hsm.subscribe((effect: MergeEffect) => {
-		if (effect.type === "WRITE_DISK") {
-			diskB.content = effect.contents;
-			diskB.mtime = Date.now();
-		}
-	});
+	/**
+	 * Simulated write executor. Mirrors the document executor's contract:
+	 * every skip condition returns without touching the disk and without
+	 * confirming; a write that goes through updates the disk and confirms
+	 * with the hash of the written bytes and the file's resulting mtime.
+	 * The real executor's write queue makes confirmation asynchronous;
+	 * here it is synchronous, which is the earliest a confirmation can
+	 * arrive — the never-confirmed window is pinned by machine-level tests.
+	 */
+	const attachWriteExecutor = (
+		hsm: TestHSM,
+		disk: SimulatedDisk,
+		skips: SimulatedWriteSkips,
+	): void => {
+		hsm.hsm.subscribe((effect: MergeEffect) => {
+			if (effect.type !== "WRITE_DISK") return;
+			if (skips.destroyed || skips.pendingDelete || skips.userLock) {
+				return;
+			}
+			const mtime = effect.mtime ?? Date.now();
+			disk.content = effect.contents;
+			disk.mtime = mtime;
+			if (effect.hash) {
+				// WRITE_DISK carries the machine's hash of these same
+				// contents; confirming with it matches hashing the bytes.
+				hsm.hsm.confirmDiskWrite({ hash: effect.hash, mtime });
+			} else {
+				void sha256(effect.contents).then((hash) => {
+					hsm.hsm.confirmDiskWrite({ hash, mtime });
+				});
+			}
+		});
+	};
+
+	attachWriteExecutor(hsmA, diskA, writeSkipsA);
+	attachWriteExecutor(hsmB, diskB, writeSkipsB);
 
 	function createVaultHandle(
 		hsm: TestHSM,
 		disk: SimulatedDisk,
+		writeSkips: SimulatedWriteSkips,
 		remoteDoc: Y.Doc,
 		getConnected: () => boolean,
 		setConnected: (v: boolean) => void,
@@ -199,6 +268,7 @@ export async function createCrossVaultTest(
 		return {
 			hsm,
 			disk,
+			writeSkips,
 			send: hsm.send.bind(hsm),
 			effects: hsm.effects,
 			clearEffects: () => hsm.clearEffects(),
@@ -305,6 +375,7 @@ export async function createCrossVaultTest(
 	const vaultA = createVaultHandle(
 		hsmA,
 		diskA,
+		writeSkipsA,
 		remoteDocA,
 		() => aConnected,
 		(v) => {
@@ -314,6 +385,7 @@ export async function createCrossVaultTest(
 	const vaultB = createVaultHandle(
 		hsmB,
 		diskB,
+		writeSkipsB,
 		remoteDocB,
 		() => bConnected,
 		(v) => {
@@ -325,6 +397,10 @@ export async function createCrossVaultTest(
 	if (options.useProviderIntegration) {
 		const providerA = new MockYjsProvider(remoteDocA, server);
 		const providerB = new MockYjsProvider(remoteDocB, server);
+		providerA.on("sync", () => hsmA.setProviderSynced(true));
+		providerB.on("sync", () => hsmB.setProviderSynced(true));
+		providerA.on("connection-error", () => hsmA.setProviderSynced(false));
+		providerB.on("connection-error", () => hsmB.setProviderSynced(false));
 
 		const integrationA = new ProviderIntegration(
 			hsmA.hsm as any,
