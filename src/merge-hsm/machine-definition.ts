@@ -356,6 +356,7 @@ export const MACHINE: MachineDefinition = {
 			src: 'idle-merge',
 			onDone: [
 				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['updateLCAFromInvokeResult'] },
+				{ target: 'idle.diskAhead', guard: 'awaitingProvider' },
 				{ target: 'idle.localAhead', guard: 'forkWasCreated' },
 				{ target: 'idle.conflict', guard: 'canMaterializeIdleConflict', actions: ['materializeIdleConflict'] },
 				{ target: 'idle.error', guard: 'lcaUnavailable', actions: ['storeLcaUnavailableError'] },
