@@ -3216,10 +3216,11 @@ export class SharedFolder extends HasProvider {
 			// what the user has on disk. Whatever decided to write, a document
 			// carrying work of its own is not ours to overwrite: the write
 			// would settle the difference in the writer's favour, with no
-			// record of it and no way back. Decided from machine state alone,
-			// never from content — and fail-closed on a missing machine,
-			// because a document that has been torn down cannot answer for
-			// what is on its disk and is not the one anybody is tracking.
+			// record of it and no way back. The machine normally decides from
+			// state alone; an in-flight first remote enrollment additionally
+			// verifies that its local CRDT snapshot has not changed. Fail closed
+			// on a missing machine, because a torn-down document cannot answer
+			// for what is on disk and is not the one anybody is tracking.
 			if (!doc.hsm?.acceptsRemoteEnrollment) {
 				this.warn(
 					`[${doc.path}] write refused: the document is not in a state that accepts a remote copy`,

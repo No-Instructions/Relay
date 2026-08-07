@@ -340,6 +340,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	// Persisted/enrolled local head. A resident localDoc may only refresh this
 	// after its persistence load has completed and matched this head.
 	private _enrolledLocalSnapshot: Uint8Array | null = null;
+	private _initialRemoteEnrollmentSnapshot: Uint8Array | null = null;
 	private _legacyEnrolledLocalStateVector: Uint8Array | null = null;
 	private _localDocSnapshotSafe = false;
 
@@ -1181,9 +1182,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	 * Everything else is refused, including a destroyed or unloading machine,
 	 * and anything with the file open for editing.
 	 *
-	 * Answered from machine state alone: no document, disk, or remote text is
-	 * read or compared. That makes it safe as a precondition for operations
-	 * that destroy what is on disk.
+	 * Usually answered from machine state alone. The one exception is an
+	 * in-flight first remote enrollment that has already initialized local
+	 * persistence: its current CRDT snapshot must still equal the snapshot the
+	 * enrollment introduced before the server copy may be written to disk.
 	 */
 	get acceptsRemoteEnrollment(): boolean {
 		// Records of work that exists only on this device. Taking the server's
@@ -1202,8 +1204,29 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			case "idle.synced":
 			case "idle.remoteAhead":
 				return true;
+			case "idle.localAhead":
+				return this.initialRemoteEnrollmentCanComplete();
 			default:
 				return false;
+		}
+	}
+
+	private initialRemoteEnrollmentCanComplete(): boolean {
+		if (
+			!this._initialRemoteEnrollmentSnapshot ||
+			!this.localDoc ||
+			this._lca !== null ||
+			this._disk !== null
+		) {
+			return false;
+		}
+		try {
+			return snapshotsEqual(
+				snapshotFromDoc(this.localDoc),
+				{ snapshot: this._initialRemoteEnrollmentSnapshot },
+			);
+		} catch {
+			return false;
 		}
 	}
 
@@ -1890,6 +1913,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				return false;
 			}
 			const localSnapshot = snapshotFromDoc(this.localDoc!).snapshot;
+			this._initialRemoteEnrollmentSnapshot = localSnapshot;
 			const localStateVector = Y.encodeStateVector(this.localDoc!);
 			this._localStateVector = localStateVector;
 			this.rememberEnrolledLocalHead(localSnapshot, localStateVector);
@@ -2144,6 +2168,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			mtime: disk.mtime,
 			stateVector: Y.encodeStateVector(this.localDoc),
 		});
+		this._initialRemoteEnrollmentSnapshot = null;
 		return this._lca !== null;
 	}
 
@@ -2230,6 +2255,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			mtime: this.timeProvider.now(),
 			stateVector: Y.encodeStateVector(this.localDoc),
 		});
+		this._initialRemoteEnrollmentSnapshot = null;
 		return this._lca !== null;
 	}
 
@@ -2693,6 +2719,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			// Invoke completion guards
 			mergeSucceeded: (_hsm, event) => (event as any).data?.success === true,
 			forkWasCreated: (_hsm, event) => (event as any).data?.forked === true,
+			providerSyncedWhileAwaitingNoFork: (_hsm, event) =>
+				(event as any).data?.awaitingProvider === true &&
+				this._fork === null &&
+				this.remoteDoc !== null &&
+				this._isProviderSynced(),
 			awaitingProvider: (_hsm, event) => (event as any).data?.awaitingProvider === true,
 
 			// Outcome classification: the reconcile completed but the world moved
@@ -3130,6 +3161,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this._remoteStateVector = null;
 				this._needsDiskContentLoad = false;
 				this._restoredForkNeedsDiskRead = false;
+				this._initialRemoteEnrollmentSnapshot = null;
 				this.clearEnrolledLocalHead();
 			},
 			storeError: (_hsm, event) => {
@@ -4804,7 +4836,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	 * - Conflict: → idle.conflict
 	 */
 	private async invokeForkReconcile(signal: AbortSignal): Promise<unknown> {
-		if (!this._fork) {
+		// Local-only mode deliberately has no provider to await. The local CRDT
+		// remains authoritative until sharing resumes.
+		if (!this._fork && this.isLocalOnly) {
 			return { success: true, newLCA: this._lca };
 		}
 
@@ -4812,6 +4846,16 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			// Provider not synced yet — stay in idle.localAhead and wait.
 			// PROVIDER_SYNCED will reenter idle.localAhead, restarting this invoke.
 			return { success: false, awaitingProvider: true };
+		}
+
+		// A restart can classify persisted CRDT work as local-ahead without a
+		// disk fork. Once the provider is synced, the success action flushes the
+		// full state diff to the attached replica before settling.
+		if (!this._fork) {
+			if (!this.remoteDoc) {
+				return { success: false, awaitingProvider: true };
+			}
+			return { success: true, newLCA: this._lca };
 		}
 
 		const localDoc = this.requireLocalDoc("fork reconcile");

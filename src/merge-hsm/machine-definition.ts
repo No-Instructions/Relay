@@ -227,6 +227,8 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.synced', guard: 'diskMatchesLCA', actions: ['storeDiskMetadata', 'updateLCAMtime'] },
 				{ target: 'idle.diverged', guard: 'hasNoLCA', actions: ['storeDiskMetadata'] },
 				{ target: 'idle.diverged', guard: 'remoteOrLocalAhead', actions: ['storeDiskMetadata'] },
+				// The disk-ahead invoke creates the missing disk fork, then returns
+				// this document to local-ahead for reconciliation against the peer.
 				{ target: 'idle.diskAhead', actions: ['storeDiskMetadata'] },
 			],
 			PROVIDER_SYNCED: [
@@ -260,6 +262,7 @@ export const MACHINE: MachineDefinition = {
 			src: 'fork-reconcile',
 			onDone: [
 				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['clearForkAndUpdateLCA'] },
+				{ target: 'idle.localAhead', guard: 'providerSyncedWhileAwaitingNoFork', reenter: true },
 				{ target: 'idle.localAhead', guard: 'awaitingProvider' },
 				{ target: 'idle.conflict', guard: 'hasPreexistingConflict', actions: ['prepareIdleConflictFromFork'] },
 				// A remote update landed mid-reconcile: re-enter loading to
@@ -286,7 +289,8 @@ export const MACHINE: MachineDefinition = {
 			DISK_CHANGED: [
 				{ target: 'idle.diverged', guard: 'hasNoLCA', actions: ['storeDiskMetadata'] },
 				{ target: 'idle.localAhead', guard: 'diskMatchesLCA', actions: ['storeDiskMetadata', 'updateLCAMtime'] },
-				{ target: 'idle.localAhead', actions: ['storeDiskMetadata', 'ingestDiskToLocalDoc'], reenter: true },
+				{ target: 'idle.localAhead', guard: 'hasFork', actions: ['storeDiskMetadata', 'ingestDiskToLocalDoc'], reenter: true },
+				{ target: 'idle.diskAhead', actions: ['storeDiskMetadata'] },
 			],
 			CM6_CHANGE: { target: 'idle.localAhead', actions: ['accumulateCM6Change'] },
 			RECOVER_LCA: RECOVER_LCA_HANDLER,
