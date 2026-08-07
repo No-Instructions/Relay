@@ -1357,6 +1357,15 @@ export class SharedFolder extends HasProvider {
 			return;
 		}
 
+		// A compacted baseline can only hydrate once this document has a replica.
+		// Keep re-driving the connection after membership settlement, including
+		// when the first request arrived too early to connect.
+		if (hsm.isAwaitingProviderForCompactedLCA()) {
+			if (file.hasProviderIntegration() && file.intent === "connected") return;
+			file.connectForForkReconcile().catch(() => {});
+			return;
+		}
+
 		// A note wedged in idle.error with a retryable stored error re-arms when
 		// the reconnect delivers the remote update; skip an integration that is
 		// already connected and syncing.
