@@ -37,6 +37,7 @@ const isVersionError = err => err && err.name === 'VersionError'
  * @return {Promise<IDBDatabase>}
  */
 const openDbRequest = (name, version) => new Promise((resolve, reject) => {
+  let abandoned = false
   const request = version === undefined
     ? indexedDB.open(name)
     : indexedDB.open(name, version)
@@ -44,10 +45,19 @@ const openDbRequest = (name, version) => new Promise((resolve, reject) => {
     createMissingStores(/** @type {IDBDatabase} */ (event.target.result))
   }
   request.onblocked = () => {
-    idbWarn(`indexedDB.open blocked for ${name}`)
+    abandoned = true
+    const error = new Error(`indexedDB.open blocked for ${name}`)
+    idbWarn(error.message)
+    reject(error)
   }
   request.onerror = () => reject(request.error || new Error(`indexedDB.open failed for ${name}`))
-  request.onsuccess = () => resolve(request.result)
+  request.onsuccess = () => {
+    if (abandoned) {
+      request.result.close()
+      return
+    }
+    resolve(request.result)
+  }
 })
 
 /**
