@@ -145,7 +145,10 @@ export const MACHINE: MachineDefinition = {
 	// =========================================================================
 
 	'idle.loading': {
-		entry: ['ensureLocalDocForIdle', 'processAccumulatedForIdle'],
+		entry: [
+			'ensureLocalDocForIdle',
+			'processAccumulatedForIdle',
+		],
 		on: {
 			DISK_CHANGED: { target: 'idle.loading', actions: ['storeDiskMetadata'], reenter: true },
 			REMOTE_UPDATE: { target: 'idle.loading', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'], reenter: true },
@@ -154,6 +157,8 @@ export const MACHINE: MachineDefinition = {
 			...IDLE_LIFECYCLE,
 		},
 		always: [
+			{ target: 'idle.awaitingLocalPersistence', guard: 'localPersistenceNeededAtLoad' },
+			{ target: 'idle.remoteAhead', guard: 'providerSyncedRemoteAheadAtLoad' },
 			{ target: 'idle.synced', guard: 'allSyncedAtLoad' },
 			{ target: 'idle.recoverLCA', guard: 'canRecoverLCAWithPendingDisk', actions: ['prepareRecoverLCAFromPendingDisk'] },
 			{ target: 'idle.diverged', guard: 'noLCADiskConflictAtLoad' },
@@ -164,6 +169,31 @@ export const MACHINE: MachineDefinition = {
 			{ target: 'idle.loadingDiskContents', guard: 'diskContentsNeededAtLoad' },
 			{ target: 'idle.diverged', guard: 'divergedAtLoad' },
 		],
+	},
+
+	'idle.awaitingLocalPersistence': {
+		entry: ['ensureLocalDocForIdle'],
+		invoke: {
+			src: 'await-local-persistence',
+			onDone: { target: 'idle.loading' },
+			onError: { target: 'idle.error', actions: ['storeInvokeError'] },
+		},
+		on: {
+			DISK_CHANGED: {
+				target: 'idle.awaitingLocalPersistence',
+				actions: ['storeDiskMetadata'],
+			},
+			REMOTE_UPDATE: {
+				target: 'idle.awaitingLocalPersistence',
+				actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'],
+			},
+			PROVIDER_SYNCED: {
+				target: 'idle.awaitingLocalPersistence',
+				actions: ['markProviderSynced'],
+			},
+			RECOVER_LCA: RECOVER_LCA_HANDLER,
+			...IDLE_LIFECYCLE,
+		},
 	},
 
 	'idle.loadingDiskContents': {
@@ -229,6 +259,7 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.diskAhead', actions: ['storeDiskMetadata'] },
 			],
 			PROVIDER_SYNCED: [
+				{ target: 'idle.awaitingLocalPersistence', guard: 'localPersistenceNeededAtLoad', actions: ['markProviderSynced'] },
 				{ target: 'idle.remoteAhead', guard: 'providerSyncedRemoteAhead', actions: ['markProviderSynced'], reenter: true },
 				{ target: 'idle.synced', actions: ['markProviderSynced'] },
 			],
@@ -518,6 +549,10 @@ export const MACHINE: MachineDefinition = {
 			PROVIDER_SYNCED: [
 				{ target: 'idle.loading', guard: 'errorIsRetryable', actions: ['markProviderSynced', 'rearmRetryableError'], reenter: true },
 				{ target: 'idle.error', actions: ['markProviderSynced'] },
+			],
+			PERSISTENCE_SYNCED: [
+				{ target: 'idle.loading', guard: 'errorIsRetryable', actions: ['rearmRetryableError'], reenter: true },
+				{ target: 'idle.error' },
 			],
 			CM6_CHANGE: { target: 'idle.error', actions: ['accumulateCM6Change'] },
 			ACQUIRE_LOCK: IDLE_LIFECYCLE.ACQUIRE_LOCK,

@@ -73,6 +73,7 @@ import { MACHINE, createInterpreterConfig, validateMachine } from "./machine-def
 import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./types";
 import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture } from "./undo";
 import {
+	deleteSetContains,
 	isEmptyDoc,
 	snapshotFromDoc,
 	snapshotsEqual,
@@ -80,6 +81,7 @@ import {
 	stateVectorFromSnapshot,
 	stateVectorIsAhead,
 	stateVectorsEqual,
+	svContains,
 	yjsDocIsAhead,
 	yjsDocsEqual,
 	yjsUpdateIsNoop,
@@ -388,6 +390,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	private _isFolderConnected: () => boolean;
 	private _captureOpts: CaptureOpts | null;
 	private _replayMode: boolean;
+	private _localPersistenceLoadTimeoutMs: number;
 
 	// Whether PROVIDER_SYNCED has been received during the current lock cycle
 	private _providerSynced = false;
@@ -454,6 +457,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		this._isProviderSynced = config.isProviderSynced ?? (() => this._bridge.providerSynced);
 		this._isFolderConnected = config.isFolderConnected ?? (() => this._isOnline);
 		this._replayMode = config.replayMode ?? false;
+		this._localPersistenceLoadTimeoutMs =
+			config.localPersistenceLoadTimeoutMs ?? 30_000;
 		this._yaml = config.yaml ?? null;
 		this._captureOpts = {
 			scope: "contents",
@@ -637,6 +642,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 	private shouldWakeLCARecoveryAfterPersistenceSynced(hasContent = this.localPersistence?.hasUserData() ?? false): boolean {
 		if (!this._statePath.startsWith("idle.")) return false;
+		if (this._statePath === "idle.awaitingLocalPersistence") return true;
+		if (this._statePath === "idle.error" && this._errorRetryable) return true;
 		if (this._statePath === "idle.conflict" || this._statePath === "idle.recoverLCA") return false;
 		if (this._lca || this._fork || this._conflict) return false;
 		if (!this.localDoc || this.localPersistence?.synced !== true) return false;
@@ -2016,6 +2023,23 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		await this.awaitAbortable(persistence.whenSynced, signal ?? this._lifetime.signal);
 	}
 
+	private async awaitLocalPersistenceForLoad(signal: AbortSignal): Promise<void> {
+		let timer: number | null = null;
+		const timeout = new Promise<never>((_resolve, reject) => {
+			timer = this.timeProvider.setTimeout(() => {
+				reject(new Error("Local persistence hydration timed out"));
+			}, this._localPersistenceLoadTimeoutMs);
+		});
+		try {
+			await Promise.race([
+				this.awaitLocalPersistenceSynced(signal),
+				timeout,
+			]);
+		} finally {
+			if (timer !== null) this.timeProvider.clearTimeout(timer);
+		}
+	}
+
 	private async awaitAbortable<T>(
 		promise: Promise<T>,
 		signal: AbortSignal,
@@ -2578,6 +2602,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	private buildGuards(): Record<string, GuardFn> {
 		return {
 			// Idle state determination (for always transitions in idle.loading)
+			localPersistenceNeededAtLoad: () =>
+				!this.localDoc || this.localPersistence?.synced !== true,
 			allSyncedAtLoad: () => {
 				if (this.needsDiskContentAtLoad()) return false;
 				if (!this._lca) {
@@ -2640,6 +2666,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				return this.localDoc.getText("contents").toString() === e.contents;
 			},
 			providerSyncedRemoteAhead: () => this.providerSyncedRemoteAhead(),
+			providerSyncedRemoteAheadAtLoad: () =>
+				this._providerSynced && this.providerSyncedRemoteAhead(),
 			providerSyncNeedsForkReconcileRestart: () =>
 				!this._providerSynced || this._activeInvoke?.id !== "fork-reconcile",
 			remoteOrLocalAhead: () =>
@@ -2883,6 +2911,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					this._lca &&
 					!this._fork &&
 					this._lca.meta.hash === disk.hash &&
+					this.localDoc &&
+					this.localPersistence?.synced === true &&
 					!this.hasLocalChangedSinceLCA() &&
 					!this.hasRemoteChangedSinceLCA()
 				) {
@@ -2991,7 +3021,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				// information; unrecognized failures remain permanent so retries cannot
 				// mask corrupt state or broken invariants.
 				this._errorRetryable =
-					error instanceof DiskFileNotFoundError || this.isTransportError(error);
+					error instanceof DiskFileNotFoundError ||
+					error.message === "Local persistence hydration timed out" ||
+					this.isTransportError(error);
 				this.hsmError(
 					`idle invoke failed | guid=${this._guid} state=${this._statePath} retryable=${this._errorRetryable} error=${error.message}`,
 				);
@@ -3792,6 +3824,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			// Recorded done.invoke.* events drive transitions explicitly.
 			const neverResolve = () => new Promise<never>(() => {});
 			return {
+				'await-local-persistence': neverResolve,
 				'idle-merge': neverResolve,
 				'recover-lca': neverResolve,
 				'fork-reconcile': neverResolve,
@@ -3801,6 +3834,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			};
 		}
 		return {
+			'await-local-persistence': async (_hsm, signal) => {
+				await this.awaitLocalPersistenceForLoad(signal);
+				return { success: true };
+			},
 			'load-disk-contents': async (_hsm, signal) => {
 				this.assertMachineResources("before load-disk-contents");
 				const disk = await this._diskLoader();
@@ -5038,13 +5075,42 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 	private hasLocalChangedSinceLCA(): boolean {
 		if (!this._lca) return false;
-		const lcaSV = this._lca.stateVector;
-		const localSV = this._localStateVector;
+		const localDoc = this.requireLocalDoc("hasLocalChangedSinceLCA");
+		if (!localDoc || this.localPersistence?.synced !== true) {
+			throw new Error(
+				"hasLocalChangedSinceLCA requires hydrated local persistence",
+			);
+		}
+		const local = Y.snapshot(localDoc);
 
-		if (!localSV) return false;
+		if (this._lca.snapshot !== undefined) {
+			const baseline = this.decodedLcaSnapshot();
+			if (!baseline) return true;
 
-		// Check if local has operations not in LCA
-		return stateVectorIsAhead(localSV, lcaSV);
+			return !(
+				svContains(baseline.sv, local.sv) &&
+				deleteSetContains(baseline.ds.clients, local.ds.clients)
+			);
+		}
+
+		return true;
+	}
+
+	private decodedLcaSnapshot(): Y.Snapshot | null {
+		const encoded = this._lca?.snapshot;
+		if (!encoded) return null;
+
+		if (this._lcaGcPinCache?.encoded !== encoded) {
+			let decoded: Y.Snapshot | null = null;
+			try {
+				decoded = Y.decodeSnapshot(encoded);
+			} catch {
+				// Callers choose the safe behavior for an unreadable baseline.
+			}
+			this._lcaGcPinCache = { encoded, decoded };
+		}
+
+		return this._lcaGcPinCache.decoded;
 	}
 
 	private hasDiskChangedSinceLCA(): boolean {
@@ -5077,6 +5143,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 	private providerSyncedRemoteAhead(): boolean {
 		if (!this._lca || !this.remoteDoc) return false;
+		if (!this.localDoc || this.localPersistence?.synced !== true) return false;
 		if (this.hasDiskChangedSinceLCA() || this.hasLocalChangedSinceLCA()) {
 			return false;
 		}
@@ -5113,18 +5180,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		const encoded = this._lca?.snapshot;
 		if (!encoded) return true;
 
-		if (this._lcaGcPinCache?.encoded !== encoded) {
-			let decoded: Y.Snapshot | null = null;
-			try {
-				decoded = Y.decodeSnapshot(encoded);
-			} catch {
-				// An unreadable baseline cannot safely identify disposable
-				// content. Keep deleted items until a valid baseline supersedes it.
-			}
-			this._lcaGcPinCache = { encoded, decoded };
-		}
-
-		const baseline = this._lcaGcPinCache.decoded;
+		const baseline = this.decodedLcaSnapshot();
 		if (!baseline) return false;
 
 		const baselineClock = baseline.sv.get(item.id.client) ?? 0;
@@ -5985,6 +6041,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			statePath === "idle.localAhead" ||
 			statePath === "idle.remoteAhead" ||
 			statePath === "idle.diskAhead" ||
+			statePath === "idle.awaitingLocalPersistence" ||
 			statePath === "idle.loadingDiskContents" ||
 			statePath === "idle.recoverLCA" ||
 			statePath.startsWith("active.merging")

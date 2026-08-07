@@ -410,11 +410,12 @@ export async function loadAndActivate(
 	const mtime = opts?.mtime ?? Date.now();
 
 	// Create LCA and updates for the content
-	const updates = content ? createYjsUpdate(content) : new Uint8Array();
-	const stateVector = content
-		? Y.encodeStateVectorFromUpdate(updates)
-		: new Uint8Array([0]);
-	const lca = await createLCA(content, mtime, stateVector);
+	const updates = createYjsUpdate(content ?? "");
+	const stateVector = Y.encodeStateVectorFromUpdate(updates);
+	const lca = {
+		...(await createLCA(content, mtime, stateVector)),
+		snapshot: snapshotFromUpdate(updates).snapshot,
+	};
 	hsm.setDefaultDiskState?.({
 		content,
 		hash: lca.meta.hash,
@@ -529,11 +530,12 @@ export async function loadToIdle(
 	const mtime = opts?.mtime ?? Date.now();
 
 	// Create LCA
-	const updates = content ? createYjsUpdate(content) : new Uint8Array();
-	const stateVector = content
-		? Y.encodeStateVectorFromUpdate(updates)
-		: new Uint8Array([0]);
-	const lca = await createLCA(content ?? "", mtime, stateVector);
+	const updates = createYjsUpdate(content ?? "");
+	const stateVector = Y.encodeStateVectorFromUpdate(updates);
+	const lca = {
+		...(await createLCA(content ?? "", mtime, stateVector)),
+		snapshot: snapshotFromUpdate(updates).snapshot,
+	};
 	hsm.setDefaultDiskState?.({
 		content: content ?? "",
 		hash: lca.meta.hash,

@@ -221,6 +221,7 @@ export type StatePath =
 	| "destroyed"
 	| "loading"
 	| "idle.loading"
+	| "idle.awaitingLocalPersistence"
 	| "idle.loadingDiskContents"
 	| "idle.synced"
 	| "idle.localAhead"
@@ -987,6 +988,9 @@ export interface MergeHSMConfig {
 	 * Tests pass an explicit mock.
 	 */
 	createPersistence: CreatePersistence;
+
+	/** Maximum time to wait for IndexedDB hydration before surfacing an error. */
+	localPersistenceLoadTimeoutMs?: number;
 
 	/**
 	 * Metadata to store on the persistence for recovery/debugging.

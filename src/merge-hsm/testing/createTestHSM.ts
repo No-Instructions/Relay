@@ -74,6 +74,9 @@ export interface TestHSMOptions {
 
 	/** Optional delay before each mock persistence instance reports synced. */
 	persistenceSyncDelay?: () => Promise<void> | null;
+
+	/** Test override for the idle hydration watchdog. */
+	localPersistenceLoadTimeoutMs?: number;
 }
 
 export interface TestHSM {
@@ -103,6 +106,14 @@ export interface TestHSM {
 
 	/** Get localDoc text content (null if not in active mode) */
 	getLocalDocText(): string | null;
+
+	/** Observe the local persistence hydration boundary in tests. */
+	getLocalPersistenceState(): {
+		localDocPresent: boolean;
+		localDocText: string | null;
+		persistencePresent: boolean;
+		persistenceSynced: boolean | null;
+	};
 
 	/** Get localDoc text length (loads from IDB if in idle mode) */
 	getLocalDocLength(): Promise<number>;
@@ -450,6 +461,7 @@ export async function createTestHSM(
 		remoteDoc,
 		timeProvider: time,
 		createPersistence,
+		localPersistenceLoadTimeoutMs: options.localPersistenceLoadTimeoutMs,
 		diskLoader,
 		isProviderSynced: () => providerState.synced,
 		replayMode: options.replayMode,
@@ -617,6 +629,18 @@ export async function createTestHSM(
 		time,
 		getLocalDocText: () =>
 			hsm.getLocalDoc()?.getText("contents").toString() ?? null,
+		getLocalPersistenceState: () => {
+			const persistence = (hsm as unknown as {
+				localPersistence: IYDocPersistence | null;
+			}).localPersistence;
+			const localDoc = hsm.getLocalDoc();
+			return {
+				localDocPresent: localDoc !== null,
+				localDocText: localDoc?.getText("contents").toString() ?? null,
+				persistencePresent: persistence !== null,
+				persistenceSynced: persistence?.synced ?? null,
+			};
+		},
 		getLocalDocLength: () => hsm.getLocalDocLength(),
 		getRemoteDocText: () =>
 			hsm.getRemoteDoc()?.getText("contents").toString() ?? null,
