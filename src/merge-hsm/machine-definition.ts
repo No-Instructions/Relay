@@ -340,7 +340,7 @@ export const MACHINE: MachineDefinition = {
 			localDoc: 'present',
 			remoteDoc: 'optional',
 			lcaMetadata: 'present',
-			lcaContents: 'present',
+			lcaContents: 'optional',
 			pendingDiskContents: 'present',
 			fork: 'absent',
 			conflict: 'absent',
@@ -355,6 +355,7 @@ export const MACHINE: MachineDefinition = {
 			src: 'idle-merge',
 			onDone: [
 				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['updateLCAFromInvokeResult'] },
+				{ target: 'idle.diskAhead', guard: 'awaitingProvider' },
 				{ target: 'idle.localAhead', guard: 'forkWasCreated' },
 				{ target: 'idle.conflict', guard: 'canMaterializeIdleConflict', actions: ['materializeIdleConflict'] },
 				{ target: 'idle.error', guard: 'lcaUnavailable', actions: ['storeLcaUnavailableError'] },

@@ -74,6 +74,7 @@ import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./typ
 import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture } from "./undo";
 import {
 	isEmptyDoc,
+	snapshotContains,
 	snapshotFromDoc,
 	snapshotsEqual,
 	snapshotIsAhead,
@@ -681,16 +682,29 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	// Rebuild a compacted LCA body from whichever doc still sits exactly at
-	// the baseline: a doc whose complete state vector equals the LCA's state
-	// vector holds precisely the operations the baseline was captured from,
-	// so its text IS the baseline text. localDoc is preferred; remoteDoc is
-	// an equally valid source when localDoc is absent or has moved on.
+	// the baseline. State vectors cover insert clocks but omit the delete set,
+	// so production baselines also require their full snapshot to match. Legacy
+	// baselines without a snapshot retain the vector-only fallback because no
+	// stronger historical evidence was persisted. localDoc is preferred;
+	// remoteDoc is an equally valid source when localDoc has moved on.
 	private hydrateLCAContentsFromMatchingDoc(): void {
 		if (!this._lca || this._lca.contents !== null) return;
 		for (const doc of [this.localDoc, this.remoteDoc]) {
 			if (!doc) continue;
 			if (!stateVectorsEqual(Y.encodeStateVector(doc), this._lca.stateVector)) {
 				continue;
+			}
+			if (this._lca.snapshot !== undefined) {
+				let snapshotMatches = false;
+				try {
+					snapshotMatches = snapshotsEqual(
+						{ snapshot: this._lca.snapshot },
+						snapshotFromDoc(doc),
+					);
+				} catch {
+					// Unreadable persisted snapshots cannot safely hydrate a body.
+				}
+				if (!snapshotMatches) continue;
 			}
 			this._lca = {
 				...this._lca,
@@ -938,6 +952,15 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			pendingEditorContent: this.pendingEditorContent ?? undefined,
 			lastKnownEditorText: this.lastKnownEditorText ?? undefined,
 		};
+	}
+
+	/** Whether an idle merge still needs this connection's provider sync. */
+	isAwaitingProviderForIdleMerge(): boolean {
+		return (
+			(this.matches("idle.diskAhead") || this.matches("idle.diverged")) &&
+			!this._providerSynced &&
+			!this._isProviderSynced()
+		);
 	}
 
 	send(event: MergeEvent): void {
@@ -4458,20 +4481,41 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				`idle disk merge: compacted LCA could not hydrate | ` +
 					`guid=${this._guid} state=${this._statePath}`,
 			);
+			if (!this._isProviderSynced()) {
+				this.emitEffect({ type: "REQUEST_PROVIDER_SYNC", guid: this._guid });
+				return { success: false, awaitingProvider: true };
+			}
 			return { success: false, lcaUnavailable: true };
 		}
 
 		// If fork was pre-created by registerMachineEdit, reuse it.
 		// Otherwise create one now.
 		if (!this._fork) {
+			const localStateVector = Y.encodeStateVector(localDoc);
+			const remoteStateVector =
+				this._remoteStateVector ?? new Uint8Array([0]);
+			const localSnapshot = snapshotFromDoc(localDoc);
+			const remoteSnapshot = this.remoteDoc
+				? snapshotFromDoc(this.remoteDoc)
+				: undefined;
+			// The reconcile diffs the local and the remote side against this
+			// base, so the base has to be content BOTH sides descend from. The
+			// pre-ingestion local text qualifies only while the replica already
+			// carries the local document's full history. State vectors omit the
+			// delete set, so a delete-only offline edit leaves them unchanged.
+			// Snapshot containment sees both insert clocks and tombstones; when
+			// the replica lacks either, the last agreed content is the honest
+			// ancestor.
+			const localHoldsUnpublishedWork =
+				!remoteSnapshot || !snapshotContains(remoteSnapshot, localSnapshot);
 			this._fork = {
-				base: localDoc.getText("contents").toString(),
-				localStateVector: Y.encodeStateVector(localDoc),
-				remoteStateVector: this._remoteStateVector ?? new Uint8Array([0]),
-				localSnapshot: snapshotFromDoc(localDoc).snapshot,
-				remoteSnapshot: this.remoteDoc
-					? snapshotFromDoc(this.remoteDoc).snapshot
-					: undefined,
+				base: localHoldsUnpublishedWork
+					? lcaContent
+					: localDoc.getText("contents").toString(),
+				localStateVector,
+				remoteStateVector,
+				localSnapshot: localSnapshot.snapshot,
+				remoteSnapshot: remoteSnapshot?.snapshot,
 				origin: 'disk-edit',
 				created: this.timeProvider.now(),
 				captureMark: this.getOpCapture()?.mark() ?? 0,
@@ -4509,7 +4553,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		}
 		if (!this._lca) {
 			this.pendingIdleUpdates = null;
-			if (!this.remoteDoc) {
+			if (!this._isProviderSynced()) {
 				this.emitEffect({ type: "REQUEST_PROVIDER_SYNC", guid: this._guid });
 				return { success: false, awaitingProvider: true };
 			}
@@ -4527,6 +4571,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		}
 		const lcaContent = this.requireLcaContents("idle three-way merge");
 		if (lcaContent === null) {
+			if (!this.remoteDoc) {
+				this.emitEffect({ type: "REQUEST_PROVIDER_SYNC", guid: this._guid });
+				return { success: false, awaitingProvider: true };
+			}
 			this.clearPendingDiskContents();
 			this.pendingIdleUpdates = null;
 			return { success: false, lcaUnavailable: true };
