@@ -144,6 +144,15 @@ export class SyncStore extends Observable<SyncStore> {
 		}
 	}
 
+	/** Committed paths of a folder doc that is not this store's live doc
+	 * (e.g. a scratch doc built from persisted updates). */
+	static readCommittedPaths(doc: Y.Doc): Set<string> {
+		const paths = new Set<string>();
+		doc.getMap("docs").forEach((_guid, path) => paths.add(path));
+		doc.getMap("filemeta_v0").forEach((_meta, path) => paths.add(path));
+		return paths;
+	}
+
 	print() {
 		this.log(
 			"files",
