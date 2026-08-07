@@ -338,6 +338,11 @@ export class SharedFolder extends HasProvider {
 	private _convergenceDeletionInFlight: Set<string> | undefined;
 	private readonly remoteActivityIndex = new RemoteActivityIndex();
 	private readonly remoteActivitySubscribers = new Set<() => void>();
+	private startupScanComplete = false;
+	private startupScanPromise: Promise<void>;
+	private resolveStartupScan?: () => void;
+	private connectionAttempt: Promise<boolean> | null = null;
+	private startupConnectRequested = false;
 
 	constructor(
 		public appId: string,
@@ -364,6 +369,9 @@ export class SharedFolder extends HasProvider {
 			: new S3Folder(guid);
 
 		super(guid, s3rn, tokenStore, loginManager);
+		this.startupScanPromise = new Promise<void>((resolve) => {
+			this.resolveStartupScan = resolve;
+		});
 		this.timeProvider = timeProvider;
 		this.path = path;
 		this.setLoggers(`[SharedFile](${this.path})`);
@@ -519,9 +527,10 @@ export class SharedFolder extends HasProvider {
 			this._persistence.markServerSynced();
 		}
 
-		if (loginManager.loggedIn) {
-			this.connect();
-		}
+		// Connecting is deferred to startupConnect(), below: the disk scan
+		// decides which vault files are new by comparing them against the
+		// membership map, and connecting here races the server's view of that
+		// map against the local replay the comparison depends on.
 
 		this.cas = new ContentAddressedStore(this);
 
@@ -672,6 +681,8 @@ export class SharedFolder extends HasProvider {
 				// installed, so replay both local doc discovery and file-tree sync after
 				// start() to avoid missing the first batch of remote entries.
 				this.addLocalDocs();
+				this.markStartupScanComplete();
+				void this.startupConnect();
 				await this.syncFileTree();
 				try {
 					this._persistence.set("path", this.path);
@@ -682,7 +693,18 @@ export class SharedFolder extends HasProvider {
 					// pass
 				}
 			})
-			.catch((e) => this.error("folder persistence sync failed", e));
+			.catch((e) => {
+				this.error("folder persistence sync failed", e);
+				// Startup did not complete a trustworthy disk comparison. Release
+				// callers waiting to connect rather than leaving the folder offline
+				// for the session; nothing from an incomplete scan can be protected.
+				this.markStartupScanComplete();
+			})
+			// Tail net: the normal path connects immediately after addLocalDocs(),
+			// while a failure above releases the scan barrier in catch(). Either
+			// way, startupConnect() is single-shot and a tree-sync failure cannot
+			// strand the folder offline.
+			.finally(() => this.startupConnect());
 
 		const isAuthoritative = this.authoritative;
 		const canAwaitProviderSync =
@@ -1784,7 +1806,28 @@ export class SharedFolder extends HasProvider {
 		await this.syncFileTree();
 	}
 
-	async connect(): Promise<boolean> {
+	async connect(beforeStartupScan = false): Promise<boolean> {
+		// Public callers, including restored views, cannot let server membership
+		// reach the folder document before local discovery has compared the disk
+		// with replayed membership. A brand-new folder bypasses this barrier only
+		// from whenReady(), because it needs the server map before discovery.
+		if (!beforeStartupScan && !this.startupScanComplete) {
+			await this.startupScanPromise;
+		}
+		if (this.destroyed) return false;
+		if (this.connectionAttempt) return this.connectionAttempt;
+		const attempt = this.connectProvider();
+		this.connectionAttempt = attempt;
+		try {
+			return await attempt;
+		} finally {
+			if (this.connectionAttempt === attempt) {
+				this.connectionAttempt = null;
+			}
+		}
+	}
+
+	private async connectProvider(): Promise<boolean> {
 		if (this.s3rn instanceof S3RemoteFolder) {
 			if (this.connected) {
 				return true;
@@ -1808,6 +1851,12 @@ export class SharedFolder extends HasProvider {
 			}
 		}
 		return false;
+	}
+
+	private markStartupScanComplete(): void {
+		if (this.startupScanComplete) return;
+		this.startupScanComplete = true;
+		this.resolveStartupScan?.();
 	}
 
 	private enqueueLCABackfill(reason: string): void {
@@ -1955,12 +2004,50 @@ export class SharedFolder extends HasProvider {
 		return !this.hasLocalDB();
 	}
 
+	/**
+	 * Open the folder's connection, once local state is what the disk scan
+	 * compares against.
+	 *
+	 * A folder with a local database decides which vault files are new by
+	 * asking the membership map whether it already knows them. Two arrivals
+	 * race to define that map at startup, and both land on the same document:
+	 * the persistence replay, and the server's first update. If the server
+	 * wins, paths another device deleted are already gone from the map while
+	 * their files are still on disk — the scan reads them as local
+	 * discoveries, mints identity for them, and republishes what was just
+	 * deleted. Connecting after the scan removes the race: the comparison is
+	 * made against the replayed map, and the deletion is then applied to disk
+	 * like any other remote change.
+	 *
+	 * A folder with no local database has no map to protect. Its whenReady()
+	 * path is the sole barrier bypass: it starts the server connection before
+	 * discovery, though discovery does not wait for the handshake to finish.
+	 * That path owns startup connection, so this one stands down for it.
+	 */
+	private async startupConnect(): Promise<void> {
+		if (this.startupConnectRequested) return;
+		this.startupConnectRequested = true;
+		try {
+			if (this.destroyed) return;
+			if (!this.loginManager.loggedIn) return;
+			await this.connect();
+		} catch (e) {
+			this.startupConnectRequested = false;
+			this.warn("startup connect failed", e);
+		}
+	}
+
 	whenReady(): Promise<SharedFolder> {
 		const promiseFn = async (): Promise<SharedFolder> => {
 			const awaitingUpdates = await this.awaitingUpdates();
 			if (awaitingUpdates) {
-				// If this is a brand new shared folder, we want to wait for a connection before we start reserving new guids for local files.
-				this.connect();
+				// A brand-new folder has no local map to protect, so begin its
+				// server-first connection without waiting on the scan barrier.
+				this.startupConnectRequested = true;
+				this.connect(true).catch((e) => {
+					this.startupConnectRequested = false;
+					this.warn("initial server connect failed", e);
+				});
 				await trackPromise(`folderConnected:${this.guid}`, this.onceConnected());
 				await trackPromise(`folderReady:${this.guid}`, this.onceProviderSynced());
 				return this;
@@ -4588,6 +4675,7 @@ export class SharedFolder extends HasProvider {
 			`${this.path} (${this.guid})`,
 		);
 		this.destroyed = true;
+		this.markStartupScanComplete();
 		// Release outbound work held for membership settlement: awaiters
 		// re-check `destroyed` and bail instead of pending forever.
 		this.markMembershipSettled();
