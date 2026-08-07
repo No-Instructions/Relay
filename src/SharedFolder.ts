@@ -323,6 +323,13 @@ export class SharedFolder extends HasProvider {
 	private _resolveFirstSyncConverged: (() => void) | undefined;
 	/** Paths removed by provider-applied membership updates before convergence. */
 	private _preConvergenceRemoteDeletes: Set<string> | undefined;
+	/** Paths committed here before this session's server merge (persisted
+	 * folder doc + persisted per-document merge records). Consumed against
+	 * the converged map to catch removals this client was offline for. */
+	private _preMergeLocalPaths: Set<string> | null = null;
+	/** Witness paths absent from the converged map: excluded from scan
+	 * minting so cleanupExtraLocalFiles can trash them. */
+	private _offlineRemovedPaths: Set<string> | undefined;
 	/** Deleted paths that had a local publication hold when convergence opened. */
 	private _convergenceRemoteDeletedHolds: Map<string, string> | undefined;
 	/** One parked latch re-entry per held path. */
@@ -406,6 +413,7 @@ export class SharedFolder extends HasProvider {
 			flags().enableSyncConvergenceLatch && !authoritative;
 		if (this._syncConvergenceLatchEnabled) {
 			this._preConvergenceRemoteDeletes = new Set();
+			this._offlineRemovedPaths = new Set();
 			this._convergenceRemoteDeletedHolds = new Map();
 			this._convergenceParkedUploads = new Map();
 			this._convergencePublicationRuns = new Map();
@@ -671,6 +679,7 @@ export class SharedFolder extends HasProvider {
 				// Remote folder metadata can also land before SyncStore observers are
 				// installed, so replay both local doc discovery and file-tree sync after
 				// start() to avoid missing the first batch of remote entries.
+				this.captureOfflineRemovalWitness();
 				this.addLocalDocs();
 				await this.syncFileTree();
 				try {
@@ -1479,10 +1488,17 @@ export class SharedFolder extends HasProvider {
 	private addLocalDocs(types?: SyncType[]): void {
 		// Reconciliation is not a second source of create intent. A vault create
 		// that is still settling must be decided by its timer (or canceled by a
-		// rename/delete), rather than registered early by a scan.
+		// rename/delete), rather than registered early by a scan. A path the
+		// witness marked as removed-while-offline must not be re-minted either;
+		// its disk file is awaiting cleanup (syncStore.has covers a user
+		// re-creating the path afterward, which registers through vault events).
 		let syncTFiles = this.getSyncFiles().filter((tfile) => {
 			const vpath = this.getVirtualPath(tfile.path);
-			return !this.pendingCreates.has(vpath);
+			if (this.pendingCreates.has(vpath)) return false;
+			if (this._offlineRemovedPaths?.has(vpath) && !this.syncStore.has(vpath)) {
+				return false;
+			}
+			return true;
 		});
 		if (types) {
 			syncTFiles = syncTFiles.filter((tfile) => {
@@ -2641,7 +2657,73 @@ export class SharedFolder extends HasProvider {
 			}
 		}
 		this._preConvergenceRemoteDeletes?.clear();
+		this.routeOfflineRemovedHolds();
 		this._resolveFirstSyncConverged?.();
+	}
+
+	/**
+	 * Build the offline-removal witness: paths this client knew as committed
+	 * before this session's server merge. Sources: the folder doc's persisted
+	 * pre-session state (read from storage, so unaffected by whether the
+	 * provider merged first) and the persisted per-document merge records
+	 * (which survive a lost or reset folder database). A witness path absent
+	 * from the converged map was deleted or moved remotely while this client
+	 * was offline - republishing its disk file would resurrect it.
+	 */
+	private captureOfflineRemovalWitness(): void {
+		if (!this._syncConvergenceLatchEnabled) return;
+		const witness = new Set<string>();
+		const stored = this._persistence.initialStoredState;
+		this._persistence.initialStoredState = null;
+		if (stored) {
+			const scratch = new Y.Doc();
+			try {
+				Y.applyUpdate(scratch, stored);
+				for (const path of SyncStore.readCommittedPaths(scratch)) {
+					witness.add(path);
+				}
+			} finally {
+				scratch.destroy();
+			}
+		}
+		for (const path of this.mergeManager.getPersistedStatePaths()) {
+			witness.add(path);
+		}
+		if (witness.size === 0) return;
+
+		this._preMergeLocalPaths = witness;
+		if (this._firstSyncConverged) {
+			this.routeOfflineRemovedHolds();
+		}
+	}
+
+	/**
+	 * Consume the offline-removal witness against the converged map. Vanished
+	 * paths with a pending-upload hold are routed to the remote-deleted-hold
+	 * discard; all vanished paths are excluded from scan minting so
+	 * cleanupExtraLocalFiles can trash their disk files.
+	 */
+	private routeOfflineRemovedHolds(): void {
+		const witness = this._preMergeLocalPaths;
+		if (!witness || this.destroyed) return;
+		this._preMergeLocalPaths = null;
+
+		const removed: string[] = [];
+		for (const path of witness) {
+			if (this.syncStore.getCommittedMeta(path)) continue;
+			removed.push(path);
+			this._offlineRemovedPaths?.add(path);
+			const guid = this.pendingUpload.get(path);
+			if (guid) {
+				this._convergenceRemoteDeletedHolds?.set(path, guid);
+			}
+		}
+		if (removed.length > 0) {
+			this.warn(
+				"paths removed remotely while this client was offline; will not republish",
+				removed,
+			);
+		}
 	}
 
 	private recordPreConvergenceRemoteDeletes(delta: FolderMapDelta): void {

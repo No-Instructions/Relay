@@ -580,6 +580,22 @@ export class MergeManager {
     return counts;
   }
 
+  /**
+   * Paths of every persisted merge-state record loaded at initialize().
+   * A record here means the doc was shared in a previous session, even if
+   * the folder doc's local persistence was lost or reset.
+   */
+  getPersistedStatePaths(): Set<string> {
+    const paths = new Set<string>();
+    for (const meta of this._stateMetaCache.values()) {
+      paths.add(meta.path);
+    }
+    for (const meta of this._managedMetaCache.values()) {
+      paths.add(meta.path);
+    }
+    return paths;
+  }
+
   shouldMaterializeOnStartup(
     guid: string,
     path: string,

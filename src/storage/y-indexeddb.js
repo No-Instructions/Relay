@@ -125,6 +125,15 @@ export const fetchUpdates = (idbPersistence, beforeApplyUpdatesCallback = () => 
       if (validUpdates.length < updates.length) {
         console.error(`[y-indexeddb] Filtered ${updates.length - validUpdates.length}/${updates.length} corrupted updates from IDB for ${idbPersistence.name}`)
       }
+      if (!idbPersistence.synced) {
+        // The rows read by the initial fetch are the state persisted by
+        // previous sessions, independent of anything a provider has already
+        // merged into the live doc. Consumers use it to tell "existed here
+        // before this session" from "arrived this session".
+        idbPersistence.initialStoredState = validUpdates.length > 0
+          ? Y.mergeUpdates(validUpdates)
+          : null
+      }
       Y.transact(idbPersistence.doc, () => {
         validUpdates.forEach(val => Y.applyUpdate(idbPersistence.doc, val))
       }, idbPersistence, false)
@@ -201,6 +210,13 @@ export class IndexeddbPersistence extends Observable {
      */
     this.db = null
     this.synced = false
+    /**
+     * Merged copy of the updates found in IDB by the initial fetch: the
+     * pre-session persisted state. Null until the initial fetch, and null
+     * when the store was empty. Consumers should null it out after use.
+     * @type {Uint8Array|null}
+     */
+    this.initialStoredState = null
     this._syncFailed = false
     this._syncError = null
     this._destroyError = null
