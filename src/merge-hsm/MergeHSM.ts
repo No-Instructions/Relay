@@ -74,6 +74,7 @@ import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./typ
 import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture } from "./undo";
 import {
 	isEmptyDoc,
+	snapshotContains,
 	snapshotFromDoc,
 	snapshotsEqual,
 	snapshotIsAhead,
@@ -5171,13 +5172,45 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 	private hasLocalChangedSinceLCA(): boolean {
 		if (!this._lca) return false;
-		const lcaSV = this._lca.stateVector;
+
+		// A state vector carries insert clocks only, so a deletion advances
+		// nothing: a document one deletion past the baseline compares equal
+		// here. Answering "unchanged" then satisfies allSyncedAtLoad, the load
+		// settles at idle.synced, and the user's own deletion is never written
+		// to disk nor published — the next disk read restores the deleted line.
+		// Ask the live document, whose snapshot carries the delete set; the
+		// cached vector cannot represent a tombstone at all.
+		//
+		// Containment, not equality: stateVectorIsAhead(local, lca) is exactly
+		// !svContains(lca, local), so lifting the question to snapshots asks
+		// "does local hold operations or tombstones the baseline lacks". That
+		// keeps concurrent and ancestor documents classified as the state
+		// vector classifies them and changes only the delete-only case.
+		// snapshotIsAhead would not: it requires containment, so it answers
+		// false for concurrent documents that stateVectorIsAhead calls ahead.
+		if (this.localDoc && this._lca.snapshot !== undefined) {
+			try {
+				return !snapshotContains(
+					{ snapshot: this._lca.snapshot },
+					snapshotFromDoc(this.localDoc),
+				);
+			} catch {
+				// An unreadable baseline snapshot cannot show local is unchanged.
+				// Falling through to the state vector would answer "unchanged"
+				// for exactly the deletion this branch exists to see, so refuse.
+				return true;
+			}
+		}
+
+		// Baselines persisted before snapshot capture carry no delete set to
+		// compare against, so the insert-clock answer is the strongest evidence
+		// they hold. Same for a hibernated document with no live localDoc.
 		const localSV = this._localStateVector;
 
 		if (!localSV) return false;
 
 		// Check if local has operations not in LCA
-		return stateVectorIsAhead(localSV, lcaSV);
+		return stateVectorIsAhead(localSV, this._lca.stateVector);
 	}
 
 	private hasDiskChangedSinceLCA(): boolean {
