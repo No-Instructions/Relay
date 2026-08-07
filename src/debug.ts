@@ -1049,6 +1049,8 @@ let hsmTimeProvider: TimeProvider | null = null;
 let hsmFlushIntervalId: number | null = null;
 let hsmBootId: string | null = null;
 const hsmBuffer: string[] = [];
+const HSM_RECENT_CACHE_LIMIT = 10;
+const hsmRecentEntries = new Map<string, string[]>();
 
 function generateBootId(): string {
 	const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -1073,6 +1075,7 @@ export function initializeHSMRecording(
 	hsmRecordingFile = logFilePath;
 	hsmTimeProvider = timeProvider;
 	hsmBootId = generateBootId();
+	hsmRecentEntries.clear();
 	if (config) {
 		Object.assign(hsmRecordingConfig, config);
 	}
@@ -1092,6 +1095,7 @@ export async function stopHSMRecording(): Promise<void> {
 	hsmFileAdapter = null;
 	hsmTimeProvider = null;
 	hsmBootId = null;
+	hsmRecentEntries.clear();
 }
 
 /**
@@ -1100,8 +1104,19 @@ export async function stopHSMRecording(): Promise<void> {
  */
 export function recordHSMEntry(entry: object): void {
 	if (!hsmRecordingFile || !hsmBootId) return;
-	const entryWithBoot = { ...entry, boot: hsmBootId };
-	hsmBuffer.push(JSON.stringify(entryWithBoot));
+	const entryWithBoot = { ...entry, boot: hsmBootId } as Record<string, unknown>;
+	const serialized = JSON.stringify(entryWithBoot);
+	hsmBuffer.push(serialized);
+
+	const guid = entryWithBoot.guid;
+	if (typeof guid === "string") {
+		const recent = hsmRecentEntries.get(guid) ?? [];
+		recent.push(serialized);
+		if (recent.length > HSM_RECENT_CACHE_LIMIT) {
+			recent.splice(0, recent.length - HSM_RECENT_CACHE_LIMIT);
+		}
+		hsmRecentEntries.set(guid, recent);
+	}
 }
 
 /**
@@ -1239,12 +1254,17 @@ export async function getHSMBootEntries(): Promise<object[]> {
 
 /**
  * Get the most recent HSM recording entries for a specific document.
- * Reads files in reverse order (newest first) and stops once limit is reached.
- * Much more efficient than getBootEntries() when you only need a few entries.
+ * Inspector-sized requests use a bounded current-boot cache. Larger diagnostic
+ * requests read files in reverse order and stop once the limit is reached.
  */
 export async function getRecentEntries(guid: string, limit: number = 10): Promise<object[]> {
-	if (!hsmBootId) {
+	if (!hsmBootId || limit <= 0) {
 		return [];
+	}
+	if (limit <= HSM_RECENT_CACHE_LIMIT) {
+		return (hsmRecentEntries.get(guid) ?? [])
+			.slice(-limit)
+			.map((line) => JSON.parse(line) as object);
 	}
 
 	const results: object[] = [];
