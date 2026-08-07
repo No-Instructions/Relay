@@ -71,6 +71,9 @@ export interface TestHSMOptions {
 	 * Use for replay-based testing where recorded events drive transitions.
 	 */
 	replayMode?: boolean;
+
+	/** Optional delay before each mock persistence instance reports synced. */
+	persistenceSyncDelay?: () => Promise<void> | null;
 }
 
 export interface TestHSM {
@@ -309,8 +312,9 @@ export async function createTestHSM(
 		const hadContentAtSync = updateRows.length > 0;
 		let initializedAfterSync = false;
 
+		const requestedSyncDelay = options.persistenceSyncDelay?.() ?? null;
 		// Random delay for IndexedDB sync simulation (only when TEST_ASYNC_DELAYS=1)
-		const syncDelay = delaysEnabled() ? nextDelay(0, 10) : null;
+		const syncDelay = requestedSyncDelay ?? (delaysEnabled() ? nextDelay(0, 10) : null);
 
 		const initCapture = () => {
 			if (!captureOpts) return;

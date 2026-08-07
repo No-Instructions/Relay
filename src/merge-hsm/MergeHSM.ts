@@ -5811,6 +5811,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		this._bridge.clearOutboundQueue();
 
 		this._fork = null;
+		this._bridge.resetPendingCounters();
 		this._ingestionTexts = [];
 		this._conflict = null;
 		// The user just settled this difference by hand. Any record that it was
