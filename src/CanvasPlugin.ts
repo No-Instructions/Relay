@@ -25,7 +25,7 @@ import * as Y from "yjs";
 import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 import type { EditorViewRef } from "./merge-hsm/types";
 import { HSMEditorPlugin } from "./merge-hsm/integration/HSMEditorPlugin";
-import type { Document } from "./Document";
+import { isDocument, type Document } from "./Document";
 
 export class CanvasPlugin extends HasLogging {
 	view: CanvasView;
@@ -311,7 +311,13 @@ export class CanvasPlugin extends HasLogging {
 			(() => {
 				let document: Document;
 				try {
-					document = this.relayCanvas.sharedFolder.proxy.getDoc(embedView.file.path);
+					const candidate = this.relayCanvas.sharedFolder.proxy.findFile(
+						embedView.file,
+					);
+					if (!candidate || !isDocument(candidate)) {
+						return () => {};
+					}
+					document = candidate;
 				} catch {
 					// No shared handle (membership refused or undecided): the
 					// embed renders without live sync.

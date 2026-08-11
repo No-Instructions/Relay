@@ -27,7 +27,7 @@ import { trackAsyncCleanup } from "./reloadUtils";
 import { trackPromise } from "./trackPromise";
 import { DocumentDestroyedError } from "./DocumentDestroyedError";
 
-export function isDocument(file?: IFile): file is Document {
+export function isDocument(file?: IFile | null): file is Document {
 	return file instanceof Document;
 }
 

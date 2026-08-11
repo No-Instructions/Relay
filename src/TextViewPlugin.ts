@@ -1,7 +1,7 @@
 import { MarkdownView, type TextFileView } from "obsidian";
 import { getPatcher } from "./Patcher";
 import { HasLogging } from "src/debug";
-import { Document } from "./Document";
+import { Document, isDocument } from "./Document";
 import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 
 import { isLive, type LiveView } from "./LiveViews";
@@ -34,7 +34,11 @@ export class TextFileViewPlugin extends HasLogging {
 			);
 			if (folder) {
 				try {
-					const newDoc = folder.proxy.getDoc(file.path);
+					const candidate = folder.proxy.findFile(file);
+					if (!candidate || !isDocument(candidate)) {
+						return;
+					}
+					const newDoc = candidate;
 					this.warn("[TextViewPlugin] getDocument() found:", {
 						newDocPath: newDoc.path,
 						newDocGuid: newDoc.guid,

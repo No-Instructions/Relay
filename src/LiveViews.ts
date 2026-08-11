@@ -13,7 +13,7 @@ import {
 } from "obsidian";
 import ViewActions from "src/components/ViewActions.svelte";
 import * as Y from "yjs";
-import { Document } from "./Document";
+import { Document, isDocument } from "./Document";
 import type { EditorViewRef } from "./merge-hsm/types";
 import type { ConnectionState } from "./HasProvider";
 import { LoginManager } from "./LoginManager";
@@ -1355,7 +1355,9 @@ export class LiveViewManager {
 
 				let embeddedDoc: Document;
 				try {
-					embeddedDoc = folder.proxy.getDoc(filePath);
+					const candidate = folder.proxy.findFile(child.file);
+					if (!candidate || !isDocument(candidate)) continue;
+					embeddedDoc = candidate;
 				} catch {
 					// No shared handle (membership refused or undecided).
 					continue;
@@ -1467,10 +1469,11 @@ export class LiveViewManager {
 	private async getViews(): Promise<S3View[]> {
 		const views: S3View[] = [];
 		iterateTextFileViews(this.workspace, this.textViewRegistry, async (textFileView) => {
-			const viewFilePath = textFileView.file?.path;
-			if (!viewFilePath) {
+			const tfile = textFileView.file;
+			if (!tfile) {
 				return;
 			}
+			const viewFilePath = tfile.path;
 			const folder = this.sharedFolders.lookup(viewFilePath);
 			if (folder) {
 				if (!this.loginManager.loggedIn) {
@@ -1480,7 +1483,13 @@ export class LiveViewManager {
 					views.push(view);
 				} else if (folder.ready) {
 					try {
-						const doc = folder.proxy.getDoc(viewFilePath);
+						const doc = folder.proxy.findFile(tfile);
+						if (!doc || !isDocument(doc)) {
+							this.log(
+								`No tracked shared document for ${viewFilePath}; skipping view.`,
+							);
+							return;
+						}
 						const view = new LiveView<typeof textFileView>(
 							this,
 							textFileView,
@@ -1514,7 +1523,7 @@ export class LiveViewManager {
 					});
 					views.push(view);
 				} else if (folder.ready) {
-					const canvas = folder.getFile(canvasView.file);
+					const canvas = folder.findFile(canvasView.file);
 					if (isCanvas(canvas)) {
 						const view = new RelayCanvasView(this, canvasView, canvas);
 						views.push(view);

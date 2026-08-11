@@ -11,6 +11,7 @@ import * as Y from "yjs";
 
 import { getLiveViews } from "../editorContext";
 import { usercolors } from "../User";
+import { isDocument } from "../Document";
 
 /**
  * Filter state for user-attribution highlighting.
@@ -120,7 +121,8 @@ export class UserAttributionPluginValue {
 		const folder = connectionManager?.sharedFolders.lookup(file.path);
 		let doc;
 		try {
-			doc = folder?.proxy.getDoc(file.path);
+			const candidate = folder?.proxy.findFile(file);
+			doc = isDocument(candidate) ? candidate : undefined;
 		} catch {
 			// No shared handle (membership refused or undecided).
 			doc = undefined;
