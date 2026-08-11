@@ -640,6 +640,12 @@ export interface WriteDiskEffect {
 	/** Hash of the bytes this effect intends to write. */
 	hash?: string;
 	mtime?: number;
+	/**
+	 * The disk record the merge that produced this write was predicated on.
+	 * The executor validates the file still matches it before overwriting;
+	 * absent when the machine held no disk observation at decision time.
+	 */
+	expectedDisk?: { hash: string; mtime: number };
 }
 
 export interface PersistStateEffect {

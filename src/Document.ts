@@ -861,7 +861,11 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	): Promise<void> {
 		switch (effect.type) {
 			case "WRITE_DISK":
-				await this.handleWriteDisk(effect.contents, effect.mtime);
+				await this.handleWriteDisk(
+					effect.contents,
+					effect.mtime,
+					effect.expectedDisk,
+				);
 				break;
 			case "PERSIST_STATE":
 				await this.handlePersistState(effect.state);
@@ -907,8 +911,24 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	private async handleWriteDisk(
 		contents: string,
 		mtime?: number,
+		expectedDisk?: { hash: string; mtime: number },
 	): Promise<void> {
 		return this.enqueueDiskWrite(async () => {
+			if (expectedDisk && !(await this.diskStillMatchesRecord(expectedDisk))) {
+				// The file no longer carries the bytes the merge was
+				// predicated on — an edit the machine has never seen, which
+				// this write would destroy. Stand down, and hand the refusal
+				// to the queue-drain re-read: its observation crosses the
+				// self-write boundary like any other disk event, so the
+				// machine reclassifies against what the file actually holds
+				// instead of resting synced over a write that never landed.
+				this.warn(
+					"[handleEffect:WRITE_DISK] Skipping write: disk no longer matches the merge's disk record",
+					this.path,
+				);
+				this._deferredDiskChange = true;
+				return;
+			}
 			const wrote = await this.writeDiskContents(contents, {
 				createIfMissing: true,
 				excludeWhileActive: true,
@@ -918,6 +938,31 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				this.debug?.("[handleEffect:WRITE_DISK] Wrote to disk", this.path);
 			}
 		});
+	}
+
+	/**
+	 * Whether the file still carries the bytes a merge decision's disk record
+	 * describes — or bytes this document wrote itself, which the record
+	 * merely hasn't caught up to: a save draining ahead of a merge write is
+	 * our own content, not external divergence. An unreadable file is not a
+	 * match; with nothing proving the write safe, the caller must stand down.
+	 */
+	private async diskStillMatchesRecord(expected: {
+		hash: string;
+		mtime: number;
+	}): Promise<boolean> {
+		let observed: DiskContents;
+		try {
+			observed = await this.readDiskContent();
+		} catch (error) {
+			this.warn(
+				"[diskStillMatchesRecord] Disk read failed; refusing to overwrite",
+				this.path,
+				error,
+			);
+			return false;
+		}
+		return observed.hash === expected.hash || this.isEngineWrite(observed);
 	}
 
 	private enqueueDiskWrite(write: () => Promise<void>): Promise<void> {

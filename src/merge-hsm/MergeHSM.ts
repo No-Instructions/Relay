@@ -4789,12 +4789,19 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		hash: string | undefined,
 		mtime?: number,
 	): void {
+		// The disk record this write's merge was predicated on rides along so
+		// the executor can validate the file still matches it before the
+		// overwrite. _disk at emit time is that record: an observation that
+		// arrived after the decision either restarted the invoke that decided
+		// it or superseded the record with a strictly fresher look at the file.
+		const expectedDisk = this._disk;
 		this.emitEffect({
 			type: "WRITE_DISK",
 			guid: this._guid,
 			contents,
 			...(hash ? { hash } : {}),
 			...(mtime !== undefined ? { mtime } : {}),
+			...(expectedDisk ? { expectedDisk } : {}),
 		});
 	}
 
