@@ -34,7 +34,10 @@ export class TextFileViewPlugin extends HasLogging {
 			);
 			if (folder) {
 				try {
-					const newDoc = folder.proxy.getDoc(file.path);
+					const newDoc = folder.proxy.findDoc(file);
+					if (!newDoc) {
+						return;
+					}
 					this.warn("[TextViewPlugin] getDocument() found:", {
 						newDocPath: newDoc.path,
 						newDocGuid: newDoc.guid,

@@ -21,7 +21,7 @@ import { getLiveViews } from "../editorContext";
 import * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness.js";
 import { curryLog } from "src/debug";
-import { editorInfoField } from "obsidian";
+import { editorInfoField, type TFile } from "obsidian";
 import type { Document } from "../Document";
 
 type LiveViewBridge = {
@@ -32,7 +32,7 @@ type LiveViewManagerBridge = {
 	findView(editor: EditorView): LiveViewBridge | undefined;
 	sharedFolders: {
 		lookup(path: string):
-			| { proxy: { getDoc(path: string): Document } }
+			| { proxy: { findDoc(file: TFile): Document | null } }
 			| undefined;
 	};
 };
@@ -282,8 +282,11 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 			const folder = this.connectionManager?.sharedFolders.lookup(file.path);
 			if (folder) {
 				try {
-					this.document = folder.proxy.getDoc(file.path);
-					return this.document;
+					const document = folder.proxy.findDoc(file);
+					if (document) {
+						this.document = document;
+						return this.document;
+					}
 				} catch {
 					// No shared handle (membership refused or undecided):
 					// fall through to the view fallback.

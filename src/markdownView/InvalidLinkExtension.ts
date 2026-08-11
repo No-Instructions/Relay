@@ -90,7 +90,7 @@ export class InvalidLinkPluginValue {
 		const folder = sharedFolders.lookup(file.path);
 		if (!folder) return undefined;
 		try {
-			return folder.proxy.getDoc(file.path);
+			return folder.proxy.findDoc(file) ?? undefined;
 		} catch {
 			return undefined;
 		}

@@ -120,7 +120,7 @@ export class UserAttributionPluginValue {
 		const folder = connectionManager?.sharedFolders.lookup(file.path);
 		let doc;
 		try {
-			doc = folder?.proxy.getDoc(file.path);
+			doc = folder?.proxy.findDoc(file) ?? undefined;
 		} catch {
 			// No shared handle (membership refused or undecided).
 			doc = undefined;

@@ -3700,6 +3700,39 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
+	/**
+	 * Look up an already-tracked file without creating one.
+	 *
+	 * `getFile` falls through to extension-based detection when a path has no
+	 * syncStore entry, minting a document for it. That is correct for callers
+	 * reacting to a genuinely new file, but wrong for observers that only want
+	 * to notify an existing document's HSM: during a remote rename the entry
+	 * has not moved to the new vpath yet, so a lookup there mints a second
+	 * identity for a document this folder already tracks under the old vpath.
+	 * The duplicate materializes a file at the vacated path and survives a
+	 * later delete of the real one.
+	 */
+	findFile(tfile: TAbstractFile): IFile | null {
+		if (!this.syncStore.get(this.getVirtualPath(tfile.path))) {
+			return null;
+		}
+
+		return this.getFile(tfile);
+	}
+
+	/**
+	 * Narrowed `findFile` for the many lookup-only callers that only ever want
+	 * a Document. Keeping the `isDocument` narrowing here rather than at each
+	 * call site matters: this module already imports `isDocument` as a value,
+	 * whereas the editor and view integrations import `Document` type-only.
+	 * Making them narrow for themselves turns those into runtime imports and
+	 * drags the Document dependency graph into contexts that never needed it.
+	 */
+	findDoc(tfile: TAbstractFile): Document | null {
+		const file = this.findFile(tfile);
+		return isDocument(file) ? file : null;
+	}
+
 	getFile(tfile: TAbstractFile, update = true): IFile | null {
 		const vpath = this.getVirtualPath(tfile.path);
 		const guid = this.syncStore.get(vpath);

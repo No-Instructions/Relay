@@ -311,7 +311,13 @@ export class CanvasPlugin extends HasLogging {
 			(() => {
 				let document: Document;
 				try {
-					document = this.relayCanvas.sharedFolder.proxy.getDoc(embedView.file.path);
+					const candidate = this.relayCanvas.sharedFolder.proxy.findDoc(
+						embedView.file,
+					);
+					if (!candidate) {
+						return () => {};
+					}
+					document = candidate;
 				} catch {
 					// No shared handle (membership refused or undecided): the
 					// embed renders without live sync.

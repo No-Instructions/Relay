@@ -189,7 +189,7 @@ export class HSMEditorPluginValue implements PluginValue {
     if (!folder) return null;
 
     try {
-      return folder.proxy.getDoc(file.path) as Document;
+      return folder.proxy.findDoc(file);
     } catch (error) {
       this.debug("resolveCurrentDocument failed", {
         filePath: file.path,

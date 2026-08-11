@@ -1041,7 +1041,7 @@ export default class Live extends Plugin {
 						}
 					} else if (file instanceof TFile) {
 						const folder = this.sharedFolders.lookup(file.path);
-						const ifile = folder?.getFile(file);
+						const ifile = folder?.findFile(file);
 						if (ifile && isSyncFile(ifile)) {
 							menu.addItem((item) => {
 								item
@@ -1419,7 +1419,7 @@ export default class Live extends Plugin {
 				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
 					vaultLog("Modify", tfile.path);
-					const file = folder.proxy.getFile(tfile);
+					const file = folder.proxy.findFile(tfile);
 					if (file && isSyncFile(file)) {
 						if (!(tfile instanceof TFile)) {
 							vaultLog(
@@ -1495,7 +1495,7 @@ export default class Live extends Plugin {
 			try {
 				const folder = plugin.sharedFolders.lookup(file.path);
 				if (folder) {
-					const doc = folder.proxy.getFile(file);
+					const doc = folder.proxy.findFile(file);
 					if (doc && isDocument(doc) && doc.hsm) {
 						doc.hsm.send(event);
 					}
@@ -1509,7 +1509,7 @@ export default class Live extends Plugin {
 			try {
 				const folder = plugin.sharedFolders.lookup(file.path);
 				if (folder) {
-					const doc = folder.proxy.getFile(file);
+					const doc = folder.proxy.findFile(file);
 					if (doc && isDocument(doc) && doc.hsm) {
 						doc.hsm.captureEditorText(contents);
 					}
@@ -1563,7 +1563,7 @@ export default class Live extends Plugin {
 							if (file instanceof TFile) {
 								const folder = plugin.sharedFolders.lookup(file.path);
 								if (folder) {
-									const doc = folder.proxy.getFile(file);
+									const doc = folder.proxy.findFile(file);
 									if (doc && isDocument(doc) && doc.hsm) {
 										// Note text is LF everywhere past this
 										// boundary.
@@ -1612,7 +1612,7 @@ export default class Live extends Plugin {
 						try {
 							const folder = plugin.sharedFolders.lookup(file.path);
 							if (folder) {
-								const doc = folder.proxy.getFile(file);
+								const doc = folder.proxy.findFile(file);
 								if (doc && isDocument(doc) && doc.hsm) {
 									// Read disk content only to compute diagnostic flags.
 									// Normalize both sides so platform EOLs never
@@ -1661,7 +1661,7 @@ export default class Live extends Plugin {
 					try {
 						const folder = plugin.sharedFolders.lookup(tfile.path);
 						if (folder) {
-							const file = folder.proxy.getFile(tfile);
+							const file = folder.proxy.findFile(tfile);
 							if (tfile instanceof TFile && file && isDocument(file)) {
 								const hsm = file.hsm;
 								if (hsm) {
