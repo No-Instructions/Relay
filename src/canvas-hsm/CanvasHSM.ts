@@ -651,8 +651,8 @@ export class CanvasHSM {
 			guid: this.config.guid,
 			status,
 			diskMtime: this.context.disk?.mtime ?? 0,
-			localStateVector: new Uint8Array(),
-			remoteStateVector: new Uint8Array(),
+			localSnapshot: new Uint8Array(),
+			remoteSnapshot: new Uint8Array(),
 		};
 	}
 

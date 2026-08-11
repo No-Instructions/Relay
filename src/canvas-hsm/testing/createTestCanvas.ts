@@ -20,7 +20,7 @@ import * as Y from "yjs";
 import { Canvas } from "../../Canvas";
 import { formatCanvasData } from "../../CanvasData";
 import type { CanvasData } from "../../CanvasView";
-import { snapshotFromDoc } from "../../merge-hsm/state-vectors";
+import { snapshotFromDoc } from "../../merge-hsm/snapshots";
 import type { PersistedCanvasState } from "../../merge-hsm/types";
 import { CANVAS_BRIDGE_IN_ORIGIN, CanvasDocBridge } from "../bridge";
 import { CanvasHSM } from "../CanvasHSM";

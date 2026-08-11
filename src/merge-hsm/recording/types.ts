@@ -163,7 +163,6 @@ export type SerializableEvent =
       disk?: { hash: string; mtime: number } | null;
       observedDisk?: { mtime: number; hash?: string } | null;
       localSnapshot?: string | null;
-      localStateVector?: string | null;
       deferredConflict?: {
         diskHash: string;
         localHash: string;
@@ -195,8 +194,7 @@ export interface SerializableLCA {
   contents: string;
   hash: string;
   mtime: number;
-  snapshot?: string; // base64
-  stateVector?: string; // base64
+  snapshot: string; // base64
 }
 
 /**
@@ -205,10 +203,10 @@ export interface SerializableLCA {
 export interface SerializablePersistedState {
   guid: string;
   path: string;
-  lca: SerializableLCA | null;
+  /** Mirrors the persisted record: legacy records may lack the snapshot. */
+  lca: (Omit<SerializableLCA, 'snapshot'> & { snapshot?: string }) | null;
   disk: MergeMetadata | null;
   localSnapshot?: string | null; // base64
-  localStateVector?: string | null; // base64
   lastStatePath: StatePath;
   deferredConflict?: { diskHash: string; localHash: string };
   persistedAt: number;
@@ -221,8 +219,8 @@ export interface SerializableSyncStatus {
   guid: string;
   status: 'synced' | 'pending' | 'conflict' | 'error';
   diskMtime: number;
-  localStateVector: string; // base64
-  remoteStateVector: string; // base64
+  localSnapshot: string; // base64
+  remoteSnapshot: string; // base64
 }
 
 // =============================================================================

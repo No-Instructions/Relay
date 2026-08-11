@@ -688,15 +688,15 @@ function createSnapshot(
 						contents: state.lca.contents,
 						hash: state.lca.meta.hash,
 						mtime: state.lca.meta.mtime,
-						stateVector: uint8ArrayToBase64(state.lca.stateVector),
+						snapshot: uint8ArrayToBase64(state.lca.snapshot),
 					}
 				: null,
 			disk: state.disk,
-			localStateVector: state.localStateVector
-				? uint8ArrayToBase64(state.localStateVector)
+			localSnapshot: state.localSnapshot
+				? uint8ArrayToBase64(state.localSnapshot)
 				: null,
-			remoteStateVector: state.remoteStateVector
-				? uint8ArrayToBase64(state.remoteStateVector)
+			remoteSnapshot: state.remoteSnapshot
+				? uint8ArrayToBase64(state.remoteSnapshot)
 				: null,
 			error: state.error?.message,
 			deferredConflict: state.deferredConflict,

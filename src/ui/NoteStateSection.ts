@@ -863,8 +863,8 @@ export class NoteStateSection {
 		if (snapshot.persistedLcaHash && !snapshot.idbMatchesPersistedLca) {
 			return { label: "localDoc ≠ persisted lca", cls: "bad" };
 		}
-		if (snapshot.stateVectorsEqual === false)
-			return { label: "SV mismatch", cls: "bad" };
+		if (snapshot.snapshotsEqual === false)
+			return { label: "snapshot mismatch", cls: "bad" };
 		return { label: "converged", cls: "ok" };
 	}
 

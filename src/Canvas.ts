@@ -3,7 +3,7 @@ import { HasProvider } from "./HasProvider";
 import type { HasMimeType, IFile } from "./IFile";
 import type { LoginManager } from "./LoginManager";
 import { S3Canvas, S3Folder, S3RN, S3RemoteCanvas } from "./S3RN";
-import { snapshotFromDoc } from "./merge-hsm/state-vectors";
+import { snapshotFromDoc } from "./merge-hsm/snapshots";
 import * as Y from "yjs";
 import type { SharedFolder } from "./SharedFolder";
 import { getMimeType } from "./mimetypes";
@@ -801,8 +801,8 @@ export class Canvas
 
 	/**
 	 * First-upload enrollment: stamp the `relay` header op, then apply the
-	 * file's JSON. The header guarantees every enrolled canvas produces a
-	 * non-empty state vector, so the server and peers can tell "uploaded"
+	 * file's JSON. The header guarantees every enrolled canvas produces
+	 * non-empty CRDT history, so the server and peers can tell "uploaded"
 	 * from "never uploaded" even when the canvas itself has no nodes or
 	 * edges — the same contract document enrollment establishes in the
 	 * IndexedDB persistence layer.

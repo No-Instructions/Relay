@@ -16,7 +16,7 @@ import * as Y from "yjs";
 import type { SyncGate, MergeEffect, PositionedChange } from "./types";
 import type { OpCapture } from "./undo";
 import { MACHINE_EDIT_ORIGIN } from "./undo";
-import { snapshotFromDoc, snapshotsEqual, yjsDocsEqual } from "./state-vectors";
+import { snapshotFromDoc, snapshotsEqual, yjsDocsEqual } from "./snapshots";
 import { curryLog } from "../debug";
 
 const bridgeError = curryLog("[SyncBridge]", "error");
@@ -343,7 +343,7 @@ export class SyncBridge {
 	flush(): void {
 		this.flushInbound();
 		this.flushOutbound();
-		this.assertStateVectorConvergence();
+		this.assertHeadConvergence();
 	}
 
 	/**
@@ -593,7 +593,7 @@ export class SyncBridge {
 				if (outbound.length > 0) {
 					this.syncToRemote(outbound);
 				}
-				this.assertStateVectorConvergence();
+				this.assertHeadConvergence();
 				return;
 			}
 
@@ -656,7 +656,7 @@ export class SyncBridge {
 					if (outbound.length > 0) {
 						this.syncToRemote(outbound);
 					}
-					this.assertStateVectorConvergence();
+					this.assertHeadConvergence();
 					return;
 				}
 			}
@@ -696,9 +696,9 @@ export class SyncBridge {
 	}
 
 	/**
-	 * Safety net: if localDoc and remoteDoc have divergent state vectors
-	 * with no pending machine edits to account for the difference, perform
-	 * a bidirectional full state diff to force convergence. This should
+	 * Safety net: if localDoc and remoteDoc have divergent snapshots with no
+	 * pending machine edits to account for the difference, perform a
+	 * bidirectional full state diff to force convergence. This should
 	 * never be needed -- if it fires, there is a bug that allowed ops to
 	 * enter one doc without being queued for the other.
 	 *
@@ -706,23 +706,23 @@ export class SyncBridge {
 	 * flushOutbound calls from flushInbound's machine-edit-match path).
 	 */
 	assertConvergence(): void {
-		this.assertStateVectorConvergence();
+		this.assertHeadConvergence();
 	}
 
-	private assertStateVectorConvergence(): void {
+	private assertHeadConvergence(): void {
 		const localDoc = this.host.getLocalDoc();
 		const remoteDoc = this.host.getRemoteDoc();
 		if (!localDoc || !remoteDoc) return;
 
-		// Machine edits intentionally defer outbound ops -- state vectors
-		// will diverge until the deferred entries are matched or expire.
+		// Machine edits intentionally defer outbound ops -- the heads will
+		// diverge until the deferred entries are matched or expire.
 		if (this.host.getPendingMachineEdits().length > 0) return;
 		if (this._outboundQueue.some(e => e.machineEditMark !== null)) return;
 
-		// Local-only mode gates all remote sync -- SV divergence is expected.
+		// Local-only mode gates all remote sync -- divergence is expected.
 		if (this._syncGate.localOnly) return;
 
-		// Fork gates outbound sync -- SV divergence is expected while it exists.
+		// Fork gates outbound sync -- divergence is expected while it exists.
 		if (this.host.hasFork()) return;
 
 		if (yjsDocsEqual(localDoc, remoteDoc)) return;
@@ -733,9 +733,8 @@ export class SyncBridge {
 		const remoteText = remoteDoc.getText("contents").toString();
 
 		const msg =
-			`[MergeHSM] state vector divergence after queue flush ` +
+			`[MergeHSM] snapshot divergence after queue flush ` +
 			`(guid=${this.host.guid}, path=${this.host.path}, ` +
-			`localSVLen=${localSV.length}, remoteSVLen=${remoteSV.length}, ` +
 			`localTextLen=${localText.length}, remoteTextLen=${remoteText.length}, ` +
 			`textMatch=${localText === remoteText})`;
 

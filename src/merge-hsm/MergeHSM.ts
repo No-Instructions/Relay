@@ -73,17 +73,19 @@ import { MACHINE, createInterpreterConfig, validateMachine } from "./machine-def
 import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./types";
 import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture } from "./undo";
 import {
+	emptySnapshot,
 	isEmptyDoc,
+	mergeSnapshotHeads,
 	snapshotFromDoc,
-	snapshotsEqual,
+	snapshotHasOpsMissingFrom,
 	snapshotIsAhead,
-	stateVectorFromSnapshot,
-	stateVectorIsAhead,
-	stateVectorsEqual,
+	snapshotIsEmpty,
+	snapshotMetaFromUpdate,
+	snapshotsEqual,
 	yjsDocIsAhead,
 	yjsDocsEqual,
 	yjsUpdateIsNoop,
-} from "./state-vectors";
+} from "./snapshots";
 import { SyncBridge } from "./SyncBridge";
 import type { SyncBridgeHost } from "./SyncBridge";
 import type { FrontMatterPrimitives } from "./types";
@@ -114,6 +116,14 @@ type PendingMachineEdit = {
 	registeredAt: number;
 	teardownCompletion: MachineEditTeardownCompletion;
 };
+/**
+ * An LCA produced by an idle-merge invoke. The head snapshot is deferred
+ * (null) when the invoke computed the merge on a temp doc: the real head
+ * exists only after the onDone action applies the result to localDoc.
+ */
+type LCACandidate = Omit<LCAState, "snapshot"> & {
+	snapshot: Uint8Array | null;
+};
 type ConflictInit = {
 	base: string;
 	ours: string;
@@ -127,22 +137,22 @@ type RecoverLCAResult =
 		kind: "synced";
 		disk: RecoverLCADisk;
 		newLCA: LCAState;
-		localStateVector: Uint8Array;
-		remoteStateVector: Uint8Array;
+		localSnapshot: Uint8Array;
+		remoteSnapshot: Uint8Array;
 	}
 	| {
 		kind: "remoteAhead";
 		disk: RecoverLCADisk;
 		newLCA: LCAState;
-		localStateVector: Uint8Array;
-		remoteStateVector: Uint8Array;
+		localSnapshot: Uint8Array;
+		remoteSnapshot: Uint8Array;
 		pendingIdleUpdates?: Uint8Array;
 	}
 	| {
 		kind: "diverged";
 		disk: RecoverLCADisk;
-		localStateVector: Uint8Array;
-		remoteStateVector: Uint8Array;
+		localSnapshot: Uint8Array;
+		remoteSnapshot: Uint8Array;
 		newLCA?: LCAState;
 		pendingIdleUpdates?: Uint8Array;
 		pendingDiskContents?: string;
@@ -225,12 +235,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	// content the file never carried.
 	private _pendingDiskConfirmLCA: {
 		lca: LCAState;
-		priorLocalStateVector: Uint8Array | null;
-		priorRemoteStateVector: Uint8Array | null;
+		priorLocalSnapshot: Uint8Array | null;
+		priorRemoteSnapshot: Uint8Array | null;
 	} | null = null;
 	private _disk: MergeMetadata | null = null;
-	private _localStateVector: Uint8Array | null = null;
-	private _remoteStateVector: Uint8Array | null = null;
+	private _localSnapshot: Uint8Array | null = null;
+	private _remoteSnapshot: Uint8Array | null = null;
 	private _error: Error | undefined;
 	private _deferredConflict:
 		| { diskHash: string; localHash: string }
@@ -338,7 +348,6 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	// Persisted/enrolled local head. A resident localDoc may only refresh this
 	// after its persistence load has completed and matched this head.
 	private _enrolledLocalSnapshot: Uint8Array | null = null;
-	private _legacyEnrolledLocalStateVector: Uint8Array | null = null;
 	private _localDocSnapshotSafe = false;
 
 	// Persistence for localDoc (alive in idle + active mode; null when unloaded/hibernated)
@@ -527,7 +536,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		this._setLCA({
 			contents,
 			meta: { hash: this.pendingDiskHash, mtime: this._disk.mtime },
-			stateVector: Y.encodeStateVector(this.localDoc),
+			snapshot: snapshotFromDoc(this.localDoc).snapshot,
 		});
 		this.clearPendingDiskContents();
 		this.emitPersistState();
@@ -540,28 +549,24 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		}
 	}
 
-	private refreshLocalStateVectorFromDoc(): Uint8Array | null {
+	private refreshLocalSnapshotFromDoc(): Uint8Array | null {
 		if (this.localDoc) {
-			this._localStateVector = Y.encodeStateVector(this.localDoc);
+			this._localSnapshot = snapshotFromDoc(this.localDoc).snapshot;
 			if (this._localDocClientID === null) {
 				this._localDocClientID = this.localDoc.clientID;
 			}
 		}
-		return this._localStateVector;
+		return this._localSnapshot;
 	}
 
 	private rememberEnrolledLocalHead(
 		snapshot: Uint8Array | null | undefined,
-		stateVector: Uint8Array | null | undefined,
 	): void {
 		this._enrolledLocalSnapshot = snapshot ?? null;
-		this._legacyEnrolledLocalStateVector = this._enrolledLocalSnapshot
-			? null
-			: stateVector ?? null;
 	}
 
 	private clearEnrolledLocalHead(): void {
-		this.rememberEnrolledLocalHead(null, null);
+		this.rememberEnrolledLocalHead(null);
 		this._localDocSnapshotSafe = false;
 	}
 
@@ -586,12 +591,6 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this._localDocSnapshotSafe = false;
 				return false;
 			}
-		} else if (this._legacyEnrolledLocalStateVector) {
-			const localStateVector = Y.encodeStateVector(this.localDoc);
-			if (stateVectorsEqual(localStateVector, this._legacyEnrolledLocalStateVector)) {
-				this._localDocSnapshotSafe = true;
-				return true;
-			}
 		}
 
 		this._localDocSnapshotSafe = false;
@@ -601,29 +600,25 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	captureLocalHeadForPersistence(): void {
 		if (!this.localDoc || !this._localDocSnapshotSafe) return;
 
-		const snapshot = snapshotFromDoc(this.localDoc).snapshot;
-		this._enrolledLocalSnapshot = snapshot;
-		this._legacyEnrolledLocalStateVector = null;
+		this._enrolledLocalSnapshot = snapshotFromDoc(this.localDoc).snapshot;
 	}
 
 	getLocalHeadForPersistence(): {
 		localSnapshot: Uint8Array | null;
-		localStateVector: Uint8Array | null;
 	} {
-		const localSnapshot = this._enrolledLocalSnapshot;
-		return {
-			localSnapshot,
-			localStateVector: localSnapshot
-				? null
-				: this._legacyEnrolledLocalStateVector,
-		};
+		return { localSnapshot: this._enrolledLocalSnapshot };
 	}
 
 	private hasEnrolledLocalCRDT(): boolean {
 		if (this.localPersistence?.synced !== true) return false;
 		if (!this.localPersistence.hasUserData()) return false;
-		const localStateVector = this.refreshLocalStateVectorFromDoc();
-		return !!localStateVector && localStateVector.length > 1;
+		const localSnapshot = this.refreshLocalSnapshotFromDoc();
+		if (!localSnapshot) return false;
+		try {
+			return !snapshotIsEmpty({ snapshot: localSnapshot });
+		} catch {
+			return false;
+		}
 	}
 
 	private canRecoverMissingLocalCRDTFromRemote(): boolean {
@@ -681,15 +676,19 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	// Rebuild a compacted LCA body from whichever doc still sits exactly at
-	// the baseline: a doc whose complete state vector equals the LCA's state
-	// vector holds precisely the operations the baseline was captured from,
-	// so its text IS the baseline text. localDoc is preferred; remoteDoc is
-	// an equally valid source when localDoc is absent or has moved on.
+	// the baseline: a doc whose complete snapshot equals the LCA's snapshot
+	// holds precisely the operations the baseline was captured from, so its
+	// text IS the baseline text. localDoc is preferred; remoteDoc is an
+	// equally valid source when localDoc is absent or has moved on.
 	private hydrateLCAContentsFromMatchingDoc(): void {
 		if (!this._lca || this._lca.contents !== null) return;
 		for (const doc of [this.localDoc, this.remoteDoc]) {
 			if (!doc) continue;
-			if (!stateVectorsEqual(Y.encodeStateVector(doc), this._lca.stateVector)) {
+			try {
+				if (!snapshotsEqual(snapshotFromDoc(doc), { snapshot: this._lca.snapshot })) {
+					continue;
+				}
+			} catch {
 				continue;
 			}
 			this._lca = {
@@ -927,8 +926,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			path: this.path,
 			lca: this._lca,
 			disk: this._disk,
-			localStateVector: this._localStateVector,
-			remoteStateVector: this._remoteStateVector,
+			localSnapshot: this._localSnapshot,
+			remoteSnapshot: this._remoteSnapshot,
 			statePath: this._statePath,
 			error: this._error,
 			errorRetryable: this._error ? this._errorRetryable : undefined,
@@ -1454,13 +1453,13 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			if (!this.localDoc) {
 				throw new Error("resolveConflictHeadless requires localDoc");
 			}
-			const stateVector = Y.encodeStateVector(this.localDoc);
-			this._localStateVector = stateVector;
-			this._remoteStateVector = stateVector;
+			const snapshot = snapshotFromDoc(this.localDoc).snapshot;
+			this._localSnapshot = snapshot;
+			this._remoteSnapshot = snapshot;
 			this._setLCA({
 				contents: resolvedText,
 				meta: { hash, mtime },
-				stateVector,
+				snapshot,
 			});
 			this._disk = { hash, mtime };
 			this.emitWriteDisk(resolvedText, hash, mtime);
@@ -1741,12 +1740,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 		this._fork = {
 			base: baseText,
-			localStateVector: this._lca.stateVector ?? new Uint8Array([0]),
-			remoteStateVector: this._remoteStateVector ?? new Uint8Array([0]),
 			localSnapshot: this._lca.snapshot,
 			remoteSnapshot: this.remoteDoc
 				? snapshotFromDoc(this.remoteDoc).snapshot
-				: undefined,
+				: this._remoteSnapshot ?? emptySnapshot(),
 			origin: 'machine-edit',
 			created: this.timeProvider.now(),
 			captureMark: 0,
@@ -1754,7 +1751,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		};
 
 		// Phase 2: async. Wait for IDB to load so OpCapture is wired to a
-		// populated doc. Then set the real captureMark and localStateVector.
+		// populated doc. Then set the real captureMark and localSnapshot.
 		if (this.localPersistence && !this.localPersistence.synced) {
 			await this.awaitLocalPersistenceWhenSynced();
 		}
@@ -1763,7 +1760,6 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (!this._fork || !this.localDoc) return;
 
 		this._fork.captureMark = this.getOpCapture()?.mark() ?? 0;
-		this._fork.localStateVector = Y.encodeStateVector(this.localDoc);
 		this._fork.localSnapshot = snapshotFromDoc(this.localDoc).snapshot;
 
 		this.hsmDebug(
@@ -1870,9 +1866,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				return false;
 			}
 			const localSnapshot = snapshotFromDoc(this.localDoc!).snapshot;
-			const localStateVector = Y.encodeStateVector(this.localDoc!);
-			this._localStateVector = localStateVector;
-			this.rememberEnrolledLocalHead(localSnapshot, localStateVector);
+			this._localSnapshot = localSnapshot;
+			this.rememberEnrolledLocalHead(localSnapshot);
 			this._localDocSnapshotSafe = true;
 			this.emitPersistState();
 		}
@@ -1890,7 +1885,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		this._setLCA({
 			contents: content,
 			meta: { hash, mtime: Date.now() },
-			stateVector: Y.encodeStateVector(this.localDoc),
+			snapshot: snapshotFromDoc(this.localDoc).snapshot,
 		});
 		this.emitPersistState();
 	}
@@ -1903,8 +1898,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			guid: this._guid,
 			status: this.computeSyncStatusType(),
 			diskMtime: this._disk?.mtime ?? 0,
-			localStateVector: this._localStateVector ?? new Uint8Array([0]),
-			remoteStateVector: this._remoteStateVector ?? new Uint8Array([0]),
+			localSnapshot: this._localSnapshot ?? emptySnapshot(),
+			remoteSnapshot: this._remoteSnapshot ?? emptySnapshot(),
 		};
 	}
 
@@ -1960,7 +1955,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		const persistence = this.localPersistence;
 		await this.awaitLocalPersistenceSynced();
 		if (this.localPersistence === persistence) {
-			this.refreshLocalStateVectorFromDoc();
+			this.refreshLocalSnapshotFromDoc();
 		}
 	}
 
@@ -2086,12 +2081,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (didEnroll && cachedDiskContent) {
 			// Enrollment happened - set LCA to match initial content
 			const { content, hash, mtime } = cachedDiskContent;
-			const stateVector = Y.encodeStateVector(this.localDoc!);
 			this.sendEnrollmentComplete({
 				contents: content,
 				hash,
 				mtime,
-				stateVector,
+				snapshot: snapshotFromDoc(this.localDoc!).snapshot,
 			});
 		}
 
@@ -2122,7 +2116,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			contents: disk.content,
 			hash: disk.hash,
 			mtime: disk.mtime,
-			stateVector: Y.encodeStateVector(this.localDoc),
+			snapshot: snapshotFromDoc(this.localDoc).snapshot,
 		});
 		return this._lca !== null;
 	}
@@ -2145,20 +2139,20 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			return false;
 		}
 
-		const stateVector = Y.encodeStateVector(this.localDoc);
+		const snapshot = snapshotFromDoc(this.localDoc).snapshot;
 		this._setLCA({
 			contents: disk.content,
 			meta: { hash: disk.hash, mtime: disk.mtime },
-			stateVector,
+			snapshot,
 		});
 		if (!this._lca) return false;
 
-		this.rememberEnrolledLocalHead(snapshotFromDoc(this.localDoc).snapshot, stateVector);
+		this.rememberEnrolledLocalHead(snapshot);
 		this._localDocSnapshotSafe = true;
 		this._disk = { hash: disk.hash, mtime: disk.mtime };
-		this._localStateVector = stateVector;
+		this._localSnapshot = snapshot;
 		if (this.remoteDoc) {
-			this._remoteStateVector = Y.encodeStateVector(this.remoteDoc);
+			this._remoteSnapshot = snapshotFromDoc(this.remoteDoc).snapshot;
 		}
 		this.emitPersistState();
 		return true;
@@ -2208,7 +2202,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			contents: content,
 			hash,
 			mtime: this.timeProvider.now(),
-			stateVector: Y.encodeStateVector(this.localDoc),
+			snapshot: snapshotFromDoc(this.localDoc).snapshot,
 		});
 		return this._lca !== null;
 	}
@@ -2217,18 +2211,18 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		contents: string;
 		hash: string;
 		mtime: number;
-		stateVector: Uint8Array;
+		snapshot: Uint8Array;
 	}): void {
 		this.send({
 			type: "ENROLLMENT_COMPLETE",
 			lca: {
 				contents: input.contents,
 				meta: { hash: input.hash, mtime: input.mtime },
-				stateVector: input.stateVector,
+				snapshot: input.snapshot,
 			},
-			localStateVector: input.stateVector,
-			remoteStateVector: this.remoteDoc
-				? Y.encodeStateVector(this.remoteDoc)
+			localSnapshot: input.snapshot,
+			remoteSnapshot: this.remoteDoc
+				? snapshotFromDoc(this.remoteDoc).snapshot
 				: null,
 		});
 	}
@@ -2802,8 +2796,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					return;
 				}
 
-				this._localStateVector = result.localStateVector;
-				this._remoteStateVector = result.remoteStateVector;
+				this._localSnapshot = result.localSnapshot;
+				this._remoteSnapshot = result.remoteSnapshot;
 				this._disk = { hash: result.disk.hash, mtime: result.disk.mtime };
 				this._conflict = null;
 
@@ -2836,10 +2830,15 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				if (!update || update.byteLength === 0) return;
 				if (this.remoteDoc) {
 					Y.applyUpdate(this.remoteDoc, update, this.remoteDoc);
-					this._remoteStateVector = Y.encodeStateVector(this.remoteDoc);
+					this._remoteSnapshot = snapshotFromDoc(this.remoteDoc).snapshot;
 				} else {
+					// No replica in memory: advance the tracked remote head from the
+					// update's own metadata — its covered insert clocks and delete set.
 					try {
-						this._remoteStateVector = Y.encodeStateVectorFromUpdate(update);
+						const updateHead = snapshotMetaFromUpdate(update);
+						this._remoteSnapshot = this._remoteSnapshot
+							? mergeSnapshotHeads({ snapshot: this._remoteSnapshot }, updateHead).snapshot
+							: updateHead.snapshot;
 					} catch (e) {
 						this.hsmError(`Dropping unparseable remote update for ${this._guid} (${update.byteLength} bytes): ${e}`);
 					}
@@ -2931,13 +2930,6 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				} else if (result.mergedContent !== undefined && this.localDoc) {
 					// Three-way: apply merged content via diff
 					this.applyContentToLocalDoc(result.mergedContent);
-				}
-
-				// Fill in stateVector from real localDoc after applying updates.
-				// NOTE: This mutates event.data in-place. updateLCAFromInvokeResult
-				// (which runs next in the same action list) reads the filled-in value.
-				if (result.newLCA && result.newLCA.stateVector === null && this.localDoc) {
-					result.newLCA.stateVector = Y.encodeStateVector(this.localDoc);
 				}
 
 				// Write merged content to disk
@@ -3078,7 +3070,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this._persistenceStateLoaded = false;
 				this._lcaGcPinCache = null;
 				this._disk = null;
-				this._remoteStateVector = null;
+				this._remoteSnapshot = null;
 				this._needsDiskContentLoad = false;
 				this._restoredForkNeedsDiskRead = false;
 				this.clearEnrolledLocalHead();
@@ -3089,10 +3081,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			storePersistenceData: (_hsm, event) => {
 				const e = event as any;
 				const localSnapshot = e.localSnapshot ?? null;
-				const localStateVector = localSnapshot
-					? stateVectorFromSnapshot({ snapshot: localSnapshot })
-					: e.localStateVector ?? null;
-				this.rememberEnrolledLocalHead(localSnapshot, localStateVector);
+				this.rememberEnrolledLocalHead(localSnapshot);
 				if (e.disk !== undefined) {
 					this._disk = e.disk ?? null;
 				}
@@ -3109,8 +3098,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				}
 				this._persistenceStateLoaded = true;
 				this.collectUnpinnedLocalDeletes();
-				if (localStateVector) {
-					this._localStateVector = localStateVector;
+				if (localSnapshot) {
+					this._localSnapshot = localSnapshot;
 				}
 				// Restore fork from persisted state
 				if (e.fork !== undefined) {
@@ -3123,20 +3112,19 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this._setLCA(e.lca);
 				if (!this._lca) return;
 				if (this.localDoc && this.localPersistence?.synced === true) {
-					const localSnapshot = snapshotFromDoc(this.localDoc).snapshot;
-					this.rememberEnrolledLocalHead(localSnapshot, e.localStateVector);
+					this.rememberEnrolledLocalHead(snapshotFromDoc(this.localDoc).snapshot);
 					this._localDocSnapshotSafe = true;
 				} else {
-					this.rememberEnrolledLocalHead(null, e.localStateVector);
+					this.rememberEnrolledLocalHead(e.localSnapshot);
 					this._localDocSnapshotSafe = false;
 				}
 				this._disk = {
 					hash: e.lca.meta.hash,
 					mtime: e.lca.meta.mtime,
 				};
-				this._localStateVector = e.localStateVector;
-				if (e.remoteStateVector !== undefined) {
-					this._remoteStateVector = e.remoteStateVector;
+				this._localSnapshot = e.localSnapshot;
+				if (e.remoteSnapshot !== undefined) {
+					this._remoteSnapshot = e.remoteSnapshot;
 				}
 			},
 			initIdleMode: () => {
@@ -3663,11 +3651,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				const localContent = this.localDoc.getText("contents").toString();
 
 				// Check if remote has changed since fork using remoteDoc's actual
-				// state vector (not the cached _remoteStateVector, which may be
-				// stale if updates arrived via provider sync rather than REMOTE_UPDATE).
-				const remoteChanged = stateVectorIsAhead(
-					Y.encodeStateVector(this.remoteDoc),
-					fork.remoteStateVector,
+				// snapshot (not the cached _remoteSnapshot, which may be stale if
+				// updates arrived via provider sync rather than REMOTE_UPDATE).
+				const remoteChanged = snapshotHasOpsMissingFrom(
+					snapshotFromDoc(this.remoteDoc),
+					{ snapshot: fork.remoteSnapshot },
 				);
 
 				if (!remoteChanged) {
@@ -3680,8 +3668,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 						});
 					}
 
-					const stateVector = Y.encodeStateVector(this.localDoc);
-					const diffUpdate = Y.encodeStateAsUpdate(this.localDoc, fork.localStateVector);
+					const snapshot = snapshotFromDoc(this.localDoc).snapshot;
+					const diffUpdate = Y.encodeStateAsUpdate(
+						this.localDoc,
+						Y.encodeStateVector(this.remoteDoc),
+					);
 					if (diffUpdate.length > 0) {
 						this._bridge.syncToRemote(diffUpdate);
 					}
@@ -3693,10 +3684,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					this._setLCA({
 						contents: localContent,
 						meta: { hash: "", mtime: this.timeProvider.now() },
-						stateVector,
+						snapshot,
 					});
-					this._localStateVector = stateVector;
-					this._remoteStateVector = stateVector;
+					this._localSnapshot = snapshot;
+					this._remoteSnapshot = snapshot;
 					this._bridge.resetPendingCounters();
 					this.emitPersistState();
 					this.patchLCAHash(localContent);
@@ -3764,16 +3755,16 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this.lastKnownEditorText = mergeResult.merged;
 
 				// Clear fork and update LCA
-				const stateVector = Y.encodeStateVector(this.localDoc);
+				const snapshot = snapshotFromDoc(this.localDoc).snapshot;
 				this._fork = null;
 				this._ingestionTexts = [];
 				this._setLCA({
 					contents: mergeResult.merged,
 					meta: { hash: "", mtime: this.timeProvider.now() },
-					stateVector,
+					snapshot,
 				});
-				this._localStateVector = stateVector;
-				this._remoteStateVector = stateVector;
+				this._localSnapshot = snapshot;
+				this._remoteSnapshot = snapshot;
 				this._bridge.resetPendingCounters();
 				this.emitPersistState();
 				this.patchLCAHash(mergeResult.merged);
@@ -4014,20 +4005,20 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		}
 
 		const localText = localDoc.getText("contents").toString();
-		const localStateVector = Y.encodeStateVector(localDoc);
+		const localSnapshot = snapshotFromDoc(localDoc).snapshot;
 		const remoteText = remoteDoc.getText("contents").toString();
-		const remoteStateVector = Y.encodeStateVector(remoteDoc);
+		const remoteSnapshot = snapshotFromDoc(remoteDoc).snapshot;
 
 		if (signal.aborted) {
 			return { kind: "declined", reason: "aborted" };
 		}
 
-		if (localStateVector.length <= 1) {
+		if (isEmptyDoc(localDoc)) {
 			return this.recoverMissingLocalCRDTFromRemote({
 				disk,
 				remoteDoc,
 				remoteText,
-				remoteStateVector,
+				remoteSnapshot,
 				signal,
 			});
 		}
@@ -4040,8 +4031,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				return {
 					kind: "diverged",
 					disk,
-					localStateVector,
-					remoteStateVector: localStateVector,
+					localSnapshot,
+					remoteSnapshot: localSnapshot,
 					pendingDiskContents: disk.content,
 				};
 			}
@@ -4049,12 +4040,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			return {
 				kind: "synced",
 				disk,
-				localStateVector,
-				remoteStateVector: localStateVector,
+				localSnapshot,
+				remoteSnapshot: localSnapshot,
 				newLCA: {
 					contents: localText,
 					meta: { hash: disk.hash, mtime: disk.mtime },
-					stateVector: localStateVector,
+					snapshot: localSnapshot,
 				},
 			};
 		}
@@ -4074,7 +4065,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			const newLCA = {
 				contents: localText,
 				meta: { hash: lcaHash, mtime: lcaMtime },
-				stateVector: localStateVector,
+				snapshot: localSnapshot,
 			};
 
 			if (diskMatchesLocal || diskMatchesRemote) {
@@ -4082,8 +4073,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					kind: "remoteAhead",
 					disk,
 					newLCA,
-					localStateVector,
-					remoteStateVector,
+					localSnapshot,
+					remoteSnapshot,
 				};
 			}
 
@@ -4091,8 +4082,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				kind: "diverged",
 				disk,
 				newLCA,
-				localStateVector,
-				remoteStateVector,
+				localSnapshot,
+				remoteSnapshot,
 				pendingDiskContents: disk.content,
 			};
 		}
@@ -4103,12 +4094,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			return {
 				kind: "diverged",
 				disk,
-				localStateVector,
-				remoteStateVector,
+				localSnapshot,
+				remoteSnapshot,
 				newLCA: {
 					contents: localText,
 					meta: { hash: disk.hash, mtime: disk.mtime },
-					stateVector: remoteStateVector,
+					snapshot: remoteSnapshot,
 				},
 			};
 		}
@@ -4140,10 +4131,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		disk: RecoverLCADisk;
 		remoteDoc: Y.Doc;
 		remoteText: string;
-		remoteStateVector: Uint8Array;
+		remoteSnapshot: Uint8Array;
 		signal: AbortSignal;
 	}): Promise<RecoverLCAResult> {
-		const { disk, remoteDoc, remoteText, remoteStateVector, signal } = args;
+		const { disk, remoteDoc, remoteText, remoteSnapshot, signal } = args;
 		if (!this.canRecoverMissingLocalCRDTFromRemote()) {
 			return { kind: "declined", reason: "missing-local-crdt" };
 		}
@@ -4173,8 +4164,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		}
 
 		const localText = localDoc.getText("contents").toString();
-		const localStateVector = Y.encodeStateVector(localDoc);
-		if (localStateVector.length <= 1) {
+		if (isEmptyDoc(localDoc)) {
 			return {
 				kind: "declined",
 				reason: "remote-local-initialization-empty",
@@ -4184,9 +4174,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				},
 			};
 		}
+		const localSnapshot = snapshotFromDoc(localDoc).snapshot;
 		if (
 			localText !== remoteText ||
-			!stateVectorsEqual(localStateVector, remoteStateVector)
+			!snapshotsEqual({ snapshot: localSnapshot }, { snapshot: remoteSnapshot })
 		) {
 			return {
 				kind: "declined",
@@ -4198,14 +4189,18 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			};
 		}
 
-		const localSnapshot = snapshotFromDoc(localDoc).snapshot;
-		this.rememberEnrolledLocalHead(localSnapshot, localStateVector);
+		this.rememberEnrolledLocalHead(localSnapshot);
 		this._localDocSnapshotSafe = true;
-		this._localStateVector = localStateVector;
-		const currentRemoteStateVector = Y.encodeStateVector(remoteDoc);
-		this._remoteStateVector = currentRemoteStateVector;
+		this._localSnapshot = localSnapshot;
+		const currentRemoteSnapshot = snapshotFromDoc(remoteDoc).snapshot;
+		this._remoteSnapshot = currentRemoteSnapshot;
 
-		if (!stateVectorsEqual(currentRemoteStateVector, remoteStateVector)) {
+		if (
+			!snapshotsEqual(
+				{ snapshot: currentRemoteSnapshot },
+				{ snapshot: remoteSnapshot },
+			)
+		) {
 			const lcaHash =
 				disk.content === remoteText
 					? disk.hash
@@ -4222,7 +4217,6 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 							? disk.mtime
 							: this.timeProvider.now(),
 				},
-				stateVector: localStateVector,
 				snapshot: localSnapshot,
 			};
 
@@ -4231,8 +4225,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					kind: "remoteAhead",
 					disk,
 					newLCA,
-					localStateVector,
-					remoteStateVector: currentRemoteStateVector,
+					localSnapshot,
+					remoteSnapshot: currentRemoteSnapshot,
 				};
 			}
 
@@ -4240,8 +4234,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				kind: "diverged",
 				disk,
 				newLCA,
-				localStateVector,
-				remoteStateVector: currentRemoteStateVector,
+				localSnapshot,
+				remoteSnapshot: currentRemoteSnapshot,
 				pendingDiskContents: disk.content,
 			};
 		}
@@ -4250,12 +4244,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			return {
 				kind: "synced",
 				disk,
-				localStateVector,
-				remoteStateVector: currentRemoteStateVector,
+				localSnapshot,
+				remoteSnapshot: currentRemoteSnapshot,
 				newLCA: {
 					contents: remoteText,
 					meta: { hash: disk.hash, mtime: disk.mtime },
-					stateVector: localStateVector,
 					snapshot: localSnapshot,
 				},
 			};
@@ -4381,13 +4374,13 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			if (signal.aborted) return { success: false };
 			const diskWrite = this.diskWritePlanForHash(hash);
 
-			// stateVector: null — filled in from real localDoc after applying updates
+			// snapshot: null — filled in from real localDoc after applying updates
 			return {
 				success: true,
 				mergedContent,
 				updates,
 				needsDiskWrite: diskWrite.needsDiskWrite,
-				newLCA: { contents: mergedContent, meta: { hash, mtime: diskWrite.mtime }, stateVector: null },
+				newLCA: { contents: mergedContent, meta: { hash, mtime: diskWrite.mtime }, snapshot: null },
 			};
 		} finally {
 			tempDoc.destroy();
@@ -4418,7 +4411,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		const hash = await this.hashFn(mergedContent);
 		if (signal.aborted) return { success: false };
 
-		const stateVector = Y.encodeStateVector(localDoc);
+		const snapshot = snapshotFromDoc(localDoc).snapshot;
 		const diskMatches = this._disk?.hash === hash;
 		const newLCA = {
 			contents: mergedContent,
@@ -4426,14 +4419,14 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				hash,
 				mtime: diskMatches ? this._disk!.mtime : this.timeProvider.now(),
 			},
-			stateVector,
+			snapshot,
 		};
 
 		if (
 			diskMatches &&
 			this._lca &&
 			this._lca.meta.hash === hash &&
-			stateVectorsEqual(this._lca.stateVector, stateVector)
+			snapshotsEqual({ snapshot: this._lca.snapshot }, { snapshot })
 		) {
 			return { success: true, newLCA: this._lca, noop: true };
 		}
@@ -4466,12 +4459,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (!this._fork) {
 			this._fork = {
 				base: localDoc.getText("contents").toString(),
-				localStateVector: Y.encodeStateVector(localDoc),
-				remoteStateVector: this._remoteStateVector ?? new Uint8Array([0]),
 				localSnapshot: snapshotFromDoc(localDoc).snapshot,
 				remoteSnapshot: this.remoteDoc
 					? snapshotFromDoc(this.remoteDoc).snapshot
-					: undefined,
+					: this._remoteSnapshot ?? emptySnapshot(),
 				origin: 'disk-edit',
 				created: this.timeProvider.now(),
 				captureMark: this.getOpCapture()?.mark() ?? 0,
@@ -4568,8 +4559,6 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			if (this._lca) {
 				const fork: Fork = {
 					base: lcaContent,
-					localStateVector: Y.encodeStateVector(localDoc),
-					remoteStateVector: this._remoteStateVector ?? new Uint8Array([0]),
 					localSnapshot: snapshotFromDoc(localDoc).snapshot,
 					remoteSnapshot: snapshotFromDoc(remoteDoc).snapshot,
 					origin: 'three-way-conflict',
@@ -4602,14 +4591,14 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		const diskWrite = this.diskWritePlanForHash(hash);
 
 		// localDoc mutations deferred to onDone action (applyIdleMergeResult).
-		// stateVector is null here — filled in after applying to real localDoc.
+		// snapshot is null here — filled in after applying to real localDoc.
 		return {
 			success: true,
 			mergedContent: mergeResult.merged,
 			remoteUpdate,
 			needsSync: true,
 			needsDiskWrite: diskWrite.needsDiskWrite,
-			newLCA: { contents: mergeResult.merged, meta: { hash, mtime: diskWrite.mtime }, stateVector: null },
+			newLCA: { contents: mergeResult.merged, meta: { hash, mtime: diskWrite.mtime }, snapshot: null },
 		};
 	}
 
@@ -4672,17 +4661,18 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			baseLen: fork.base.length, localLen: localContent.length, remoteLen: remoteContent.length,
 			...(flags().enableDeltaLogging ? { base: fork.base, local: localContent, remote: remoteContent } : {}),
 		}));
-		const currentRemoteStateVector = Y.encodeStateVector(remoteDoc);
+		const currentRemoteSnapshot = snapshotFromDoc(remoteDoc);
 		// A provider replacement can attach a server replica that is behind the
 		// remote head captured with the fork. Missing CRDT history is not a remote
 		// deletion: keep the disk-ingested local side intact and republish it.
-		// The skip requires strict dominance: when each vector holds clocks the
+		// The skip requires strict dominance: when each head holds operations the
 		// other lacks, the replica carries genuine concurrent peer progress, and
-		// skipping the merge would republish the local snapshot as a deletion of
+		// skipping the merge would republish the local state as a deletion of
 		// that progress.
+		const forkRemoteSnapshot = { snapshot: fork.remoteSnapshot };
 		const remoteDroppedForkState =
-			stateVectorIsAhead(fork.remoteStateVector, currentRemoteStateVector) &&
-			!stateVectorIsAhead(currentRemoteStateVector, fork.remoteStateVector);
+			snapshotHasOpsMissingFrom(forkRemoteSnapshot, currentRemoteSnapshot) &&
+			!snapshotHasOpsMissingFrom(currentRemoteSnapshot, forkRemoteSnapshot);
 		const mergeResult = remoteDroppedForkState
 			? { success: true as const, merged: localContent }
 			: performThreeWayMerge(fork.base, localContent, remoteContent);
@@ -4731,7 +4721,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				mergeResult.merged,
 			);
 
-			const stateVector = Y.encodeStateVector(localDoc);
+			const snapshot = snapshotFromDoc(localDoc).snapshot;
 			const update = Y.encodeStateAsUpdate(localDoc);
 
 			const mtime = this.timeProvider.now();
@@ -4764,7 +4754,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				newLCA: {
 					contents: mergeResult.merged,
 					meta: { hash, mtime },
-					stateVector,
+					snapshot,
 				},
 			};
 		}
@@ -4820,18 +4810,39 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	 * result that never confirms leaves the previous baseline in place, so
 	 * later classification re-derives from content the file actually has.
 	 */
-	private commitLCAWithDiskConfirmation(newLCA: LCAState): void {
+	private commitLCAWithDiskConfirmation(candidate: LCACandidate): void {
+		const newLCA = this.resolveLCACandidate(candidate);
+		if (!newLCA) {
+			this.hsmWarn(
+				`commitLCA: no head snapshot and no localDoc to capture one | ` +
+					`guid=${this._guid} state=${this._statePath}`,
+			);
+			return;
+		}
 		if (!this._disk || this._disk.hash === newLCA.meta.hash) {
 			this._setLCA(newLCA);
-			this._localStateVector = newLCA.stateVector;
-			this._remoteStateVector = newLCA.stateVector;
+			this._localSnapshot = newLCA.snapshot;
+			this._remoteSnapshot = newLCA.snapshot;
 			return;
 		}
 		this._pendingDiskConfirmLCA = {
 			lca: newLCA,
-			priorLocalStateVector: this._localStateVector,
-			priorRemoteStateVector: this._remoteStateVector,
+			priorLocalSnapshot: this._localSnapshot,
+			priorRemoteSnapshot: this._remoteSnapshot,
 		};
+	}
+
+	/**
+	 * Resolve an invoke result's LCA candidate into a real LCAState. A
+	 * candidate defers head capture (snapshot: null) until its merge has been
+	 * applied to the live localDoc; capture happens here, at commit time.
+	 */
+	private resolveLCACandidate(candidate: LCACandidate): LCAState | null {
+		if (candidate.snapshot) {
+			return { ...candidate, snapshot: candidate.snapshot };
+		}
+		if (!this.localDoc) return null;
+		return { ...candidate, snapshot: snapshotFromDoc(this.localDoc).snapshot };
 	}
 
 	private commitPendingLCAOnDiskConfirm(identity: {
@@ -4860,18 +4871,22 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		const unchangedSince = (
 			current: Uint8Array | null,
 			prior: Uint8Array | null,
-		): boolean =>
-			current === prior ||
-			(current !== null &&
-				prior !== null &&
-				stateVectorsEqual(current, prior));
-		// A state vector that moved while the write was in flight carries
-		// newer knowledge than the held result; never regress it.
-		if (unchangedSince(this._localStateVector, pending.priorLocalStateVector)) {
-			this._localStateVector = pending.lca.stateVector;
+		): boolean => {
+			if (current === prior) return true;
+			if (current === null || prior === null) return false;
+			try {
+				return snapshotsEqual({ snapshot: current }, { snapshot: prior });
+			} catch {
+				return false;
+			}
+		};
+		// A head that moved while the write was in flight carries newer
+		// knowledge than the held result; never regress it.
+		if (unchangedSince(this._localSnapshot, pending.priorLocalSnapshot)) {
+			this._localSnapshot = pending.lca.snapshot;
 		}
-		if (unchangedSince(this._remoteStateVector, pending.priorRemoteStateVector)) {
-			this._remoteStateVector = pending.lca.stateVector;
+		if (unchangedSince(this._remoteSnapshot, pending.priorRemoteSnapshot)) {
+			this._remoteSnapshot = pending.lca.snapshot;
 		}
 		this.emitPersistState();
 	}
@@ -4993,44 +5008,34 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (localText !== remoteText || localText !== lcaContents) return;
 		if (this._disk && this._disk.hash !== this._lca.meta.hash) return;
 
-		const localSV = Y.encodeStateVector(this.localDoc);
-		const remoteSV = Y.encodeStateVector(this.remoteDoc);
-		if (!stateVectorsEqual(localSV, remoteSV)) return;
-
-		// State vectors carry insert clocks but no delete set, so equal state
-		// vectors do not prove convergence: a delete-only update leaves every
-		// state vector unchanged while the documents' tombstones differ.
-		// Convergence requires equal full snapshots.
+		// Convergence requires equal full snapshots: a delete-only update
+		// moves no insert clock while the documents' tombstones differ.
 		const localSnapshot = snapshotFromDoc(this.localDoc);
 		if (!snapshotsEqual(localSnapshot, snapshotFromDoc(this.remoteDoc))) {
 			return;
 		}
 
-		this._localStateVector = localSV;
-		this._remoteStateVector = remoteSV;
+		this._localSnapshot = localSnapshot.snapshot;
+		this._remoteSnapshot = localSnapshot.snapshot;
 
 		// Advance the baseline whenever the full snapshot moved — including
-		// delete-only changes that leave the state vector untouched — and
-		// upgrade baselines that predate snapshot capture. Recapture the
-		// snapshot from the live document: spreading the previous snapshot
-		// forward would persist a head that lacks the newly absorbed ops.
+		// delete-only changes. Recapture the snapshot from the live document:
+		// spreading the previous snapshot forward would persist a head that
+		// lacks the newly absorbed ops.
 		let lcaSnapshotCurrent = false;
-		if (this._lca.snapshot !== undefined) {
-			try {
-				lcaSnapshotCurrent = snapshotsEqual(
-					{ snapshot: this._lca.snapshot },
-					localSnapshot,
-				);
-			} catch {
-				// Unreadable persisted snapshot data — recapture below.
-			}
+		try {
+			lcaSnapshotCurrent = snapshotsEqual(
+				{ snapshot: this._lca.snapshot },
+				localSnapshot,
+			);
+		} catch {
+			// Unreadable persisted snapshot data — recapture below.
 		}
-		if (lcaSnapshotCurrent && stateVectorsEqual(this._lca.stateVector, localSV)) {
+		if (lcaSnapshotCurrent) {
 			return;
 		}
 		this._setLCA({
 			...this._lca,
-			stateVector: stateVectorFromSnapshot(localSnapshot),
 			snapshot: localSnapshot.snapshot,
 		});
 		this.emitPersistState();
@@ -5038,13 +5043,20 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 	private hasLocalChangedSinceLCA(): boolean {
 		if (!this._lca) return false;
-		const lcaSV = this._lca.stateVector;
-		const localSV = this._localStateVector;
+		const localSnapshot = this._localSnapshot;
 
-		if (!localSV) return false;
+		if (!localSnapshot) return false;
 
-		// Check if local has operations not in LCA
-		return stateVectorIsAhead(localSV, lcaSV);
+		// Check if local has operations — inserts or deletes — not in LCA
+		try {
+			return snapshotHasOpsMissingFrom(
+				{ snapshot: localSnapshot },
+				{ snapshot: this._lca.snapshot },
+			);
+		} catch {
+			// An unreadable head cannot prove convergence; force verification.
+			return true;
+		}
 	}
 
 	private hasDiskChangedSinceLCA(): boolean {
@@ -5066,13 +5078,19 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 	private hasRemoteChangedSinceLCA(): boolean {
 		if (!this._lca) return false;
-		const lcaSV = this._lca.stateVector;
-		const remoteSV = this._remoteStateVector;
+		const remoteSnapshot = this._remoteSnapshot;
 
-		if (!remoteSV) return false;
+		if (!remoteSnapshot) return false;
 
-		// Check if remote has operations not in LCA
-		return stateVectorIsAhead(remoteSV, lcaSV);
+		// Check if remote has operations — inserts or deletes — not in LCA
+		try {
+			return snapshotHasOpsMissingFrom(
+				{ snapshot: remoteSnapshot },
+				{ snapshot: this._lca.snapshot },
+			);
+		} catch {
+			return true;
+		}
 	}
 
 	private providerSyncedRemoteAhead(): boolean {
@@ -5080,21 +5098,16 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (this.hasDiskChangedSinceLCA() || this.hasLocalChangedSinceLCA()) {
 			return false;
 		}
-		if (this._lca.snapshot) {
-			try {
-				return snapshotIsAhead(
-					snapshotFromDoc(this.remoteDoc),
-					{ snapshot: this._lca.snapshot },
-				);
-			} catch {
-				// Fall back to state vectors if persisted snapshot data is unreadable.
-			}
+		try {
+			return snapshotIsAhead(
+				snapshotFromDoc(this.remoteDoc),
+				{ snapshot: this._lca.snapshot },
+			);
+		} catch {
+			// An unreadable baseline cannot prove convergence; treat the
+			// synced provider as ahead so verification runs.
+			return true;
 		}
-
-		return stateVectorIsAhead(
-			Y.encodeStateVector(this.remoteDoc),
-			this._lca.stateVector,
-		);
 	}
 
 
@@ -5286,9 +5299,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			this.pendingIdleUpdates = null;
 		}
 
-		// Update state vector to reflect what's in localDoc.
+		// Update the head snapshot to reflect what's in localDoc.
 		if (this.localDoc) {
-			this._localStateVector = Y.encodeStateVector(this.localDoc);
+			this._localSnapshot = snapshotFromDoc(this.localDoc).snapshot;
 			this.hydrateLCAContentsFromMatchingDoc();
 			this.markLocalDocSnapshotSafeIfLoadedHeadMatches();
 
@@ -5519,7 +5532,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		// Capture final state for idle state determination and LCA update
 		let finalContent: string | null = null;
 		if (this.localDoc) {
-			this._localStateVector = Y.encodeStateVector(this.localDoc);
+			this._localSnapshot = snapshotFromDoc(this.localDoc).snapshot;
 			finalContent = this.localDoc.getText("contents").toString();
 		}
 
@@ -5546,12 +5559,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 						hash: this._disk.hash,
 						mtime: this._disk.mtime,
 					},
-					stateVector: this._localStateVector ?? new Uint8Array([0]),
+					snapshot: this._localSnapshot ?? emptySnapshot(),
 				});
 			}
 		}
 
-		// Always persist state on deactivation to cache the latest localStateVector.
+		// Always persist state on deactivation to cache the latest local head.
 		// This ensures idle mode sync status is accurate after reopening.
 		if (finalContent !== null) {
 			this.emitPersistState();
@@ -5677,9 +5690,6 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 						`actualLen=${actualText.length} lcaLen=${lca.contents.length}`,
 				);
 				return;
-			}
-			if (!lca.snapshot) {
-				lca = { ...lca, snapshot: snapshotFromDoc(this.localDoc).snapshot };
 			}
 		}
 		// Any baseline reaching this point supersedes a held invoke result.
@@ -6281,16 +6291,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			return;
 		}
 		this.captureLocalHeadForPersistence();
-		const { localSnapshot, localStateVector } = this.getLocalHeadForPersistence();
-		const lcaSnapshot =
-			this._lca?.snapshot ??
-			(this._lca &&
-			this.localDoc?.getText("contents").toString() === this._lca.contents &&
-			this._localDocSnapshotSafe
-				? localSnapshot ?? undefined
-				: undefined);
-		const forkLocalSnapshot = this._fork?.localSnapshot;
-		const forkRemoteSnapshot = this._fork?.remoteSnapshot;
+		const { localSnapshot } = this.getLocalHeadForPersistence();
 		const persistedState: PersistedMergeState = {
 			guid: this._guid,
 			path: this.path,
@@ -6299,27 +6300,18 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 						contents: this._lca.contents,
 						hash: this._lca.meta.hash,
 						mtime: this._lca.meta.mtime,
-						...(lcaSnapshot
-							? { snapshot: lcaSnapshot }
-							: { stateVector: this._lca.stateVector }),
+						snapshot: this._lca.snapshot,
 					}
 				: null,
 			disk: this._disk,
 			localSnapshot,
-			...(!localSnapshot && localStateVector
-				? { localStateVector }
-				: {}),
 			lastStatePath: this._statePath,
 			deferredConflict: this._deferredConflict,
 			fork: this._fork
 				? {
 						base: this._fork.base,
-						...(forkLocalSnapshot
-							? { localSnapshot: forkLocalSnapshot }
-							: { localStateVector: this._fork.localStateVector }),
-						...(forkRemoteSnapshot
-							? { remoteSnapshot: forkRemoteSnapshot }
-							: { remoteStateVector: this._fork.remoteStateVector }),
+						localSnapshot: this._fork.localSnapshot,
+						remoteSnapshot: this._fork.remoteSnapshot,
 						origin: this._fork.origin,
 						created: this._fork.created,
 						captureMark: this._fork.captureMark,

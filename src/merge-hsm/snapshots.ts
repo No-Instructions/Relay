@@ -2,16 +2,19 @@
  * Yjs snapshot helpers.
  *
  * A Yjs document snapshot is defined by both:
- * - state vector: insertion clocks per client
+ * - insertion clocks per client (the state vector)
  * - delete set: tombstone ranges
  *
- * State-vector-only comparisons are useful for gap detection and transport
- * routing, but they are not sufficient to answer "are these documents equal?"
- * because delete-only changes can leave the state vector unchanged.
+ * Snapshots are the only head representation the sync engine stores or
+ * compares: insert-clock-only comparisons cannot answer "are these documents
+ * equal?" because delete-only changes leave insert clocks unchanged.
+ *
+ * The decoded insert-clock (`DecodedSV`) and delete-set helpers below are
+ * internal surgery primitives — every exported comparison that decides
+ * equality, containment, or aheadness accounts for the delete set.
  */
 
 import * as Y from "yjs";
-import * as encoding from "lib0/encoding";
 
 /** Decoded state vector: Map<clientId, clock> */
 export type DecodedSV = Map<number, number>;
@@ -230,26 +233,6 @@ export function snapshotStateVector(snapshot: YjsSnapshot): DecodedSV {
 }
 
 /**
- * Encode a decoded state vector map into Yjs state-vector bytes.
- */
-export function encodeSV(sv: DecodedSV): Uint8Array {
-	const encoder = encoding.createEncoder();
-	encoding.writeVarUint(encoder, sv.size);
-	for (const [clientId, clock] of sv) {
-		encoding.writeVarUint(encoder, clientId);
-		encoding.writeVarUint(encoder, clock);
-	}
-	return encoding.toUint8Array(encoder);
-}
-
-/**
- * Extract encoded state-vector bytes from an encoded Yjs snapshot.
- */
-export function stateVectorFromSnapshot(snapshot: YjsSnapshot): Uint8Array {
-	return encodeSV(snapshotStateVector(snapshot));
-}
-
-/**
  * Check whether an encoded Yjs snapshot includes any tombstones.
  */
 export function snapshotHasDeleteSet(snapshot: YjsSnapshot): boolean {
@@ -385,18 +368,85 @@ export function mergeDecodedDeleteSets(
 	return out;
 }
 
-// ---- Convenience wrappers for encoded Uint8Array inputs ----
+// ---- Snapshot head construction and comparison ----
 
-/**
- * Check if two encoded state vectors are identical.
- */
-export function stateVectorsEqual(sv1: Uint8Array, sv2: Uint8Array): boolean {
-	return svEqual(decodeSV(sv1), decodeSV(sv2));
+type YDeleteSet = ConstructorParameters<typeof Y.Snapshot>[0];
+
+function encodeDecodedSnapshot(sv: DecodedSV, ds: DecodedDeleteSet): Uint8Array {
+	const clients = new Map<number, DeleteRange[]>();
+	for (const [client, ranges] of ds) {
+		clients.set(
+			client,
+			ranges.map((r) => ({ clock: r.clock, len: r.len })),
+		);
+	}
+	return Y.encodeSnapshot(
+		new Y.Snapshot({ clients } as unknown as YDeleteSet, new Map(sv)),
+	);
 }
 
 /**
- * Check if encoded state vector `ahead` contains operations not in `behind`.
+ * The snapshot metadata carried by an update: the insert clocks it covers
+ * plus its delete set. Lets a doc-less consumer track a remote head from
+ * update bytes alone.
  */
-export function stateVectorIsAhead(ahead: Uint8Array, behind: Uint8Array): boolean {
-	return svIsAhead(decodeSV(ahead), decodeSV(behind));
+export function snapshotMetaFromUpdate(update: Uint8Array): YjsSnapshot {
+	const sv = decodeSV(Y.encodeStateVectorFromUpdate(update));
+	const ds = decodeUpdateDeleteSet(update);
+	return { snapshot: encodeDecodedSnapshot(sv, ds) };
+}
+
+/**
+ * Union of two snapshot heads: max insert clock per client, merged delete
+ * sets. Neither input is mutated.
+ */
+export function mergeSnapshotHeads(a: YjsSnapshot, b: YjsSnapshot): YjsSnapshot {
+	const decodedA = decodeSnapshotData(a);
+	const decodedB = decodeSnapshotData(b);
+	const sv: DecodedSV = new Map(decodedA.sv);
+	for (const [client, clock] of decodedB.sv) {
+		sv.set(client, Math.max(sv.get(client) ?? 0, clock));
+	}
+	const ds = mergeDecodedDeleteSets(decodedA.ds.clients, decodedB.ds.clients);
+	return { snapshot: encodeDecodedSnapshot(sv, ds) };
+}
+
+/**
+ * Check whether snapshot A records any operation — insert clock or tombstone
+ * — that snapshot B lacks. This is the delete-set-aware "has changed since"
+ * comparison for heads that share history: delete-only progress is visible
+ * here even though it moves no insert clock.
+ */
+export function snapshotHasOpsMissingFrom(a: YjsSnapshot, b: YjsSnapshot): boolean {
+	const decodedA = decodeSnapshotData(a);
+	const decodedB = decodeSnapshotData(b);
+	return (
+		svIsAhead(decodedA.sv, decodedB.sv) ||
+		!deleteSetContains(decodedB.ds.clients, decodedA.ds.clients)
+	);
+}
+
+/**
+ * Check whether a snapshot records no operations at all.
+ */
+export function snapshotIsEmpty(snapshot: YjsSnapshot): boolean {
+	const decoded = decodeSnapshotData(snapshot);
+	return decoded.sv.size === 0 && decoded.ds.clients.size === 0;
+}
+
+let cachedEmptySnapshot: Uint8Array | null = null;
+
+/**
+ * The encoded snapshot of a document with no operations.
+ */
+export function emptySnapshot(): Uint8Array {
+	if (!cachedEmptySnapshot) {
+		const doc = new Y.Doc();
+		try {
+			cachedEmptySnapshot = Y.encodeSnapshot(Y.snapshot(doc));
+		} finally {
+			doc.destroy();
+		}
+	}
+	return cachedEmptySnapshot;
 }

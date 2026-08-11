@@ -60,19 +60,15 @@ export interface LCAState {
 	/** Metadata at sync point */
 	meta: MergeMetadata;
 
-	/** Yjs state vector at this point, derived from snapshot when restored. */
-	stateVector: Uint8Array;
-
 	/** Yjs snapshot at this point, including insert clocks and delete set. */
-	snapshot?: Uint8Array;
+	snapshot: Uint8Array;
 }
 
 /** Lightweight LCA metadata for in-memory caching (no contents string). */
 export interface LCAMeta {
 	meta: MergeMetadata;
+	/** Absent for canvas records, whose LCA carries no Yjs snapshot. */
 	snapshot?: Uint8Array;
-	/** Existing records may have only state vectors; new metadata uses snapshots. */
-	stateVector?: Uint8Array;
 }
 
 // =============================================================================
@@ -86,14 +82,10 @@ export interface LCAMeta {
 export interface Fork {
 	/** localDoc content before changes were ingested */
 	base: string;
-	/** Y.js state vector of localDoc at fork point */
-	localStateVector: Uint8Array;
-	/** Y.js state vector of remoteDoc at fork point */
-	remoteStateVector: Uint8Array;
 	/** Yjs snapshot of localDoc at fork point */
-	localSnapshot?: Uint8Array;
+	localSnapshot: Uint8Array;
 	/** Yjs snapshot of remoteDoc at fork point */
-	remoteSnapshot?: Uint8Array;
+	remoteSnapshot: Uint8Array;
 	/** What created this fork */
 	origin: string;
 	/** When the fork was created (ms since epoch) */
@@ -107,12 +99,10 @@ export interface Fork {
 export interface PersistedFork {
 	/** localDoc content before changes were ingested */
 	base: string;
+	/** Absent only on records written before snapshots were persisted. */
 	localSnapshot?: Uint8Array | null;
+	/** Absent only on records written before snapshots were persisted. */
 	remoteSnapshot?: Uint8Array | null;
-	/** Existing records may have only state vectors; new writes use snapshots. */
-	localStateVector?: Uint8Array;
-	/** Existing records may have only state vectors; new writes use snapshots. */
-	remoteStateVector?: Uint8Array;
 	origin: string;
 	created: number;
 	captureMark: number;
@@ -141,8 +131,8 @@ export interface SyncStatus {
 	guid: string;
 	status: SyncStatusType;
 	diskMtime: number;
-	localStateVector: Uint8Array;
-	remoteStateVector: Uint8Array;
+	localSnapshot: Uint8Array;
+	remoteSnapshot: Uint8Array;
 }
 
 export interface MergeState {
@@ -158,11 +148,11 @@ export interface MergeState {
 	/** Current disk metadata */
 	disk: MergeMetadata | null;
 
-	/** Current local CRDT state vector */
-	localStateVector: Uint8Array | null;
+	/** Current local CRDT head snapshot */
+	localSnapshot: Uint8Array | null;
 
-	/** Current remote CRDT state vector */
-	remoteStateVector: Uint8Array | null;
+	/** Current remote CRDT head snapshot */
+	remoteSnapshot: Uint8Array | null;
 
 	/** Current HSM state path (e.g., "idle.synced", "active.tracking") */
 	statePath: StatePath;
@@ -405,10 +395,8 @@ export interface PersistenceLoadedEvent {
 	 * `hash` is absent when only the modification time was available.
 	 */
 	observedDisk?: { mtime: number; hash?: string } | null;
-	/** Persisted local head snapshot. State vectors are fallback metadata only. */
+	/** Persisted local head snapshot. */
 	localSnapshot?: Uint8Array | null;
-	/** Existing records may have only state vectors. */
-	localStateVector?: Uint8Array | null;
 	deferredConflict?: {
 		diskHash: string;
 		localHash: string;
@@ -425,8 +413,8 @@ export interface PersistenceSyncedEvent {
 export interface EnrollmentCompleteEvent {
 	type: "ENROLLMENT_COMPLETE";
 	lca: LCAState;
-	localStateVector: Uint8Array;
-	remoteStateVector?: Uint8Array | null;
+	localSnapshot: Uint8Array;
+	remoteSnapshot?: Uint8Array | null;
 }
 
 export interface MergeSuccessEvent {
@@ -726,14 +714,11 @@ export interface PersistedMergeState {
 		contents: string;
 		hash: string;
 		mtime: number;
+		/** Absent only on records written before snapshots were persisted. */
 		snapshot?: Uint8Array;
-		/** Existing records may have only state vectors; new writes use snapshots. */
-		stateVector?: Uint8Array;
 	} | null;
 	disk: MergeMetadata | null;
 	localSnapshot?: Uint8Array | null;
-	/** Existing records may have only state vectors; new writes use snapshots. */
-	localStateVector?: Uint8Array | null;
 	lastStatePath: StatePath;
 	deferredConflict?: {
 		diskHash: string;
@@ -827,8 +812,6 @@ export interface PersistedStateMeta {
 	lcaMeta: LCAMeta | null;
 	disk: MergeMetadata | null;
 	localSnapshot?: Uint8Array | null;
-	/** Existing records may have only state vectors; new metadata uses snapshots. */
-	localStateVector?: Uint8Array | null;
 	lastStatePath: StatePath;
 	deferredConflict?: {
 		diskHash: string;
@@ -1196,11 +1179,11 @@ export interface SerializableSnapshot {
 			contents: string | null;
 			hash: string;
 			mtime: number;
-			stateVector: string; // base64
+			snapshot: string; // base64
 		} | null;
 		disk: MergeMetadata | null;
-		localStateVector: string | null; // base64
-		remoteStateVector: string | null; // base64
+		localSnapshot: string | null; // base64
+		remoteSnapshot: string | null; // base64
 		error?: string;
 		deferredConflict?: {
 			diskHash: string;

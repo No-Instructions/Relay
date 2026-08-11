@@ -18,7 +18,6 @@ import type {
   PersistedMergeState,
   PersistedStateMeta,
 } from '../types';
-import { stateVectorFromSnapshot } from '../state-vectors';
 import { DestroyedError, isDestroyedError } from '../../DestroyedError';
 
 // =============================================================================
@@ -36,22 +35,6 @@ const DESTROY_DRAIN_TIMEOUT_MS = 2000;
 // =============================================================================
 // Serialization Helpers
 // =============================================================================
-
-function stateVectorFromPersistedSnapshot(snapshot: Uint8Array | null | undefined): Uint8Array | null {
-  if (!snapshot) return null;
-  try {
-    return stateVectorFromSnapshot({ snapshot });
-  } catch {
-    return null;
-  }
-}
-
-function stateVectorFromSnapshotOrLegacy(
-  snapshot: Uint8Array | null | undefined,
-  legacyStateVector: Uint8Array | null | undefined,
-): Uint8Array | null {
-  return stateVectorFromPersistedSnapshot(snapshot) ?? legacyStateVector ?? null;
-}
 
 /**
  * Allow-list a canvas record's fields. Canvas records carry no fork,
@@ -90,8 +73,6 @@ export function sanitizeState(state: PersistedHSMRecord): PersistedHSMRecord {
 }
 
 function sanitizeMergeState(state: PersistedMergeState): PersistedMergeState {
-  const lcaSnapshot = state.lca?.snapshot;
-  const localSnapshot = state.localSnapshot ?? null;
   const forkLocalSnapshot = state.fork?.localSnapshot ?? null;
   const forkRemoteSnapshot = state.fork?.remoteSnapshot ?? null;
 
@@ -104,20 +85,13 @@ function sanitizeMergeState(state: PersistedMergeState): PersistedMergeState {
           contents: state.lca.contents,
           hash: state.lca.hash,
           mtime: state.lca.mtime,
-          ...(lcaSnapshot
-            ? { snapshot: lcaSnapshot }
-            : state.lca.stateVector
-              ? { stateVector: state.lca.stateVector }
-              : {}),
+          ...(state.lca.snapshot ? { snapshot: state.lca.snapshot } : {}),
         }
       : null,
     disk: state.disk
       ? { hash: state.disk.hash, mtime: state.disk.mtime }
       : null,
-    localSnapshot,
-    ...(!localSnapshot && state.localStateVector
-      ? { localStateVector: state.localStateVector }
-      : {}),
+    localSnapshot: state.localSnapshot ?? null,
     lastStatePath: state.lastStatePath,
     deferredConflict: state.deferredConflict
       ? { diskHash: state.deferredConflict.diskHash, localHash: state.deferredConflict.localHash }
@@ -125,16 +99,8 @@ function sanitizeMergeState(state: PersistedMergeState): PersistedMergeState {
     fork: state.fork
       ? {
           base: state.fork.base,
-          ...(forkLocalSnapshot
-            ? { localSnapshot: forkLocalSnapshot }
-            : state.fork.localStateVector
-              ? { localStateVector: state.fork.localStateVector }
-              : {}),
-          ...(forkRemoteSnapshot
-            ? { remoteSnapshot: forkRemoteSnapshot }
-            : state.fork.remoteStateVector
-              ? { remoteStateVector: state.fork.remoteStateVector }
-              : {}),
+          ...(forkLocalSnapshot ? { localSnapshot: forkLocalSnapshot } : {}),
+          ...(forkRemoteSnapshot ? { remoteSnapshot: forkRemoteSnapshot } : {}),
           origin: state.fork.origin,
           created: state.fork.created,
           captureMark: state.fork.captureMark,
@@ -286,30 +252,21 @@ export class HSMStore {
           return;
         }
         const s = record;
-        const lcaLegacyStateVector = s.lca && !s.lca.snapshot
-          ? stateVectorFromSnapshotOrLegacy(s.lca.snapshot, s.lca.stateVector)
-          : null;
         results.push({
           guid: s.guid,
           path: s.path,
           folder: s.folder,
-          lcaMeta: s.lca && (s.lca.snapshot || lcaLegacyStateVector)
+          // Records written before snapshots were persisted have no usable
+          // baseline metadata; they project a null lcaMeta and take the
+          // full-load path, where recovery re-derives the baseline.
+          lcaMeta: s.lca?.snapshot
             ? {
                 meta: { hash: s.lca.hash, mtime: s.lca.mtime },
-                ...(s.lca.snapshot ? { snapshot: s.lca.snapshot } : {}),
-                ...(lcaLegacyStateVector ? { stateVector: lcaLegacyStateVector } : {}),
+                snapshot: s.lca.snapshot,
               }
             : null,
           disk: s.disk,
           localSnapshot: s.localSnapshot ?? null,
-          ...(!s.localSnapshot
-            ? {
-                localStateVector: stateVectorFromSnapshotOrLegacy(
-                  s.localSnapshot,
-                  s.localStateVector,
-                ),
-              }
-            : {}),
           lastStatePath: s.lastStatePath,
           deferredConflict: s.deferredConflict,
           hasFork: !!s.fork,

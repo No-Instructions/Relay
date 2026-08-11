@@ -20,7 +20,7 @@ import { Canvas } from "./Canvas";
 import type { CanvasData } from "./CanvasView";
 import { areCanvasDataEqual } from "./CanvasData";
 import { SyncFile, isSyncFile } from "./SyncFile";
-import { isEmptyDoc, snapshotFromDoc } from "./merge-hsm/state-vectors";
+import { isEmptyDoc, snapshotFromDoc } from "./merge-hsm/snapshots";
 import { WakePriority } from "./merge-hsm/MergeManager";
 import {
 	buildFolderSyncSnapshot,

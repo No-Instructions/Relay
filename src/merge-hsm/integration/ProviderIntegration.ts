@@ -10,7 +10,7 @@
 import * as Y from 'yjs';
 import type { MergeHSM } from '../MergeHSM';
 import { curryLog } from '../../debug';
-import { snapshotFromDoc } from '../state-vectors';
+import { isEmptyDoc, snapshotFromDoc } from '../snapshots';
 
 const providerError = curryLog("[ProviderIntegration]", "error");
 const providerWarn = curryLog("[ProviderIntegration]", "warn");
@@ -137,19 +137,18 @@ export class ProviderIntegration {
    * Handle provider sync event (initial sync complete).
    *
    * Asserts that the provider actually delivered data into remoteDoc.
-   * If remoteDoc's state vector is empty after sync, the provider lied
-   * about being synced (BUG-123).
+   * If remoteDoc holds no ops after sync, the provider lied about being
+   * synced.
    */
   private handleSync(synced?: boolean): void {
     if (synced === false) return;
     if (!this.isProviderConnected()) return;
 
-    const sv = Y.encodeStateVector(this.remoteDoc);
-    if (sv.length <= 1) {
-      // State vector is empty — no ops were delivered.
+    if (isEmptyDoc(this.remoteDoc)) {
+      // No ops were delivered.
       // This should not happen if the provider truly synced.
       providerError(
-        'PROVIDER_SYNCED fired but remoteDoc state vector is empty. ' +
+        'PROVIDER_SYNCED fired but remoteDoc holds no ops. ' +
         'The provider reported sync before delivering document data.'
       );
     }

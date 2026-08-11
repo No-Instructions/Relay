@@ -1843,7 +1843,7 @@ export class SharedFolder extends HasProvider {
 					// and re-sends the server subscribe frame itself, so the
 					// callbacks registered by the constructor's
 					// setupEventSubscriptions() call stay live.
-					this.mergeManager.clearServerAdvertisedSVs();
+					this.mergeManager.clearServerAdvertisedHeads();
 					this.enqueueLCABackfill("connect");
 					this.connectForkedIdleDocuments();
 				}

@@ -14,7 +14,7 @@ import type { TimeProvider } from './TimeProvider';
 import type { E2ERecordingBridge, E2ERecordingState } from './merge-hsm/recording';
 import type { ConflictInfoSnapshot } from './merge-hsm/conflict';
 import { base64ToUint8Array, uint8ArrayToBase64 } from './merge-hsm/recording/serialization';
-import { snapshotContains, snapshotFromDoc, snapshotsEqual, type YjsSnapshot } from './merge-hsm/state-vectors';
+import { snapshotContains, snapshotFromDoc, snapshotsEqual, type YjsSnapshot } from './merge-hsm/snapshots';
 import { getHSMBootId, getHSMBootEntries, flushHSMRecording, getRecentEntries, getSessionLogs } from './debug';
 import type { SessionLogOptions } from './debug';
 import { getRecentPromises } from './trackPromise';
@@ -40,15 +40,15 @@ export interface DocumentContentSnapshot {
   guid: string;
   folder: string;
   /** Live resident HSM localDoc text, captured after the asynchronous store probes. */
-  local: { content: string; stateVector: string } | null;
+  local: { content: string; snapshot: string } | null;
   /** Live resident HSM remoteDoc text, captured after the asynchronous store probes. */
-  remote: { content: string; stateVector: string } | null;
+  remote: { content: string; snapshot: string } | null;
   /** Independently reconstructed per-document IndexedDB state. */
-  idb: { content: string; stateVector: string } | null;
+  idb: { content: string; snapshot: string } | null;
   /** Vault-adapter file contents and mtime. */
   disk: { content: string; mtime: number } | null;
   /** Independently downloaded and reconstructed server state. */
-  server: { content: string; stateVector: string; updateSize: number } | null;
+  server: { content: string; snapshot: string; updateSize: number } | null;
 }
 
 /**
@@ -68,11 +68,11 @@ export interface CanvasContentSnapshot {
   wasMaterialized: boolean;
   userLock: boolean;
   downloadPending: boolean;
-  local: { data: unknown; stateVector: string } | null;
-  remote: { data: unknown; stateVector: string } | null;
+  local: { data: unknown; snapshot: string } | null;
+  remote: { data: unknown; snapshot: string } | null;
   disk: { data: unknown; mtime: number; parseError: boolean } | null;
   view: { data: unknown } | null;
-  server: { data: unknown; stateVector: string; updateSize: number } | null;
+  server: { data: unknown; snapshot: string; updateSize: number } | null;
   localRemoteContentEqual: boolean | null;
   diskMatchesLocal: boolean | null;
   serverMatchesLocal: boolean | null;
@@ -145,8 +145,8 @@ export interface ForkSnapshot {
   created: number | null;
   createdTime: string | null;
   captureMark: any;
-  localStateVectorBytes: number;
-  remoteStateVectorBytes: number;
+  localSnapshotBytes: number;
+  remoteSnapshotBytes: number;
 }
 
 export interface IdbForkSnapshot {
@@ -216,7 +216,7 @@ export interface HsmStateSnapshot {
   idbContent: string | null;
   diskMtime: number | null;
   diskContent: string | null;
-  stateVectorsEqual: boolean | null;
+  snapshotsEqual: boolean | null;
   diskMatchesIdb: boolean;
   idbMatchesLca: boolean;
   idbMatchesPersistedLca: boolean;
@@ -301,7 +301,7 @@ export interface RelayDebugGlobal {
   /** Get last N entries for a specific document (buffer + disk, newest files first) */
   getRecentEntries: (guid: string, limit?: number) => Promise<object[]>;
   /** Read Y.Doc text content from IndexedDB without waking the HSM */
-  readIdbContent: (guid: string, appId: string) => Promise<{ content: string; stateVector: Uint8Array } | null>;
+  readIdbContent: (guid: string, appId: string) => Promise<{ content: string; snapshot: Uint8Array } | null>;
   /** Get plugin log entries from the current session, with optional level/pattern filtering */
   getSessionLogs: (options?: SessionLogOptions) => Promise<object[]>;
   /**
@@ -1059,7 +1059,7 @@ export class RelayDebugAPI {
       if (idbResult) {
         result.idb = {
           content: idbResult.content,
-          stateVector: this.toHex(idbResult.stateVector),
+          snapshot: this.toHex(idbResult.snapshot),
         };
       }
     } catch { /* IDB not available */ }
@@ -1084,7 +1084,7 @@ export class RelayDebugAPI {
       Y.applyUpdate(tempDoc, rawUpdate);
       result.server = {
         content: tempDoc.getText('contents').toString(),
-        stateVector: this.toHex(Y.encodeStateVector(tempDoc)),
+        snapshot: this.toHex(snapshotFromDoc(tempDoc).snapshot),
         updateSize: rawUpdate.byteLength,
       };
       tempDoc.destroy();
@@ -1098,7 +1098,7 @@ export class RelayDebugAPI {
       if (localDoc) {
         result.local = {
           content: localDoc.getText('contents').toString(),
-          stateVector: this.toHex(Y.encodeStateVector(localDoc)),
+          snapshot: this.toHex(snapshotFromDoc(localDoc).snapshot),
         };
       }
     } catch { /* localDoc not available */ }
@@ -1108,7 +1108,7 @@ export class RelayDebugAPI {
       if (remoteDoc) {
         result.remote = {
           content: remoteDoc.getText('contents').toString(),
-          stateVector: this.toHex(Y.encodeStateVector(remoteDoc)),
+          snapshot: this.toHex(snapshotFromDoc(remoteDoc).snapshot),
         };
       }
     } catch { /* remoteDoc not available */ }
@@ -1192,7 +1192,7 @@ export class RelayDebugAPI {
         const localDoc = canvas.localDoc;
         result.local = {
           data: Canvas.exportCanvasData(localDoc),
-          stateVector: this.toHex(Y.encodeStateVector(localDoc)),
+          snapshot: this.toHex(snapshotFromDoc(localDoc).snapshot),
         };
       }
     } catch { /* localDoc not available */ }
@@ -1203,7 +1203,7 @@ export class RelayDebugAPI {
       if (remoteDoc) {
         result.remote = {
           data: Canvas.exportCanvasData(remoteDoc),
-          stateVector: this.toHex(Y.encodeStateVector(remoteDoc)),
+          snapshot: this.toHex(snapshotFromDoc(remoteDoc).snapshot),
         };
       }
     } catch { /* remoteDoc not available */ }
@@ -1248,7 +1248,7 @@ export class RelayDebugAPI {
       Y.applyUpdate(tempDoc, rawUpdate);
       result.server = {
         data: Canvas.exportCanvasData(tempDoc),
-        stateVector: this.toHex(Y.encodeStateVector(tempDoc)),
+        snapshot: this.toHex(snapshotFromDoc(tempDoc).snapshot),
         updateSize: rawUpdate.byteLength,
       };
       tempDoc.destroy();
@@ -1323,10 +1323,10 @@ export class RelayDebugAPI {
     // IDB — prefer the in-memory localDoc so we don't open a parallel
     // IndexeddbPersistence when the HSM is warm.
     let idbContent: string | null = null;
-    let idbStateVector: Uint8Array | null = null;
+    let idbSnapshot: Uint8Array | null = null;
     if (hsmAny.localDoc) {
       idbContent = hsmAny.localDoc.getText('contents').toString();
-      idbStateVector = hsmAny._localStateVector || null;
+      idbSnapshot = hsmAny._localSnapshot || null;
     } else {
       try {
         const result = await readIdbContent(
@@ -1336,31 +1336,32 @@ export class RelayDebugAPI {
         );
         if (result) {
           idbContent = result.content;
-          idbStateVector = result.stateVector;
+          idbSnapshot = result.snapshot;
         }
       } catch { /* noop */ }
     }
 
-    // SV equality — only meaningful if both sides exist. Warm docs are
-    // compared by freshly encoded vectors: the HSM's cached _localStateVector
-    // and _remoteStateVector fields only refresh at lifecycle points and go
+    // Head equality — only meaningful if both sides exist. Warm docs are
+    // compared by freshly captured snapshots: the HSM's cached _localSnapshot
+    // and _remoteSnapshot fields only refresh at lifecycle points and go
     // stale during active editing, reporting mismatch on converged docs.
-    // Hibernated docs fall back to the cached/persisted vectors, which is
+    // Hibernated docs fall back to the cached/persisted heads, which is
     // the persistence-level check the idle fixtures assert.
-    let stateVectorsEqual: boolean | null = null;
+    let headSnapshotsEqual: boolean | null = null;
     try {
-      const svEqual = (a: Uint8Array, b: Uint8Array) =>
-        JSON.stringify(Array.from(a)) === JSON.stringify(Array.from(b));
       if (hsmAny.localDoc && hsmAny.remoteDoc) {
-        stateVectorsEqual = svEqual(
-          Y.encodeStateVector(hsmAny.localDoc),
-          Y.encodeStateVector(hsmAny.remoteDoc),
+        headSnapshotsEqual = snapshotsEqual(
+          snapshotFromDoc(hsmAny.localDoc),
+          snapshotFromDoc(hsmAny.remoteDoc),
         );
       } else {
-        const remoteStateVector: Uint8Array | null =
-          hsmAny._remoteStateVector || null;
-        if (idbStateVector && remoteStateVector) {
-          stateVectorsEqual = svEqual(idbStateVector, remoteStateVector);
+        const remoteSnapshot: Uint8Array | null =
+          hsmAny._remoteSnapshot || null;
+        if (idbSnapshot && remoteSnapshot) {
+          headSnapshotsEqual = snapshotsEqual(
+            { snapshot: idbSnapshot },
+            { snapshot: remoteSnapshot },
+          );
         }
       }
     } catch { /* noop */ }
@@ -1464,7 +1465,7 @@ export class RelayDebugAPI {
       idbContent,
       diskMtime: disk?.mtime || null,
       diskContent,
-      stateVectorsEqual,
+      snapshotsEqual: headSnapshotsEqual,
       diskMatchesIdb,
       idbMatchesLca,
       idbMatchesPersistedLca,
@@ -1928,8 +1929,8 @@ export class RelayDebugAPI {
       created: f.created ?? null,
       createdTime: f.created ? new Date(f.created).toISOString() : null,
       captureMark: f.captureMark ?? null,
-      localStateVectorBytes: f.localStateVector?.byteLength ?? 0,
-      remoteStateVectorBytes: f.remoteStateVector?.byteLength ?? 0,
+      localSnapshotBytes: f.localSnapshot?.byteLength ?? 0,
+      remoteSnapshotBytes: f.remoteSnapshot?.byteLength ?? 0,
     });
 
     const inMemoryFork = (hsm as any)._fork;
@@ -2009,7 +2010,7 @@ async function readIdbContent(
   guid: string,
   appId: string,
   timeProvider?: TimeProvider,
-): Promise<{ content: string; stateVector: Uint8Array } | null> {
+): Promise<{ content: string; snapshot: Uint8Array } | null> {
   if (!timeProvider) return null;
   const dbName = `${appId}-relay-doc-${guid}`;
   const tempDoc = new Y.Doc();
@@ -2017,9 +2018,9 @@ async function readIdbContent(
     const persistence = new IndexeddbPersistence(dbName, tempDoc, null, null, timeProvider);
     await persistence.whenSynced;
     const content = tempDoc.getText('contents').toString();
-    const stateVector = Y.encodeStateVector(tempDoc);
+    const snapshot = snapshotFromDoc(tempDoc).snapshot;
     await persistence.destroy();
-    return { content, stateVector };
+    return { content, snapshot };
   } catch {
     tempDoc.destroy();
     return null;

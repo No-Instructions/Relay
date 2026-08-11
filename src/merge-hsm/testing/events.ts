@@ -7,7 +7,7 @@
  */
 
 import * as Y from "yjs";
-import { snapshotFromUpdate } from "../state-vectors";
+import { emptySnapshot, snapshotFromUpdate } from "../snapshots";
 import type {
 	LoadEvent,
 	UnloadEvent,
@@ -224,14 +224,12 @@ export function persistenceLoaded(
 	lca: LCAState | null,
 	localHead?: {
 		localSnapshot?: Uint8Array | null;
-		localStateVector?: Uint8Array | null;
 	},
 ): PersistenceLoadedEvent {
 	return {
 		type: "PERSISTENCE_LOADED",
 		lca,
 		localSnapshot: localHead?.localSnapshot ?? null,
-		localStateVector: localHead?.localStateVector ?? null,
 	};
 }
 
@@ -300,7 +298,7 @@ export async function sha256(contents: string): Promise<string> {
 export async function createLCA(
 	contents: string,
 	mtime: number,
-	stateVector?: Uint8Array,
+	snapshot?: Uint8Array,
 ): Promise<LCAState> {
 	return {
 		contents,
@@ -308,7 +306,7 @@ export async function createLCA(
 			hash: await sha256(contents),
 			mtime,
 		},
-		stateVector: stateVector ?? new Uint8Array([0]),
+		snapshot: snapshot ?? emptySnapshot(),
 	};
 }
 
@@ -411,10 +409,10 @@ export async function loadAndActivate(
 
 	// Create LCA and updates for the content
 	const updates = content ? createYjsUpdate(content) : new Uint8Array();
-	const stateVector = content
-		? Y.encodeStateVectorFromUpdate(updates)
-		: new Uint8Array([0]);
-	const lca = await createLCA(content, mtime, stateVector);
+	const snapshot = content
+		? snapshotFromUpdate(updates).snapshot
+		: emptySnapshot();
+	const lca = await createLCA(content, mtime, snapshot);
 	hsm.setDefaultDiskState?.({
 		content,
 		hash: lca.meta.hash,
@@ -530,10 +528,10 @@ export async function loadToIdle(
 
 	// Create LCA
 	const updates = content ? createYjsUpdate(content) : new Uint8Array();
-	const stateVector = content
-		? Y.encodeStateVectorFromUpdate(updates)
-		: new Uint8Array([0]);
-	const lca = await createLCA(content ?? "", mtime, stateVector);
+	const snapshot = content
+		? snapshotFromUpdate(updates).snapshot
+		: emptySnapshot();
+	const lca = await createLCA(content ?? "", mtime, snapshot);
 	hsm.setDefaultDiskState?.({
 		content: content ?? "",
 		hash: lca.meta.hash,
@@ -710,22 +708,22 @@ export async function loadToConflict(
 	}
 
 	// Step 2: Create LCA with BASE content (the last common ancestor)
-	// Note: LCA state vector should reflect the base content, not remote
+	// Note: LCA snapshot should reflect the base content, not remote
 	const baseUpdates = opts.base ? createYjsUpdate(opts.base) : new Uint8Array();
-	const baseStateVector = opts.base
-		? Y.encodeStateVectorFromUpdate(baseUpdates)
-		: new Uint8Array([0]);
-	const baseLca = await createLCA(opts.base, 500, baseStateVector);
+	const baseSnapshot = opts.base
+		? snapshotFromUpdate(baseUpdates).snapshot
+		: emptySnapshot();
+	const baseLca = await createLCA(opts.base, 500, baseSnapshot);
 
 	// Step 3: Load through state machine
 	// - LOAD starts loading
-	// - PERSISTENCE_LOADED sets LCA to base (with base state vector)
-	// - REMOTE_UPDATE sets _remoteStateVector (to remote state vector, different from LCA)
+	// - PERSISTENCE_LOADED sets LCA to base (with base snapshot)
+	// - REMOTE_UPDATE sets _remoteSnapshot (to remote head, different from LCA)
 	// - SET_MODE_IDLE transitions to idle
 	hsm.send(load(guid));
-	// Pass base updates for local state vector to match LCA
+	// Pass base updates for the local head to match LCA
 	hsm.send(persistenceLoadedFromUpdate(baseUpdates, baseLca));
-	// Send REMOTE_UPDATE to set _remoteStateVector (different from LCA)
+	// Send REMOTE_UPDATE to set _remoteSnapshot (different from LCA)
 	// This simulates remote edits that happened while we were offline
 	hsm.send({ type: "REMOTE_UPDATE", update: remoteUpdates });
 
