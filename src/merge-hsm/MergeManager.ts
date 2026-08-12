@@ -45,6 +45,7 @@ import {
   decodeUpdateDeleteSet,
   deleteSetContains,
   mergeDecodedDeleteSets,
+  restoreDocAtSnapshot,
   snapshotContains,
   snapshotFromDoc,
   snapshotIsAhead,
@@ -1771,23 +1772,12 @@ export class MergeManager {
     sourceDoc: Y.Doc,
     advertisedSnapshot: YjsSnapshot,
   ): Uint8Array | null {
-    const originDoc = new Y.Doc({ gc: false });
-    let restoredDoc: Y.Doc | null = null;
+    const restoredDoc = restoreDocAtSnapshot(sourceDoc, advertisedSnapshot);
+    if (!restoredDoc) return null;
     try {
-      Y.applyUpdate(originDoc, Y.encodeStateAsUpdate(sourceDoc));
-      restoredDoc = Y.createDocFromSnapshot(
-        originDoc,
-        Y.decodeSnapshot(advertisedSnapshot.snapshot),
-      );
-      if (!snapshotsEqual(snapshotFromDoc(restoredDoc), advertisedSnapshot)) {
-        return null;
-      }
       return Y.encodeStateAsUpdate(restoredDoc);
-    } catch {
-      return null;
     } finally {
-      restoredDoc?.destroy();
-      originDoc.destroy();
+      restoredDoc.destroy();
     }
   }
 

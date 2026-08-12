@@ -76,6 +76,7 @@ import {
 	emptySnapshot,
 	isEmptyDoc,
 	mergeSnapshotHeads,
+	restoreTextAtSnapshot,
 	snapshotFromDoc,
 	snapshotHasOpsMissingFrom,
 	snapshotIsAhead,
@@ -675,17 +676,23 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		};
 	}
 
-	// Rebuild a compacted LCA body from whichever doc still sits exactly at
-	// the baseline: a doc whose complete snapshot equals the LCA's snapshot
-	// holds precisely the operations the baseline was captured from, so its
-	// text IS the baseline text. localDoc is preferred; remoteDoc is an
-	// equally valid source when localDoc is absent or has moved on.
+	// Rebuild a compacted LCA body from the attached docs. A doc whose
+	// complete snapshot equals the LCA's snapshot holds precisely the
+	// operations the baseline was captured from, so its text IS the baseline
+	// text. When neither doc sits at the baseline, a doc that has moved past
+	// it still contains it: localDoc's gcFilter pins every deleted item that
+	// was visible at the LCA snapshot precisely so the baseline can be
+	// rebuilt point-in-time here. The restore verifies its own result and
+	// yields nothing when garbage-collected history would make the rebuilt
+	// text inexact. localDoc is preferred; remoteDoc is an equally valid
+	// source when localDoc is absent.
 	private hydrateLCAContentsFromMatchingDoc(): void {
 		if (!this._lca || this._lca.contents !== null) return;
+		const baseline = { snapshot: this._lca.snapshot };
 		for (const doc of [this.localDoc, this.remoteDoc]) {
 			if (!doc) continue;
 			try {
-				if (!snapshotsEqual(snapshotFromDoc(doc), { snapshot: this._lca.snapshot })) {
+				if (!snapshotsEqual(snapshotFromDoc(doc), baseline)) {
 					continue;
 				}
 			} catch {
@@ -695,6 +702,13 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				...this._lca,
 				contents: doc.getText("contents").toString(),
 			};
+			return;
+		}
+		for (const doc of [this.localDoc, this.remoteDoc]) {
+			if (!doc) continue;
+			const contents = restoreTextAtSnapshot(doc, baseline, "contents");
+			if (contents === null) continue;
+			this._lca = { ...this._lca, contents };
 			return;
 		}
 	}
@@ -2739,9 +2753,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	// The idle merge declared its baseline unusable: the LCA is missing, or
-	// its compacted body could not be rebuilt because neither doc's state
-	// vector matches it. Distinct from the generic unresolved outcome so the
-	// stored error names the real blocker.
+	// its compacted body could not be rebuilt — no attached doc sits at the
+	// baseline, and none contains a verifiable point-in-time restoration of
+	// it. Distinct from the generic unresolved outcome so the stored error
+	// names the real blocker.
 	private storeLcaUnavailableError(): void {
 		const error = new Error(
 			"Unable to continue idle reconciliation: LCA unavailable",

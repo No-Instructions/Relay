@@ -368,6 +368,67 @@ export function mergeDecodedDeleteSets(
 	return out;
 }
 
+// ---- Point-in-time restoration ----
+
+/**
+ * Rebuild a document exactly as it stood at SNAPSHOT from a doc whose
+ * history contains it. The source doc is copied into a gc-disabled doc
+ * because Yjs refuses to restore from a doc that may collect deleted
+ * content. The restored head is then verified against SNAPSHOT: a
+ * tombstone whose content was already garbage-collected surfaces as a
+ * head mismatch, so an inexact restoration returns null rather than
+ * wrong content. The caller owns the returned doc and must destroy it.
+ */
+export function restoreDocAtSnapshot(
+	doc: Y.Doc,
+	snapshot: YjsSnapshot,
+): Y.Doc | null {
+	let decoded: Y.Snapshot;
+	try {
+		decoded = Y.decodeSnapshot(snapshot.snapshot);
+		if (!snapshotContains(snapshotFromDoc(doc), snapshot)) return null;
+	} catch {
+		return null;
+	}
+
+	const originDoc = new Y.Doc({ gc: false });
+	let restoredDoc: Y.Doc | null = null;
+	try {
+		Y.applyUpdate(originDoc, Y.encodeStateAsUpdate(doc));
+		restoredDoc = Y.createDocFromSnapshot(originDoc, decoded);
+		if (!snapshotsEqual(snapshotFromDoc(restoredDoc), snapshot)) {
+			restoredDoc.destroy();
+			return null;
+		}
+		return restoredDoc;
+	} catch {
+		restoredDoc?.destroy();
+		return null;
+	} finally {
+		originDoc.destroy();
+	}
+}
+
+/**
+ * The text of a Y.Text root exactly as it stood at SNAPSHOT, rebuilt from
+ * a doc whose history contains it. Returns null when the doc does not
+ * contain the snapshot or when collected history makes the rebuilt text
+ * unverifiable.
+ */
+export function restoreTextAtSnapshot(
+	doc: Y.Doc,
+	snapshot: YjsSnapshot,
+	field: string,
+): string | null {
+	const restoredDoc = restoreDocAtSnapshot(doc, snapshot);
+	if (!restoredDoc) return null;
+	try {
+		return restoredDoc.getText(field).toString();
+	} finally {
+		restoredDoc.destroy();
+	}
+}
+
 // ---- Snapshot head construction and comparison ----
 
 type YDeleteSet = ConstructorParameters<typeof Y.Snapshot>[0];
