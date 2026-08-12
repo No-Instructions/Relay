@@ -3991,6 +3991,46 @@ export class SharedFolder extends HasProvider {
 		return canvas;
 	}
 
+	/**
+	 * Read-only accessor for debug and CDP consumers: resolve a
+	 * folder-relative path through membership to its loaded Document.
+	 * Returns undefined when the path has no membership entry, the entry
+	 * is not loaded, or it is not a document. Never creates, uploads, or
+	 * moves — safe to call with a path in any state.
+	 */
+	public viewDoc(vpath: string): Document | undefined {
+		const guid = this.syncStore.get(vpath);
+		if (!guid) return;
+		const doc = this.files.get(guid);
+		if (!isDocument(doc)) return;
+		return doc;
+	}
+
+	/**
+	 * Read-only accessor for debug and CDP consumers: resolve a
+	 * folder-relative path through membership to its loaded Canvas.
+	 * Returns undefined when the path has no membership entry, the entry
+	 * is not loaded, or it is not a canvas. Never creates, uploads, or
+	 * moves.
+	 */
+	public viewCanvas(vpath: string): Canvas | undefined {
+		const guid = this.syncStore.get(vpath);
+		if (!guid) return;
+		const canvas = this.files.get(guid);
+		if (!isCanvas(canvas)) return;
+		return canvas;
+	}
+
+	/**
+	 * Read-only accessor for debug and CDP consumers: the loaded file for
+	 * a membership guid. Guids are stable across renames, so a script can
+	 * resolve a path once and follow the file through moves by guid.
+	 * Returns undefined when the file is not loaded. Never creates.
+	 */
+	public viewFileByGuid(guid: string): IFile | undefined {
+		return this.files.get(guid);
+	}
+
 	public viewSyncFile(tfile: TFile): SyncFile | undefined {
 		const vpath = this.getVirtualPath(tfile.path);
 		const guid = this.syncStore.get(vpath);
