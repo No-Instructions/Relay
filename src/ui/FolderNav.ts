@@ -423,7 +423,7 @@ class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
 		) {
 			if (sharedFolder.ready && sharedFolder.connected) {
 				try {
-					const file = sharedFolder.proxy.viewSyncFile(tfile.path);
+					const file = sharedFolder.proxy.viewSyncFile(tfile);
 					if (file && isSyncFile(file)) {
 						if (storage && storage.file === file) {
 							return storage;

@@ -57,7 +57,7 @@ import {
 } from "./SyncTypes";
 import type { IFile } from "./IFile";
 import { formatDuplicateGuidLog } from "./FileLogDetails";
-import { createPathProxy } from "./pathProxy";
+import { createProtectionProxy } from "./pathProxy";
 import { ContentAddressedStore } from "./CAS";
 import { SyncSettingsManager, type SyncFlags } from "./SyncSettings";
 import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
@@ -258,7 +258,6 @@ export class SharedFolder extends HasProvider {
 
 	private _persistence: IndexeddbPersistence;
 	proxy: SharedFolder;
-	private revokeProxy: (() => void) | null = null;
 	cas: ContentAddressedStore;
 	syncSettingsManager: SyncSettingsManager;
 	mergeManager: MergeManager;
@@ -502,11 +501,11 @@ export class SharedFolder extends HasProvider {
 			}),
 		);
 
-		const { proxy, revoke } = createPathProxy(this, this.path, (globalPath: string) => {
-			return this.getVirtualPath(globalPath);
-		});
-		this.proxy = proxy;
-		this.revokeProxy = revoke;
+		this.proxy = createProtectionProxy(
+			this,
+			() => this.destroyed,
+			() => `SharedFolder(${this.path})`,
+		);
 
 		try {
 			const folderDbName = `${this.appId}-relay-folder-${this.guid}`;
@@ -3948,17 +3947,8 @@ export class SharedFolder extends HasProvider {
 		return canvas;
 	}
 
-	public viewDoc(vpath: string): Document | undefined {
-		const guid = this.syncStore.get(vpath);
-		if (!guid) return;
-		const doc = this.files.get(guid);
-		if (!isDocument(doc)) {
-			throw new Error("viewDoc(): unexpected ifile type");
-		}
-		return doc;
-	}
-
-	public viewSyncFile(vpath: string): SyncFile | undefined {
+	public viewSyncFile(tfile: TFile): SyncFile | undefined {
+		const vpath = this.getVirtualPath(tfile.path);
 		const guid = this.syncStore.get(vpath);
 		if (!guid) return;
 		const file = this.files.get(guid);
@@ -4841,8 +4831,6 @@ export class SharedFolder extends HasProvider {
 		this.fset.destroy();
 		this._settings.destroy();
 		this._settings = null as any;
-		this.revokeProxy?.();
-		this.revokeProxy = null;
 		this.proxy = null as any;
 		this.relayManager = null as any;
 		this.backgroundSync = null as any;
