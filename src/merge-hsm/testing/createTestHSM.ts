@@ -66,6 +66,9 @@ export interface TestHSMOptions {
 	 */
 	diskLoader?: DiskLoader;
 
+	/** Whether the document currently has a backing file. */
+	isDiskMaterialized?: () => boolean;
+
 	/**
 	 * When true, invoke sources return never-resolving promises.
 	 * Use for replay-based testing where recorded events drive transitions.
@@ -451,6 +454,7 @@ export async function createTestHSM(
 		timeProvider: time,
 		createPersistence,
 		diskLoader,
+		isDiskMaterialized: options.isDiskMaterialized,
 		isProviderSynced: () => providerState.synced,
 		replayMode: options.replayMode,
 		yaml: {

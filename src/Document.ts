@@ -144,6 +144,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			getPath: () => this.path,
 			remoteDoc: this.isRemoteDocLoaded ? this.ydoc : null,
 			getDiskContent: () => this.readDiskContent(),
+			isDiskMaterialized: () => this.tfile !== null,
 			getCurrentDiskMetadata: () =>
 				this.sharedFolder.getCurrentDiskMetadata(this),
 			isFolderConnected: () => this.sharedFolder.connected,

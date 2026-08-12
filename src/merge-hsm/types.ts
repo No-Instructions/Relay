@@ -1068,6 +1068,8 @@ export interface MergeHSMConfig {
 	 * This avoids disk reads when re-opening already-enrolled files.
 	 */
 	diskLoader: DiskLoader;
+	/** Whether this document currently has a backing file in the vault. */
+	isDiskMaterialized?: () => boolean;
 
 	/**
 	 * Query whether the provider is connected and synced.
