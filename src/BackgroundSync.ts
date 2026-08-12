@@ -46,7 +46,6 @@ import {
 	type LaneOperation,
 	type LaneSortReason,
 } from "./background-sync/WorkLane";
-
 export type {
 	QueueItem,
 	SyncCompletionOutcome,
@@ -141,6 +140,7 @@ const MAX_PROVIDER_SYNC_RETRIES = 5;
 const BACKGROUND_SYNC_QUEUE_PUMP_INTERVAL_MS = 1000;
 const BACKGROUND_SYNC_FOLDER_POLL_INTERVAL_MS = 5000;
 const BACKGROUND_SYNC_DRAIN_BUDGET_MS = 8;
+const FOLDER_SYNC_SNAPSHOT_FRAME_MS = 16;
 // How long a terminally-failed transient failure rests before the periodic
 // pass re-admits it. Short-lived blips are already absorbed by the lane's own
 // backoff retries; this interval is the long-tail self-heal for outages that
@@ -207,6 +207,11 @@ export class BackgroundSync extends HasLogging {
 		SharedFolder,
 		FolderSyncSnapshotSubscription
 	>();
+	private folderSyncSnapshotEmits = new Set<SharedFolder>();
+	private folderSyncSnapshotEmitScheduled = false;
+	private folderSyncSnapshotEmitTimer: number | null = null;
+	private lastSnapshotPaused = this.isPaused;
+	private destroyed = false;
 	private folderQueueWakeups = new Map<SharedFolder, Unsubscriber>();
 
 	subscriptions: Unsubscriber[] = [];
@@ -267,7 +272,9 @@ export class BackgroundSync extends HasLogging {
 			now: () => this.timeProvider.now(),
 			isDrainable: (item) => this.isDrainable(item),
 			onDiscarded: (item) => this.markTerminal(item, "skipped"),
-			onQueueChanged: () => this.noteQueueChanged(scope),
+			onActiveChanged: (item) =>
+				this.scheduleFolderSyncSnapshotEmit(item.sharedFolder),
+			onQueueChanged: (items) => this.noteQueueChanged(scope, items),
 		});
 	}
 
@@ -300,9 +307,12 @@ export class BackgroundSync extends HasLogging {
 		return this.lanes[scope].isClaimed(guid);
 	}
 
-	private noteQueueChanged(scope: WorkScope): void {
+	private noteQueueChanged(scope: WorkScope, items: readonly QueueItem[]): void {
 		const lane = this.lanes[scope];
 		metrics.setBgSyncQueueLength(lane.operation, lane.queuedCount);
+		for (const item of items) {
+			this.scheduleFolderSyncSnapshotEmit(item.sharedFolder);
+		}
 		this.queueStatusChanged.notifyListeners();
 	}
 
@@ -369,7 +379,12 @@ export class BackgroundSync extends HasLogging {
 	beginFolderPass(sharedFolder: SharedFolder): void {
 		const group = this.emptyGroup(sharedFolder);
 		group.status = "completed";
+		this.setSyncGroup(sharedFolder, group);
+	}
+
+	private setSyncGroup(sharedFolder: SharedFolder, group: SyncGroup): void {
 		this.syncGroups.set(sharedFolder, group);
+		this.scheduleFolderSyncSnapshotEmit(sharedFolder);
 	}
 
 	private countAdmitted(request: WorkRequest): void {
@@ -383,7 +398,7 @@ export class BackgroundSync extends HasLogging {
 			group.syncs++;
 		}
 		group.status = "running";
-		this.syncGroups.set(sharedFolder, group);
+		this.setSyncGroup(sharedFolder, group);
 	}
 
 	private removeQueuedFromGroup(item: QueueItem): void {
@@ -399,7 +414,7 @@ export class BackgroundSync extends HasLogging {
 			group.syncs = Math.max(0, group.syncs - 1);
 		}
 		this.updateGroupTerminalStatus(group);
-		this.syncGroups.set(item.sharedFolder, group);
+		this.setSyncGroup(item.sharedFolder, group);
 	}
 
 	private markTerminal(
@@ -429,7 +444,7 @@ export class BackgroundSync extends HasLogging {
 			group.skippedSyncs++;
 		}
 		this.updateGroupTerminalStatus(group);
-		this.syncGroups.set(item.sharedFolder, group);
+		this.setSyncGroup(item.sharedFolder, group);
 	}
 
 	private groupFinishedSyncs(group: SyncGroup): number {
@@ -1076,7 +1091,10 @@ export class BackgroundSync extends HasLogging {
 							// The row is withdrawn while the lane re-drives the
 							// item; the reclaim history stays, since this is
 							// the same unit of work still failing.
-							this.failures.delete(this.failureKey(laneFailureKind(scope), item.guid));
+							this.deleteFailure(
+								this.failureKey(laneFailureKind(scope), item.guid),
+								false,
+							);
 							this.debug(
 								`[${lane.operation}] retryable failure for ${item.path}: ${error.message}; retrying at ${item.nextAttemptAt}`,
 							);
@@ -1419,8 +1437,15 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	clearFailure(id: string): void {
-		this.failures.delete(id);
-		this.reclaimHistory.delete(id);
+		this.deleteFailure(id, true);
+	}
+
+	private deleteFailure(id: string, clearReclaimHistory: boolean): void {
+		const failure = this.failures.get(id);
+		if (this.failures.delete(id) && failure) {
+			this.scheduleFolderSyncSnapshotEmit(failure.sharedFolder);
+		}
+		if (clearReclaimHistory) this.reclaimHistory.delete(id);
 	}
 
 	clearFailuresForFolder(sharedFolder: SharedFolder): void {
@@ -1434,8 +1459,11 @@ export class BackgroundSync extends HasLogging {
 	beginFolderResync(sharedFolder: SharedFolder): Unsubscriber {
 		this.clearFailuresForFolder(sharedFolder);
 		this.folderResyncs.add(sharedFolder);
+		this.scheduleFolderSyncSnapshotEmit(sharedFolder);
 		return () => {
-			this.folderResyncs.delete(sharedFolder);
+			if (this.folderResyncs.delete(sharedFolder)) {
+				this.scheduleFolderSyncSnapshotEmit(sharedFolder);
+			}
 		};
 	}
 
@@ -1489,6 +1517,34 @@ export class BackgroundSync extends HasLogging {
 		});
 	}
 
+	private routePauseChange(): void {
+		if (this.lastSnapshotPaused === this.isPaused) return;
+		this.lastSnapshotPaused = this.isPaused;
+		for (const folder of this.folderSyncSnapshotSubscriptions.keys()) {
+			this.scheduleFolderSyncSnapshotEmit(folder);
+		}
+	}
+
+	private scheduleFolderSyncSnapshotEmit(sharedFolder: SharedFolder): void {
+		if (this.destroyed) return;
+		if (!this.folderSyncSnapshotSubscriptions?.has(sharedFolder)) {
+			return;
+		}
+		this.folderSyncSnapshotEmits.add(sharedFolder);
+		if (this.folderSyncSnapshotEmitScheduled) return;
+		this.folderSyncSnapshotEmitScheduled = true;
+		this.folderSyncSnapshotEmitTimer = this.timeProvider.setTimeout(() => {
+			this.folderSyncSnapshotEmitTimer = null;
+			this.folderSyncSnapshotEmitScheduled = false;
+			if (this.destroyed) return;
+			const pending = [...this.folderSyncSnapshotEmits];
+			this.folderSyncSnapshotEmits.clear();
+			for (const folder of pending) {
+				this.folderSyncSnapshotSubscriptions.get(folder)?.emit();
+			}
+		}, FOLDER_SYNC_SNAPSHOT_FRAME_MS);
+	}
+
 	subscribeToFolderSyncSnapshot(
 		sharedFolder: SharedFolder,
 		callback: Subscriber<FolderSyncSnapshot>,
@@ -1531,15 +1587,7 @@ export class BackgroundSync extends HasLogging {
 			state.smoother.update(this.getFolderSyncSnapshot(sharedFolder));
 		};
 		const folderStateKey = { type: "folder-sync-snapshot", sharedFolder };
-		state.unsubscribers = [
-			this.activeSync.on(state.emit),
-			this.activeDownloads.on(state.emit),
-			this.syncGroups.on(state.emit),
-			this.failures.on(state.emit),
-			this.folderResyncs.on(state.emit),
-			this.queueStatusChanged.on(state.emit),
-			sharedFolder.subscribe(folderStateKey, state.emit),
-		];
+		state.unsubscribers = [sharedFolder.subscribe(folderStateKey, state.emit)];
 		this.folderSyncSnapshotSubscriptions.set(sharedFolder, state);
 		state.emit();
 		return state;
@@ -1563,6 +1611,7 @@ export class BackgroundSync extends HasLogging {
 	 */
 	pause(): void {
 		this.isPaused = true;
+		this.routePauseChange();
 		this.queueStatusChanged.notifyListeners();
 	}
 
@@ -1572,6 +1621,7 @@ export class BackgroundSync extends HasLogging {
 	resume(): void {
 		this.debug("starting");
 		this.isPaused = false;
+		this.routePauseChange();
 		this.queueStatusChanged.notifyListeners();
 		this.drainAll();
 	}
@@ -1615,6 +1665,13 @@ export class BackgroundSync extends HasLogging {
 	 * collections, and clearing the lanes.
 	 */
 	destroy(): void {
+		this.destroyed = true;
+		this.folderSyncSnapshotEmits.clear();
+		if (this.folderSyncSnapshotEmitTimer !== null) {
+			this.timeProvider.clearTimeout(this.folderSyncSnapshotEmitTimer);
+			this.folderSyncSnapshotEmitTimer = null;
+		}
+		this.folderSyncSnapshotEmitScheduled = false;
 		for (const [sharedFolder, state] of [
 			...this.folderSyncSnapshotSubscriptions.entries(),
 		]) {
@@ -1690,6 +1747,10 @@ export class BackgroundSync extends HasLogging {
 			return;
 		}
 		this.failures.set(failure.id, failure);
+		if (existing && existing.sharedFolder !== failure.sharedFolder) {
+			this.scheduleFolderSyncSnapshotEmit(existing.sharedFolder);
+		}
+		this.scheduleFolderSyncSnapshotEmit(failure.sharedFolder);
 	}
 
 	private failureKey(kind: BackgroundSyncFailure["kind"], guid: string): string {

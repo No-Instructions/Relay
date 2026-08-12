@@ -69,8 +69,10 @@ export interface WorkLaneDeps {
 	isDrainable(item: QueueItem): boolean;
 	/** A queued item whose target was destroyed before it could start. */
 	onDiscarded(item: QueueItem): void;
-	/** The queue's membership changed (length, order, or an item's intent). */
-	onQueueChanged(): void;
+	/** An item entered or left the active set. */
+	onActiveChanged(item: QueueItem): void;
+	/** The queue's membership or an item's intent changed. */
+	onQueueChanged(items: readonly QueueItem[]): void;
 }
 
 /**
@@ -133,7 +135,8 @@ export class WorkLane {
 				return { kind: "shared", item: held.item, completion: held.completion };
 			}
 			if (held.item.status === "pending") {
-				const index = this.queue.indexOf(held.item);
+				const replaced = held.item;
+				const index = this.queue.indexOf(replaced);
 				// The stronger request takes over the queued work's place in
 				// line AND its retry bookkeeping: a parked backoff window and
 				// the attempts already spent carry over, so an upgrade never
@@ -150,7 +153,7 @@ export class WorkLane {
 					this.queue.push(upgraded);
 				}
 				held.item = upgraded;
-				this.deps.onQueueChanged();
+				this.deps.onQueueChanged([replaced, upgraded]);
 				return { kind: "upgraded", item: upgraded, completion: held.completion };
 			}
 			return {
@@ -166,7 +169,7 @@ export class WorkLane {
 		const item = this.queuedItem(request, this.deps.now());
 		const claim = this.createClaim(item);
 		this.queue.push(item);
-		this.deps.onQueueChanged();
+		this.deps.onQueueChanged([item]);
 		return { kind: "admitted", item, completion: claim.completion };
 	}
 
@@ -287,6 +290,13 @@ export class WorkLane {
 		item.nextAttemptAt = undefined;
 		item.retryReason = undefined;
 		this.active.add(item);
+		this.deps.onActiveChanged(item);
+	}
+
+	private removeActive(item: QueueItem): void {
+		if (this.active.delete(item)) {
+			this.deps.onActiveChanged(item);
+		}
 	}
 
 	// =========================================================================
@@ -301,7 +311,7 @@ export class WorkLane {
 	settle(item: QueueItem, completion: WorkCompletion): void {
 		item.status = "completed";
 		const cancelled = this.isCancelled(item);
-		this.active.delete(item);
+		this.removeActive(item);
 		const claim = this.claims.get(item.guid);
 		if (claim?.item === item) {
 			this.claims.delete(item.guid);
@@ -313,7 +323,7 @@ export class WorkLane {
 	/** The work behind an item failed for good; reject the shared claim. */
 	fail(item: QueueItem, error: Error): void {
 		item.status = "failed";
-		this.active.delete(item);
+		this.removeActive(item);
 		const claim = this.claims.get(item.guid);
 		if (claim?.item === item) {
 			this.claims.delete(item.guid);
@@ -335,7 +345,7 @@ export class WorkLane {
 	): boolean {
 		const retries = (item.retryAttempts ?? 0) + 1;
 		item.retryAttempts = retries;
-		this.active.delete(item);
+		this.removeActive(item);
 		if (retries > maxRetries) {
 			item.nextAttemptAt = undefined;
 			item.retryReason = undefined;
@@ -350,7 +360,7 @@ export class WorkLane {
 			this.queue.push(item);
 			this.sortQueue("retry");
 		}
-		this.deps.onQueueChanged();
+		this.deps.onQueueChanged([item]);
 		return true;
 	}
 
@@ -383,7 +393,7 @@ export class WorkLane {
 			}
 			this.cancelled.delete(guid);
 		}
-		if (removed.length > 0) this.deps.onQueueChanged();
+		if (removed.length > 0) this.deps.onQueueChanged(removed);
 		return { removed, activeRemains };
 	}
 
