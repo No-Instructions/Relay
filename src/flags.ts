@@ -13,7 +13,6 @@ export interface FeatureFlags {
 	enableResourceMeter: boolean;
 	enableFolderIdbMigration: boolean;
 	enableMetadataHealthNotice: boolean;
-	enableSyncConvergenceLatch: boolean;
 	enableNoteStateInspector: boolean;
 	enableSavingFlagPolyfill: boolean;
 	enableFrontmatterDuplicateRecovery: boolean;
@@ -145,13 +144,6 @@ export const FeatureFlagSchema: {
 		title: "Metadata database health notice",
 		description:
 			"Show a sidebar notice when Obsidian's metadata database cannot be queried.",
-	},
-	enableSyncConvergenceLatch: {
-		default: true,
-		category: "danger",
-		title: "Wait for server sync before publishing local files",
-		description:
-			"Defer locally discovered file publication until the folder completes its first server sync. Read at folder construction; toggling applies on the next folder (re)load.",
 	},
 	enableNoteStateInspector: {
 		default: false,

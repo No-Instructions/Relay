@@ -40,7 +40,9 @@ import { LocalStorage } from "./LocalStorage";
 import type { MergeHSM } from "./merge-hsm/MergeHSM";
 import { SyncFolder, isSyncFolder } from "./SyncFolder";
 import { isDocument } from "./Document";
-import { SyncStore, type FolderMapDelta } from "./SyncStore";
+import { SyncStore } from "./SyncStore";
+import { FolderRealms } from "./FolderRealms";
+import { FolderBootstrap } from "./FolderBootstrap";
 import {
 	SyncType,
 	makeCanvasMeta,
@@ -308,40 +310,19 @@ export class SharedFolder extends HasProvider {
 	 * recurring sweeps do not re-request known-empty documents.
 	 */
 	private _emptyOnServer: Map<string, number> = new Map();
-	/**
-	 * Compatibility latch for outbound consumers. It settles during
-	 * construction and again defensively on destroy so no waiter can remain
-	 * pending during teardown.
-	 */
-	private _membershipSettled = false;
-	private _membershipSettledPromise: Promise<void> | undefined;
-	private _resolveMembershipSettled: (() => void) | undefined;
-	/** Default-off session gate: local discovery may mint identities, but it
-	 * cannot publish them until the provider's first completed handshake. */
-	private readonly _syncConvergenceLatchEnabled: boolean;
-	private _firstSyncConverged = false;
-	private _firstSyncConvergedPromise: Promise<void> | undefined;
-	private _resolveFirstSyncConverged: (() => void) | undefined;
-	/** Paths removed by provider-applied membership updates before convergence. */
-	private _preConvergenceRemoteDeletes: Set<string> | undefined;
-	/** Deleted paths that had a local publication hold when convergence opened. */
-	private _convergenceRemoteDeletedHolds: Map<string, string> | undefined;
-	/** One parked latch re-entry per held path. */
-	private _convergenceParkedUploads: Map<string, Promise<void>> | undefined;
-	/** One post-convergence publication decision executor per held path. */
-	private _convergencePublicationRuns:
-		| Map<string, PendingPublicationRun>
-		| undefined;
+	/** The boot baseline and the classification every mint asks. */
+	private realms!: FolderRealms;
+	/** The bootstrap gates, as states derived from monotone facts. */
+	private bootstrap!: FolderBootstrap;
+	/** One parked publication re-entry per held path. */
+	private _parkedPublications: Map<string, Promise<void>> = new Map();
+	/** One publication decision executor per held path. */
+	private _publicationRuns: Map<string, PendingPublicationRun> = new Map();
 	/** Document enrollment is single-flight and remains complete per live doc. */
-	private _pendingDocumentEnrollments:
-		| WeakMap<Document, Promise<void>>
-		| undefined;
-	private _convergenceDeletionInFlight: Set<string> | undefined;
+	private _pendingDocumentEnrollments: WeakMap<Document, Promise<void>> =
+		new WeakMap();
 	private readonly remoteActivityIndex = new RemoteActivityIndex();
 	private readonly remoteActivitySubscribers = new Set<() => void>();
-	private startupScanComplete = false;
-	private startupScanPromise: Promise<void>;
-	private resolveStartupScan?: () => void;
 	private connectionAttempt: Promise<boolean> | null = null;
 	private startupConnectRequested = false;
 
@@ -370,9 +351,6 @@ export class SharedFolder extends HasProvider {
 			: new S3Folder(guid);
 
 		super(guid, s3rn, tokenStore, loginManager);
-		this.startupScanPromise = new Promise<void>((resolve) => {
-			this.resolveStartupScan = resolve;
-		});
 		this.timeProvider = timeProvider;
 		this.path = path;
 		this.setLoggers(`[SharedFile](${this.path})`);
@@ -408,22 +386,21 @@ export class SharedFolder extends HasProvider {
 		}
 
 		this.authoritative = authoritative;
-		// An authoritative folder is its own membership authority and may have no
-		// provider to handshake with. Later boots are non-authoritative, so they
-		// still wait for the server view before publishing local discoveries.
-		this._syncConvergenceLatchEnabled =
-			flags().enableSyncConvergenceLatch && !authoritative;
-		if (this._syncConvergenceLatchEnabled) {
-			this._preConvergenceRemoteDeletes = new Set();
-			this._convergenceRemoteDeletedHolds = new Map();
-			this._convergenceParkedUploads = new Map();
-			this._convergencePublicationRuns = new Map();
-			this._pendingDocumentEnrollments = new WeakMap();
-			this._convergenceDeletionInFlight = new Set();
-			this._firstSyncConvergedPromise = new Promise<void>((resolve) => {
-				this._resolveFirstSyncConverged = resolve;
-			});
-		}
+		// An authoritative folder is its own membership authority and may have
+		// no provider to handshake with; every other folder waits for the
+		// server view before publishing local discoveries.
+		this.bootstrap = new FolderBootstrap({ authoritative });
+		this.realms = new FolderRealms(
+			(path) => this.syncStore.hasKnown(path),
+			(path) => this.syncStore.hasClaim(path),
+		);
+		this.unsubscribes.push(
+			this.bootstrap.subscribe((state, previous) => {
+				if (state === "crossing" && previous !== "crossing") {
+					this.runCrossing();
+				}
+			}),
+		);
 
 		this.syncSettingsManager = this._settings.getChild<
 			Record<keyof SyncFlags, boolean>,
@@ -449,24 +426,38 @@ export class SharedFolder extends HasProvider {
 			this.syncStore.typeRegistry.getEnabledFileSyncTypes(),
 		);
 
-		this.initializeMembershipLatch();
 		this.syncStore.onCompetingClaim = (path: string, meta: Meta) => {
 			void Promise.resolve().then(() => {
 				this.handleCompetingClaim(path, meta);
 			});
 		};
-		if (this._syncConvergenceLatchEnabled) {
-			this.unsubscribes.push(
-				this.syncStore.subscribeMapDelta((delta, origin) => {
-					if (
-						origin === this ||
-						origin === this._persistence
-					)
-						return;
-					this.recordPreConvergenceRemoteDeletes(delta);
-				}),
-			);
-		}
+		// The withdrawn set: a remote removal answers "known" until its disk
+		// adoption completes, so a scan or a debounced vault-create landing in
+		// that window cannot re-mint the path. Entries clear when the adoption
+		// completes or the path re-commits in the map.
+		this.unsubscribes.push(
+			this.syncStore.subscribeMapDelta((delta, origin) => {
+				if (origin === this || origin === this._persistence) return;
+				for (const removal of delta.deletes) {
+					if (this.existsSync(removal.path)) {
+						this.realms.recordRemoteRemoval(removal.path);
+					} else {
+						// Nothing on disk to adopt: the removal is already
+						// decided for this device.
+						this.realms.retire(removal.path);
+					}
+				}
+				for (const entry of delta.adds) {
+					this.realms.clearRemoteRemoval(entry.path);
+				}
+				for (const entry of delta.updates) {
+					this.realms.clearRemoteRemoval(entry.path);
+				}
+				for (const move of delta.moves) {
+					this.realms.clearRemoteRemoval(move.to);
+				}
+			}),
+		);
 
 		this.unsubscribes.push(
 			this.relayManager.remoteFolders.subscribe((folders) => {
@@ -528,10 +519,11 @@ export class SharedFolder extends HasProvider {
 			this._persistence.markServerSynced();
 		}
 
-		// Connecting is deferred to startupConnect(), below: the disk scan
-		// decides which vault files are new by comparing them against the
-		// membership map, and connecting here races the server's view of that
-		// map against the local replay the comparison depends on.
+		// Connecting is deferred to startupConnect(), below: opening the
+		// bridge is a permission the bootstrap machine grants once the local
+		// replay has been read and the boot baseline fixed. Connecting here
+		// would race the server's view of the membership map against the
+		// replay the baseline is taken from.
 
 		this.cas = new ContentAddressedStore(this);
 
@@ -665,25 +657,33 @@ export class SharedFolder extends HasProvider {
 		trackPromise(`folder:whenSynced:${this.guid}`, this.whenSynced())
 			.then(async () => {
 				if (this.destroyed) return;
-				// Load persisted HSM metadata before sync startup can create
+
+				this.syncStore.start();
+				// Fix the boot baseline from the replayed remote realm, then
+				// report the replay in the same step: the transition that
+				// permits traffic is the event that fixes the baseline, so no
+				// later edit can slip work between them.
+				const hasPersistedRemoteRealm =
+					this.hasLocalDB() || (await this.getServerSynced());
+				if (this.destroyed) return;
+				this.realms.takeBaseline(this.syncStore.committedPaths());
+				this.bootstrap.reportLocalStateRead(hasPersistedRemoteRealm);
+				// The bridge gate is open: parked connect() callers proceed
+				// while the scan below runs concurrently with the handshake.
+				void this.startupConnect();
+
+				// Load persisted HSM metadata before the scan can create
 				// Documents. Document construction immediately creates HSMs,
 				// and cold-start needs this cache to decide whether a doc can
 				// remain hibernated without opening y-indexeddb.
 				await this.mergeManager.initialize();
 				if (this.destroyed) return;
-
-				this.syncStore.start();
-				// Wait until syncStore is observing the committed file metadata before
-				// creating docs from local disk. On reload, addLocalDocs() can otherwise
-				// reserve placeholder GUIDs for already-shared files and build HSMs that
-				// miss their persisted fork/LCA state.
-				//
-				// Remote folder metadata can also land before SyncStore observers are
-				// installed, so replay both local doc discovery and file-tree sync after
-				// start() to avoid missing the first batch of remote entries.
+				// A folder with no local database has no baseline to read: it
+				// scans only once the server's first view has stood in for one.
+				if (!(await this.bootstrap.whenMayMint())) return;
+				if (this.destroyed) return;
 				this.addLocalDocs();
-				this.markStartupScanComplete();
-				void this.startupConnect();
+				this.bootstrap.reportDiskReconciled();
 				await this.syncFileTree();
 				try {
 					this._persistence.set("path", this.path);
@@ -696,15 +696,19 @@ export class SharedFolder extends HasProvider {
 			})
 			.catch((e) => {
 				this.error("folder persistence sync failed", e);
-				// Startup did not complete a trustworthy disk comparison. Release
-				// callers waiting to connect rather than leaving the folder offline
-				// for the session; nothing from an incomplete scan can be protected.
-				this.markStartupScanComplete();
+				// Startup did not complete a trustworthy disk comparison.
+				// Release the gates rather than leaving the folder offline and
+				// its publications parked for the session; nothing from an
+				// incomplete replay can be protected.
+				if (!this.realms.baselineTaken) {
+					this.realms.takeBaseline([]);
+				}
+				this.bootstrap.reportLocalStateRead(false);
+				this.bootstrap.reportDiskReconciled();
 			})
-			// Tail net: the normal path connects immediately after addLocalDocs(),
-			// while a failure above releases the scan barrier in catch(). Either
-			// way, startupConnect() is single-shot and a tree-sync failure cannot
-			// strand the folder offline.
+			// Tail net: the normal path connects as soon as the baseline is
+			// fixed, while a failure above releases the gate in catch().
+			// Either way a tree-sync failure cannot strand the folder offline.
 			.finally(() => this.startupConnect());
 
 		const isAuthoritative = this.authoritative;
@@ -787,7 +791,7 @@ export class SharedFolder extends HasProvider {
 					// membership settlement. The backfill selection below is
 					// download-side and needs no gate of its own; it shares
 					// this one because it shares the callback.
-					if (!this._membershipSettled) {
+					if (!this.membershipSettled) {
 						await this.whenMembershipSettled();
 					}
 					if (this.destroyed) return;
@@ -999,7 +1003,7 @@ export class SharedFolder extends HasProvider {
 		if (!localIdentity) return;
 		const committedMeta = this.syncStore.getCommittedMeta(path);
 		if (committedMeta?.id !== guid) return;
-		if (this._syncConvergenceLatchEnabled && this.pendingUpload.has(path)) {
+		if (this.pendingUpload.has(path)) {
 			this.applyPendingUpload(path).promise.catch((e) => {
 				this.warn(`[${path}] coordinated remap retry failed`, e);
 			});
@@ -1064,42 +1068,12 @@ export class SharedFolder extends HasProvider {
 		const pendingGuid = this.syncStore.pendingUpload.get(path);
 		if (!pendingGuid || pendingGuid === committedMeta.id) return;
 		this.backgroundSync.cancelDocumentWork(pendingGuid);
-		if (this._syncConvergenceLatchEnabled) {
-			this.applyPendingUpload(path).promise.catch((e) => {
-				this.warn(`[${path}] coordinated remap from claim failed`, e);
-			});
-			return;
-		}
-		if (this._pendingRemaps.has(path)) return;
-		const file = this.files.get(pendingGuid);
-		if ((!file || isDocument(file)) && isDocumentMeta(committedMeta)) {
-			// executeRemap owns the in-flight claim for the path (raised
-			// before its first await, released in its finally).
-			this.executeRemap({
-				path,
-				fromGuid: pendingGuid,
-				toGuid: committedMeta.id,
-			}).catch((e) => {
-				this.warn(`[${path}] remap from claim event failed`, e);
-			});
-			return;
-		}
-		if (file && isCanvas(file) && isCanvasMeta(committedMeta)) {
-			this._pendingRemaps.add(path);
-			this.executeCanvasRemap({
-				path,
-				fromGuid: pendingGuid,
-				toGuid: committedMeta.id,
-			}).catch((e) => {
-				this.warn(`[${path}] canvas remap from claim event failed`, e);
-			}).finally(() => {
-				this._pendingRemaps.delete(path);
-			});
-		}
-		// Content-addressed files: the transfer is cancelled above; identity
-		// adoption flows through the reconciliation sweep, which swaps a
-		// matching-content mint to the committed identity or pulls the
-		// committed bytes.
+		// The coordinated publication run owns the resolution: it re-reads
+		// the committed slot and takes the rebind arm for the surviving
+		// claim type (document remap, canvas remap, lost file claim).
+		this.applyPendingUpload(path).promise.catch((e) => {
+			this.warn(`[${path}] coordinated remap from claim failed`, e);
+		});
 	}
 
 	/** True when empty downloads for the guid have exhausted their attempts. */
@@ -1244,11 +1218,8 @@ export class SharedFolder extends HasProvider {
 		// session's first confirmed membership settlement, so a file the
 		// settlement will condemn cannot push its content first. The work
 		// is held, not dropped — the effect is not re-emitted.
-		if (!this._membershipSettled) {
+		if (!this.membershipSettled) {
 			await this.whenMembershipSettled();
-		}
-		if (this._syncConvergenceLatchEnabled && !this._firstSyncConverged) {
-			await this.whenFirstSyncConverged();
 		}
 		if (this.destroyed) return;
 		const file = this.files.get(guid);
@@ -1681,7 +1652,7 @@ export class SharedFolder extends HasProvider {
 			// Membership before content: the folder-wide flush pushes local
 			// ops, so it waits for the session's first confirmed membership
 			// settlement. Discovery above is unaffected.
-			if (!this._membershipSettled) {
+			if (!this.membershipSettled) {
 				await this.whenMembershipSettled();
 			}
 			if (this.destroyed) return;
@@ -1714,8 +1685,8 @@ export class SharedFolder extends HasProvider {
 		// transaction; enqueue on a fresh microtask so upload bookkeeping
 		// never re-enters observer or transaction context.
 		void Promise.resolve().then(async () => {
-			if (this._syncConvergenceLatchEnabled && !this._firstSyncConverged) {
-				await this.whenFirstSyncConverged();
+			if (!this.membershipSettled) {
+				await this.whenMembershipSettled();
 			}
 			if (this.destroyed) return;
 			let staged = 0;
@@ -1807,15 +1778,14 @@ export class SharedFolder extends HasProvider {
 		await this.syncFileTree();
 	}
 
-	async connect(beforeStartupScan = false): Promise<boolean> {
-		// Public callers, including restored views, cannot let server membership
-		// reach the folder document before local discovery has compared the disk
-		// with replayed membership. A brand-new folder bypasses this barrier only
-		// from whenReady(), because it needs the server map before discovery.
-		if (!beforeStartupScan && !this.startupScanComplete) {
-			await this.startupScanPromise;
-		}
-		if (this.destroyed) return false;
+	async connect(): Promise<boolean> {
+		// Opening the bridge is a permission, not a convention: every caller
+		// — restored views included — waits for the machine, which grants
+		// traffic once the local replay has been read and the boot baseline
+		// fixed. The gate resolves false at teardown so no caller is left
+		// pending.
+		const permitted = await this.bootstrap.whenMayOpenBridge();
+		if (!permitted || this.destroyed) return false;
 		if (this.connectionAttempt) return this.connectionAttempt;
 		const attempt = this.connectProvider();
 		this.connectionAttempt = attempt;
@@ -1852,12 +1822,6 @@ export class SharedFolder extends HasProvider {
 			}
 		}
 		return false;
-	}
-
-	private markStartupScanComplete(): void {
-		if (this.startupScanComplete) return;
-		this.startupScanComplete = true;
-		this.resolveStartupScan?.();
 	}
 
 	private enqueueLCABackfill(reason: string): void {
@@ -1960,17 +1924,14 @@ export class SharedFolder extends HasProvider {
 	}
 
 	protected handleProviderSynced(): void {
-		this.markFirstSyncConverged();
+		this.bootstrap.reportServerViewArrived();
 		// The folder provider completing a sync is the connectivity-level signal
 		// that the transport has returned. It fires on the provider's own
 		// reconnect-backoff self-heal, which never routes through connect(), so a
 		// sweep triggered only by connect misses a self-heal. Re-drive every
 		// document still holding an unreconciled fork toward reconciliation.
 		this.recoverForkedIdleDocuments();
-		if (
-			(!this._syncConvergenceLatchEnabled && this.authoritative) ||
-			this._persistence.hasServerSync
-		) {
+		if (this.authoritative || this._persistence.hasServerSync) {
 			return;
 		}
 		trackPromise(
@@ -1993,37 +1954,10 @@ export class SharedFolder extends HasProvider {
 		return this._persistence.hasUserData();
 	}
 
-	async awaitingUpdates(): Promise<boolean> {
-		await this.whenSynced();
-		if (this.authoritative) {
-			return false;
-		}
-		const serverSynced = await this.getServerSynced();
-		if (serverSynced) {
-			return false;
-		}
-		return !this.hasLocalDB();
-	}
-
 	/**
-	 * Open the folder's connection, once local state is what the disk scan
-	 * compares against.
-	 *
-	 * A folder with a local database decides which vault files are new by
-	 * asking the membership map whether it already knows them. Two arrivals
-	 * race to define that map at startup, and both land on the same document:
-	 * the persistence replay, and the server's first update. If the server
-	 * wins, paths another device deleted are already gone from the map while
-	 * their files are still on disk — the scan reads them as local
-	 * discoveries, mints identity for them, and republishes what was just
-	 * deleted. Connecting after the scan removes the race: the comparison is
-	 * made against the replayed map, and the deletion is then applied to disk
-	 * like any other remote change.
-	 *
-	 * A folder with no local database has no map to protect. Its whenReady()
-	 * path is the sole barrier bypass: it starts the server connection before
-	 * discovery, though discovery does not wait for the handshake to finish.
-	 * That path owns startup connection, so this one stands down for it.
+	 * Open the folder's connection, once. The bridge gate inside connect()
+	 * holds the attempt until the local replay has been read, so this is a
+	 * single-shot dispatch: the machine owns the ordering.
 	 */
 	private async startupConnect(): Promise<void> {
 		if (this.startupConnectRequested) return;
@@ -2040,13 +1974,12 @@ export class SharedFolder extends HasProvider {
 
 	whenReady(): Promise<SharedFolder> {
 		const promiseFn = async (): Promise<SharedFolder> => {
-			const awaitingUpdates = await this.awaitingUpdates();
-			if (awaitingUpdates) {
-				// A brand-new folder has no local map to protect, so begin its
-				// server-first connection without waiting on the scan barrier.
-				this.startupConnectRequested = true;
-				this.connect(true).catch((e) => {
-					this.startupConnectRequested = false;
+			const open = await this.bootstrap.whenMayOpenBridge();
+			if (!open) return this;
+			if (this.bootstrap.awaitingServerBaseline) {
+				// A folder with no local database must take its baseline from
+				// the server's first view, so it connects while still loading.
+				this.connect().catch((e) => {
 					this.warn("initial server connect failed", e);
 				});
 				await trackPromise(`folderConnected:${this.guid}`, this.onceConnected());
@@ -2764,6 +2697,11 @@ export class SharedFolder extends HasProvider {
 								this.teardownDocState(doc.guid);
 								this.fset.update();
 							}
+							// The removal's disk adoption is complete: the path
+							// may classify as a local creation again, so a
+							// legitimate recreation is not refused.
+							this.realms.clearRemoteRemoval(vpath);
+							this.realms.retire(vpath);
 						})
 						.finally(() => {
 							this.clearPendingDelete(vpath);
@@ -2789,64 +2727,65 @@ export class SharedFolder extends HasProvider {
 		return expandDesiredRemotePaths(paths);
 	}
 
-	/** Initialize the construction-time compatibility latch. */
-	private initializeMembershipLatch(): void {
-		this._membershipSettledPromise = new Promise<void>((resolve) => {
-			this._resolveMembershipSettled = resolve;
-		});
-		this.markMembershipSettled();
-	}
-
-	/** True once construction has opened the outbound compatibility latch. */
+	/**
+	 * True once outbound membership publication is permitted — the bootstrap
+	 * machine has entered the crossing. Kept as the outbound consumers' API;
+	 * the machine is its authority.
+	 */
 	public get membershipSettled(): boolean {
-		return this._membershipSettled;
+		return this.bootstrap.mayPublish;
 	}
 
-	/** Resolves at membership settlement (immediately when already settled). */
+	/** Resolves when publication is permitted (immediately at teardown). */
 	public whenMembershipSettled(): Promise<void> {
-		return this._membershipSettledPromise ?? Promise.resolve();
-	}
-
-	private markMembershipSettled(): void {
-		if (this._membershipSettled) return;
-		this._membershipSettled = true;
-		this._resolveMembershipSettled?.();
-	}
-
-	private whenFirstSyncConverged(): Promise<void> {
-		return this._firstSyncConvergedPromise ?? Promise.resolve();
+		return this.bootstrap.whenMayPublish().then(() => undefined);
 	}
 
 	public shouldDeferPendingPublication(path: string): boolean {
-		return (
-			this._syncConvergenceLatchEnabled &&
-			!this._firstSyncConverged &&
-			this.pendingUpload.has(path)
+		return !this.bootstrap.mayPublish && this.pendingUpload.has(path);
+	}
+
+	/**
+	 * The crossing: the boot baseline meets the server's completed view.
+	 * Stale claims on remotely deleted paths release synchronously — before
+	 * any parked publication resumes — and the tree sync then adopts those
+	 * deletions on disk. The baseline retires with the crossing's drain.
+	 */
+	private runCrossing(): void {
+		const gone = this.realms.deletedThere(
+			// The probe excludes the device's own claims: a path the device
+			// still holds a claim on is "known" to the blended accessor
+			// precisely because of the claim under review, which would let
+			// every stale hold vouch for itself.
+			(path) =>
+				this.syncStore.has(path) && !this.pendingUpload.has(path),
 		);
-	}
-
-	private shouldRoutePendingPublication(path: string): boolean {
-		return this._syncConvergenceLatchEnabled && this.pendingUpload.has(path);
-	}
-
-	private markFirstSyncConverged(): void {
-		if (!this._syncConvergenceLatchEnabled || this._firstSyncConverged) return;
-		this._firstSyncConverged = true;
-		for (const path of this._preConvergenceRemoteDeletes ?? []) {
+		for (const path of gone) {
 			const guid = this.pendingUpload.get(path);
-			if (guid) {
-				this._convergenceRemoteDeletedHolds?.set(path, guid);
+			if (!guid) continue;
+			this.log("releasing stale claim on remotely deleted path", path, guid);
+			this.pendingUpload.delete(path);
+			this.backgroundSync.cancelDocumentWork(guid);
+		}
+		const crossing = (async () => {
+			// A tree sync already in flight may predate the claim drops above;
+			// let it finish, then run one that observes them.
+			if (this.syncFileTreePromise) {
+				await this.syncFileTreePromise.getPromise().catch(() => {});
 			}
-		}
-		this._preConvergenceRemoteDeletes?.clear();
-		this._resolveFirstSyncConverged?.();
-	}
-
-	private recordPreConvergenceRemoteDeletes(delta: FolderMapDelta): void {
-		if (this._firstSyncConverged || !this._preConvergenceRemoteDeletes) return;
-		for (const entry of delta.deletes) {
-			this._preConvergenceRemoteDeletes.add(entry.path);
-		}
+			if (this.destroyed) return;
+			await this.syncFileTree();
+		})()
+			.catch((e) => {
+				if (!isDestroyedError(e)) {
+					this.warn("crossing tree sync failed", e);
+				}
+			})
+			.finally(() => {
+				this.realms.retireAll();
+				this.bootstrap.reportCrossingDrained();
+			});
+		trackPromise(`folder:crossing:${this.guid}`, crossing);
 	}
 
 	/**
@@ -2969,29 +2908,30 @@ export class SharedFolder extends HasProvider {
 		coordinated = false,
 		run?: PendingPublicationRun,
 	): OperationType {
-		if (this._syncConvergenceLatchEnabled && this.destroyed) {
+		if (this.destroyed) {
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 		const pendingGuid = this.syncStore.pendingUpload.get(path);
 		if (!pendingGuid) {
-			if (!this._convergenceDeletionInFlight?.has(path)) {
-				this._convergenceRemoteDeletedHolds?.delete(path);
-			}
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
-		if (this._syncConvergenceLatchEnabled && !this._firstSyncConverged) {
-			let parked = this._convergenceParkedUploads?.get(path);
+		if (!this.bootstrap.mayPublish) {
+			// Publication defers until the crossing. The crossing's claim
+			// drops run synchronously at the transition, so a resumed park
+			// re-reads the hold and stands down when its claim was released.
+			let parked = this._parkedPublications.get(path);
 			if (!parked) {
-				parked = this.whenFirstSyncConverged()
+				parked = this.bootstrap
+					.whenMayPublish()
 					.then(async () => {
 						if (this.destroyed) return;
 						await this.applyPendingUpload(path).promise;
 					})
 					.finally(() => {
-						this._convergenceParkedUploads?.delete(path);
+						this._parkedPublications.delete(path);
 					});
-				this._convergenceParkedUploads?.set(path, parked);
+				this._parkedPublications.set(path, parked);
 			}
 			return {
 				op: "update",
@@ -2999,32 +2939,13 @@ export class SharedFolder extends HasProvider {
 				promise: parked,
 			};
 		}
-		if (this._syncConvergenceLatchEnabled && !coordinated) {
+		if (!coordinated) {
 			return this.coordinatePendingPublication(path, pendingGuid);
 		}
 
 		const committedMeta =
 			run?.supersedingMeta ?? this.syncStore.getCommittedMeta(path);
 		if (run?.supersedingMeta) run.supersedingMeta = undefined;
-		const deletedHoldGuid = this._convergenceRemoteDeletedHolds?.get(path);
-		if (deletedHoldGuid !== undefined && deletedHoldGuid !== pendingGuid) {
-			this._convergenceRemoteDeletedHolds?.delete(path);
-		}
-		if (this._syncConvergenceLatchEnabled && committedMeta) {
-			this._convergenceRemoteDeletedHolds?.delete(path);
-		}
-		if (
-			this._syncConvergenceLatchEnabled &&
-			!committedMeta &&
-			deletedHoldGuid === pendingGuid
-		) {
-			if (run) run.decision = "delete";
-			return {
-				op: "delete",
-				path,
-				promise: this.discardRemotelyDeletedHold(path, pendingGuid),
-			};
-		}
 
 		// Server-authoritative rule: if committed filemeta already points at a
 		// different GUID for this path, do not publish/overwrite local pending
@@ -3041,7 +2962,12 @@ export class SharedFolder extends HasProvider {
 				},
 			);
 			const pendingFile = this.files.get(pendingGuid);
-			if (isDocumentMeta(committedMeta) && pendingFile && isDocument(pendingFile)) {
+			// A document rebind does not need the losing file loaded: the
+			// remap materializes the committed identity itself.
+			if (
+				isDocumentMeta(committedMeta) &&
+				(!pendingFile || isDocument(pendingFile))
+			) {
 				return {
 					op: "update",
 					path,
@@ -3094,19 +3020,17 @@ export class SharedFolder extends HasProvider {
 			op: "update",
 			path,
 			promise: (async () => {
-				if (this._syncConvergenceLatchEnabled) {
-					await this.preparePendingFileForPublication(file);
-					if (this.destroyed || run?.cancelled) return;
-					const latestMeta = this.syncStore.getCommittedMeta(path);
-					if (latestMeta && latestMeta.id !== pendingGuid) {
-						if (run) {
-							run.cancelled = true;
-							run.rerun = true;
-							run.supersedingMeta = latestMeta;
-						}
-						this.backgroundSync.cancelDocumentWork(pendingGuid);
-						return;
+				await this.preparePendingFileForPublication(file);
+				if (this.destroyed || run?.cancelled) return;
+				const latestMeta = this.syncStore.getCommittedMeta(path);
+				if (latestMeta && latestMeta.id !== pendingGuid) {
+					if (run) {
+						run.cancelled = true;
+						run.rerun = true;
+						run.supersedingMeta = latestMeta;
 					}
+					this.backgroundSync.cancelDocumentWork(pendingGuid);
+					return;
 				}
 				const outcome = await this.backgroundSync.enqueueUpload(file);
 				if (run?.cancelled) {
@@ -3122,7 +3046,7 @@ export class SharedFolder extends HasProvider {
 		path: string,
 		pendingGuid: string,
 	): OperationType {
-		const active = this._convergencePublicationRuns?.get(path);
+		const active = this._publicationRuns.get(path);
 		if (active) {
 			active.rerun = true;
 			const committedMeta = this.syncStore.getCommittedMeta(path);
@@ -3146,11 +3070,11 @@ export class SharedFolder extends HasProvider {
 			supersedingMeta: undefined,
 			promise: Promise.resolve(),
 		};
-		this._convergencePublicationRuns?.set(path, run);
+		this._publicationRuns.set(path, run);
 		run.promise = this.runPendingPublication(path, run)
 			.finally(() => {
-				if (this._convergencePublicationRuns?.get(path) === run) {
-					this._convergencePublicationRuns.delete(path);
+				if (this._publicationRuns.get(path) === run) {
+					this._publicationRuns.delete(path);
 				}
 			});
 		return { op: "update", path, promise: run.promise };
@@ -3180,6 +3104,9 @@ export class SharedFolder extends HasProvider {
 		}
 		if (isCanvas(file) && (await file.getOrigin()) === undefined) {
 			const contents = await this.read(file);
+			// Teardown can release the read; a canvas teardown took apart is
+			// not ours to enroll content into.
+			if (this.destroyed) return;
 			await file.enrollLocal(contents);
 			file.markOrigin("local");
 		}
@@ -3188,58 +3115,18 @@ export class SharedFolder extends HasProvider {
 	private async initializeDocumentContentOnce(file: Document): Promise<void> {
 		const hsm = file.hsm;
 		if (!hsm) return;
-		let enrollment = this._pendingDocumentEnrollments?.get(file);
+		let enrollment = this._pendingDocumentEnrollments.get(file);
 		if (!enrollment) {
 			const newEnrollment = (async () => {
 				await hsm.initializeWithContent();
 			})().catch((error) => {
-				this._pendingDocumentEnrollments?.delete(file);
+				this._pendingDocumentEnrollments.delete(file);
 				throw error;
 			});
-			this._pendingDocumentEnrollments?.set(file, newEnrollment);
+			this._pendingDocumentEnrollments.set(file, newEnrollment);
 			enrollment = newEnrollment;
 		}
 		await enrollment;
-	}
-
-	private async discardRemotelyDeletedHold(
-		path: string,
-		pendingGuid: string,
-	): Promise<void> {
-		const file = this.files.get(pendingGuid);
-		this._convergenceDeletionInFlight?.add(path);
-		this.pendingUpload.delete(path);
-		this.backgroundSync.cancelDocumentWork(pendingGuid);
-		if (file) {
-			this.files.delete(pendingGuid);
-			this.fset.delete(file);
-		}
-		const tfile = this.vault.getAbstractFileByPath(this.getPath(path));
-		try {
-			if (tfile) {
-				this.markPendingDelete(path);
-				await this.trashFile(tfile);
-			}
-		} catch (error) {
-			this.pendingUpload.set(path, pendingGuid);
-			if (file) {
-				this.files.set(pendingGuid, file);
-				this.fset.add(file, true);
-			}
-			this.warn("failed to adopt remote deletion", path, error);
-			return;
-		} finally {
-			this._convergenceDeletionInFlight?.delete(path);
-			if (tfile) {
-				this.clearPendingDelete(path);
-			}
-		}
-		if (file) {
-			file.cleanup();
-			file.destroy();
-		}
-		this._convergenceRemoteDeletedHolds?.delete(path);
-		this.fset.update();
 	}
 
 	/**
@@ -3264,7 +3151,7 @@ export class SharedFolder extends HasProvider {
 		}[] = [];
 		this.syncStore.pendingUpload.forEach((guid, vpath) => {
 			if (this._pendingRemaps.has(vpath)) return;
-			if (this._convergencePublicationRuns?.has(vpath)) return;
+			if (this._publicationRuns.has(vpath)) return;
 			const committed = this.syncStore.getCommittedMeta(vpath);
 			if (!committed) return;
 			// A live instance still enrolled under the losing guid means
@@ -3370,6 +3257,15 @@ export class SharedFolder extends HasProvider {
 				}
 				if (diffLog.length > 0) {
 					this.log("syncFileTree diff:\n" + diffLog.join("\n"));
+				}
+				// A withdrawn path with nothing on disk has no adoption left
+				// to wait for; confirm its absence so a later recreation is
+				// not refused as a re-mint.
+				for (const path of this.realms.withdrawnPaths()) {
+					if (!this.existsSync(path)) {
+						this.realms.clearRemoteRemoval(path);
+						this.realms.retire(path);
+					}
 				}
 				this.sweepStalePendingUploads();
 			} finally {
@@ -3622,10 +3518,7 @@ export class SharedFolder extends HasProvider {
 				// The local upload succeeded, but the path must adopt the
 				// committed identity instead of leaving pendingUpload to shadow
 				// every later path lookup.
-				if (
-					this._syncConvergenceLatchEnabled &&
-					this.pendingUpload.has(file.path)
-				) {
+				if (this.pendingUpload.has(file.path)) {
 					this.applyPendingUpload(file.path).promise.catch((e) => {
 						this.warn(`[${file.path}] coordinated remap after upload failed`, e);
 					});
@@ -3732,6 +3625,16 @@ export class SharedFolder extends HasProvider {
 		if (this.pendingCreates.has(vpath)) {
 			return null;
 		}
+		// A path with no identity whose mint the realms would refuse — known
+		// at boot or mid remote-removal adoption — has no way to get one
+		// here. Report it unresolved; reconciliation decides its fate.
+		if (
+			!guid &&
+			(!this.bootstrap.mayMint ||
+				this.realms.classify(vpath) !== "novel")
+		) {
+			return null;
+		}
 
 		// Fallback to extension-based detection for new files
 		if (tfile instanceof TFolder) {
@@ -3755,6 +3658,13 @@ export class SharedFolder extends HasProvider {
 
 	placeHold(newFiles: TAbstractFile[]): string[] {
 		const newDocs: string[] = [];
+		// Every discovery route reaches minting through this one predicate:
+		// identity is minted only for a path that is a genuinely local
+		// creation ("novel"), and only while the machine permits minting.
+		// A path we knew at boot, a path removed remotely whose disk
+		// adoption is in flight, or a path already claimed is refused here
+		// — the refusal is what keeps a deletion from resurrecting.
+		const mayMint = this.bootstrap.mayMint;
 		this.folderDoc.transact(() => {
 			newFiles.forEach((file) => {
 				const vpath = this.getVirtualPath(file.path);
@@ -3762,11 +3672,16 @@ export class SharedFolder extends HasProvider {
 					this.log("skipping place hold for pending delete", vpath);
 					return;
 				}
-				if (!this.syncStore.has(vpath)) {
-					this.log("place hold new", vpath);
-					this.syncStore.new(vpath);
-					newDocs.push(vpath);
+				if (this.realms.classify(vpath) !== "novel") {
+					return;
 				}
+				if (!mayMint) {
+					this.log("place hold refused before baseline", vpath);
+					return;
+				}
+				this.log("place hold new", vpath);
+				this.syncStore.new(vpath);
+				newDocs.push(vpath);
 			});
 		}, this);
 		return newDocs;
@@ -3850,9 +3765,6 @@ export class SharedFolder extends HasProvider {
 		}
 		const canvas = this.getOrCreateCanvas(guid, vpath);
 
-		const originPromise = canvas.getOrigin();
-		const awaitingUpdatesPromise = this.awaitingUpdates();
-
 		(async () => {
 			const exists = await this.exists(canvas);
 			// Same shape as uploadDoc: a detached dispatch with no rejection
@@ -3863,28 +3775,10 @@ export class SharedFolder extends HasProvider {
 			if (!exists) {
 				throw new Error(`Upload failed, doc does not exist at ${vpath}`);
 			}
-			const [contents, origin, awaitingUpdates] = await Promise.all([
-				this.read(canvas),
-				originPromise,
-				awaitingUpdatesPromise,
-			]);
-			if (this.destroyed) return;
-			if (!awaitingUpdates && origin === undefined) {
-				if (this.shouldRoutePendingPublication(vpath)) {
-					await this.applyPendingUpload(vpath).promise;
-					return;
-				}
-				this.log(`[${canvas.path}] No Known Peers: Syncing file into ytext.`);
-				try {
-					await canvas.enrollLocal(contents);
-				} catch (e) {
-					console.warn(contents);
-					throw e;
-				}
-				canvas.markOrigin("local");
-				this.log(`[${canvas.path}] Uploading file`);
-				const outcome = await this.backgroundSync.enqueueUpload(canvas);
-				await this.markUploaded(canvas, outcome);
+			// The publication run parks until the machine permits publishing
+			// and enrolls the canvas's disk content just before its upload.
+			if (this.pendingUpload.has(vpath)) {
+				await this.applyPendingUpload(vpath).promise;
 			}
 		})();
 
@@ -3929,12 +3823,7 @@ export class SharedFolder extends HasProvider {
 				if (canvas.stat.size === 0 && !synced) {
 					this.backgroundSync.enqueueCanvasDownload(canvas);
 				} else if (this.pendingUpload.get(canvas.path)) {
-					if (this.shouldRoutePendingPublication(canvas.path)) {
-						await this.applyPendingUpload(canvas.path).promise;
-					} else {
-						const outcome = await this.backgroundSync.enqueueUpload(canvas);
-						await this.markUploaded(canvas, outcome);
-					}
+					await this.applyPendingUpload(canvas.path).promise;
 				}
 			})
 			.catch((error) => {
@@ -4296,10 +4185,7 @@ export class SharedFolder extends HasProvider {
 		const doc = this.getOrCreateDoc(guid, vpath);
 
 		(async () => {
-			const [exists, awaitingUpdates] = await Promise.all([
-				this.exists(doc),
-				this.awaitingUpdates(),
-			]);
+			const exists = await this.exists(doc);
 			// Re-check where the dispatch resumes, above the existence
 			// failure: a folder is usually torn down because its file went
 			// away, so after teardown `exists` is false as a matter of
@@ -4310,33 +4196,10 @@ export class SharedFolder extends HasProvider {
 			if (!exists) {
 				throw new Error(`Upload failed, doc does not exist at ${vpath}`);
 			}
-			if (!awaitingUpdates) {
-				// Outbound content waits for the folder compatibility latch before
-				// dispatching, including bootstrap uploads.
-				if (!this._membershipSettled) {
-					await this.whenMembershipSettled();
-				}
-				if (this.destroyed) return;
-				if (this.shouldRoutePendingPublication(vpath)) {
-					await this.applyPendingUpload(vpath).promise;
-					return;
-				}
-				// Teardown is what releases a dispatch parked on that latch —
-				// destroy() settles membership so awaiters resume rather than
-				// pend forever — so resuming here is the ordinary consequence
-				// of teardown rather than a race, and everything below reads a
-				// folder that no longer has the collaborators it needs.
-				if (this._syncConvergenceLatchEnabled) {
-					await this.initializeDocumentContentOnce(doc);
-				} else {
-					await doc.hsm?.initializeWithContent();
-				}
-				// The second window in this dispatch: the queue reached for
-				// below is one teardown releases, so resuming here after it
-				// ran throws out of a detached call with nothing to catch it.
-				if (this.destroyed) return;
-				const outcome = await this.backgroundSync.enqueueUpload(doc);
-				await this.markUploaded(doc, outcome);
+			// The publication run parks until the machine permits publishing
+			// and enrolls the document's content just before its upload.
+			if (this.pendingUpload.has(vpath)) {
+				await this.applyPendingUpload(vpath).promise;
 			}
 		})();
 
@@ -4364,12 +4227,7 @@ export class SharedFolder extends HasProvider {
 				if (doc.tfile?.stat.size === 0 && !synced) {
 					this.backgroundSync.enqueueDownload(doc, false);
 				} else if (this.pendingUpload.get(doc.path)) {
-					if (this.shouldRoutePendingPublication(doc.path)) {
-						await this.applyPendingUpload(doc.path).promise;
-					} else {
-						const outcome = await this.backgroundSync.enqueueUpload(doc);
-						await this.markUploaded(doc, outcome);
-					}
+					await this.applyPendingUpload(doc.path).promise;
 				}
 			})
 			.catch((error) => {
@@ -4501,12 +4359,7 @@ export class SharedFolder extends HasProvider {
 
 		void (async () => {
 			if (!this.pendingUpload.get(file.path)) return;
-			if (this.shouldRoutePendingPublication(file.path)) {
-				await this.applyPendingUpload(file.path).promise;
-			} else {
-				const outcome = await this.backgroundSync.enqueueUpload(file);
-				await this.markUploaded(file, outcome);
-			}
+			await this.applyPendingUpload(file.path).promise;
 		})();
 
 		this.fset.add(file, update);
@@ -4538,12 +4391,7 @@ export class SharedFolder extends HasProvider {
 			this.log("get syncfile missing meta");
 			void (async () => {
 				if (!this.pendingUpload.get(file.path)) return;
-				if (this.shouldRoutePendingPublication(file.path)) {
-					await this.applyPendingUpload(file.path).promise;
-				} else {
-					const outcome = await this.backgroundSync.enqueueUpload(file);
-					await this.markUploaded(file, outcome);
-				}
+				await this.applyPendingUpload(file.path).promise;
 			})();
 		} else {
 			this.log("get syncfile initial pull", {
@@ -4799,11 +4647,10 @@ export class SharedFolder extends HasProvider {
 			`${this.path} (${this.guid})`,
 		);
 		this.destroyed = true;
-		this.markStartupScanComplete();
-		// Release outbound work held for membership settlement: awaiters
-		// re-check `destroyed` and bail instead of pending forever.
-		this.markMembershipSettled();
-		this.markFirstSyncConverged();
+		// Close the bootstrap machine: parked connect() callers resolve false
+		// and parked publications resume, re-check `destroyed`, and bail
+		// instead of pending forever.
+		this.bootstrap.close();
 		this.pendingCreates.forEach((timer) => this.timeProvider.clearTimeout(timer));
 		this.pendingCreates.clear();
 		this.clearDownloadsDeferredByState();

@@ -267,6 +267,17 @@ export class SyncStore extends Observable<SyncStore> {
 	}
 
 	has(path: string) {
+		return this.hasKnown(path) || this.hasClaim(path);
+	}
+
+	/**
+	 * Membership known outside the device's own claims: the committed map,
+	 * the legacy map, or the migration overlay. `has()` is exactly
+	 * `hasKnown() || hasClaim()` — the blended answer, split so realm
+	 * classification can ask about the remote realm without the device's
+	 * pending claims vouching for themselves.
+	 */
+	hasKnown(path: string): boolean {
 		if (this.renames.has(path)) {
 			path = this.renames.get(path)!;
 		}
@@ -276,9 +287,35 @@ export class SyncStore extends Observable<SyncStore> {
 		return (
 			this.meta.has(path) ||
 			this.legacyIds.has(path) ||
-			this.overlay.has(path) ||
-			this.pendingUpload.has(path)
+			this.overlay.has(path)
 		);
+	}
+
+	/** The device holds unpublished identity for this path. */
+	hasClaim(path: string): boolean {
+		if (this.renames.has(path)) {
+			path = this.renames.get(path)!;
+		}
+		if (this.deleteSet.has(path)) {
+			return false;
+		}
+		return this.pendingUpload.has(path);
+	}
+
+	/**
+	 * Every path the persisted remote realm holds membership for: the
+	 * committed map and the legacy map, raw. Claims and the migration
+	 * overlay are excluded — the boot baseline holds membership only.
+	 */
+	committedPaths(): Set<string> {
+		const paths = new Set<string>();
+		this.meta.forEach((_meta, path) => {
+			paths.add(path);
+		});
+		this.legacyIds.forEach((_guid, path) => {
+			paths.add(path);
+		});
+		return paths;
 	}
 
 	willSet(vpath: string, meta: Meta): boolean {
