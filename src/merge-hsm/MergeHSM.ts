@@ -77,6 +77,7 @@ import {
 	isEmptyDoc,
 	mergeSnapshotHeads,
 	restoreTextAtSnapshot,
+	snapshotContains,
 	snapshotFromDoc,
 	snapshotHasOpsMissingFrom,
 	snapshotIsAhead,
@@ -4482,11 +4483,22 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		// If fork was pre-created by registerMachineEdit, reuse it.
 		// Otherwise create one now.
 		if (!this._fork) {
+			const localSnapshot = snapshotFromDoc(localDoc);
+			const remoteSnapshot = this.remoteDoc
+				? snapshotFromDoc(this.remoteDoc)
+				: undefined;
+			// The ancestor must contain only history shared by both sides. Full
+			// snapshot containment includes tombstones, so delete-only offline
+			// work is distinguished from history already held by the replica.
+			const localHoldsUnpublishedWork =
+				!remoteSnapshot || !snapshotContains(remoteSnapshot, localSnapshot);
 			this._fork = {
-				base: localDoc.getText("contents").toString(),
-				localSnapshot: snapshotFromDoc(localDoc).snapshot,
+				base: localHoldsUnpublishedWork
+					? lcaContent
+					: localDoc.getText("contents").toString(),
+				localSnapshot: localSnapshot.snapshot,
 				remoteSnapshot: this.remoteDoc
-					? snapshotFromDoc(this.remoteDoc).snapshot
+					? remoteSnapshot!.snapshot
 					: this._remoteSnapshot ?? emptySnapshot(),
 				origin: 'disk-edit',
 				created: this.timeProvider.now(),
