@@ -202,14 +202,15 @@ class Files extends ObservableSet<IFile> {
 		super.destroy();
 	}
 
-	add(item: IFile, update = true): ObservableSet<IFile> {
+	add(item: IFile): ObservableSet<IFile> {
 		const existing = this.find((file) => file.guid === item.guid);
 		if (existing && existing !== item) {
 			this.error(formatDuplicateGuidLog(existing, item));
 			this._set.delete(existing);
 		}
+		const isNew = !this._set.has(item);
 		this._set.add(item);
-		if (update) {
+		if (isNew) {
 			this.notifyListeners();
 		}
 		return this;
@@ -1166,7 +1167,7 @@ export class SharedFolder extends HasProvider {
 		if (this.files.has(guid) && !options.evenIfDocumentLoaded) return false;
 
 		if (isCanvasMeta(committedMeta)) {
-			void this.downloadCanvas(path, true).catch((e) => {
+			void this.downloadCanvas(path).catch((e) => {
 				this.warn(`[${path}] deferred canvas download retry failed`, e);
 			});
 			return true;
@@ -1176,7 +1177,7 @@ export class SharedFolder extends HasProvider {
 		}
 
 		this._pendingDownloads.add(path);
-		this.downloadDoc(path, true)
+		this.downloadDoc(path)
 			.catch((e) => {
 				this.warn(`[${path}] deferred download retry failed`, e);
 			})
@@ -1528,7 +1529,7 @@ export class SharedFolder extends HasProvider {
 				files.push(existing);
 				return;
 			}
-			const file = this.getFile(tfile, false);
+			const file = this.getFile(tfile);
 			if (file) {
 				files.push(file);
 			}
@@ -2121,7 +2122,7 @@ export class SharedFolder extends HasProvider {
 		}
 		if (meta.type === "markdown") {
 			diffLog?.push(`creating local .md file for remotely added doc ${vpath}`);
-			const doc = await this.downloadDoc(vpath, false);
+			const doc = await this.downloadDoc(vpath);
 			if (!doc) {
 				diffLog?.push(
 					`deferred local .md file for remotely added doc ${vpath} (server has guid but no content yet)`,
@@ -2138,11 +2139,11 @@ export class SharedFolder extends HasProvider {
 		}
 		if (meta.type === "folder") {
 			diffLog?.push(`created local folder for remotely added folder ${vpath}`);
-			return this.getSyncFolder(vpath, false);
+			return this.getSyncFolder(vpath);
 		}
 		if (this.syncStore.canSync(vpath)) {
 			diffLog?.push(`created local file for remotely added file ${vpath}`);
-			return this.downloadSyncFile(vpath, false);
+			return this.downloadSyncFile(vpath);
 		}
 		throw new Error(
 			`${vpath}: Unexpected file type ${meta.type} ${meta.mimetype}`,
@@ -2338,7 +2339,7 @@ export class SharedFolder extends HasProvider {
 
 			const newDoc = this.getOrCreateDoc(toGuid, path);
 			this.files.set(toGuid, newDoc);
-			this.fset.add(newDoc, true);
+			this.fset.add(newDoc);
 			const isCurrentDoc = () =>
 				!this.destroyed && !newDoc.destroyed && this.files.get(toGuid) === newDoc;
 
@@ -2453,7 +2454,7 @@ export class SharedFolder extends HasProvider {
 
 		const canvas = this.getOrCreateCanvas(toGuid, path);
 		this.files.set(toGuid, canvas);
-		this.fset.add(canvas, true);
+		this.fset.add(canvas);
 		canvas.wake();
 		Y.applyUpdate(canvas.ydoc, updateBytes);
 		canvas.hsm.send({ type: "DOWNLOAD_COMPLETE" });
@@ -3224,7 +3225,7 @@ export class SharedFolder extends HasProvider {
 			this.pendingUpload.set(path, pendingGuid);
 			if (file) {
 				this.files.set(pendingGuid, file);
-				this.fset.add(file, true);
+				this.fset.add(file);
 			}
 			this.warn("failed to adopt remote deletion", path, error);
 			return;
@@ -3486,7 +3487,7 @@ export class SharedFolder extends HasProvider {
 		return null;
 	}
 
-	public getDoc(vpath: string, update = true): Document {
+	public getDoc(vpath: string): Document {
 		const id = this.syncStore.get(vpath);
 		if (id !== undefined) {
 			const doc = this.files.get(id);
@@ -3500,9 +3501,9 @@ export class SharedFolder extends HasProvider {
 				// the ID exists, but the file doesn't
 				this.log("[getDoc]: creating doc for shared ID");
 				if (this.pendingUpload.has(vpath)) {
-					return this.uploadDoc(vpath, update);
+					return this.uploadDoc(vpath);
 				}
-				return this.createDoc(vpath, update);
+				return this.createDoc(vpath);
 			}
 		} else {
 			// the File exists, but the ID doesn't
@@ -3515,12 +3516,12 @@ export class SharedFolder extends HasProvider {
 			if (newDocs.length > 0) {
 				return this.uploadDoc(vpath);
 			} else {
-				return this.createDoc(vpath, update);
+				return this.createDoc(vpath);
 			}
 		}
 	}
 
-	public getCanvas(vpath: string, update = true): Canvas {
+	public getCanvas(vpath: string): Canvas {
 		const id = this.syncStore.get(vpath);
 		if (id !== undefined) {
 			const canvas = this.files.get(id);
@@ -3534,9 +3535,9 @@ export class SharedFolder extends HasProvider {
 				// the ID exists, but the file doesn't
 				this.log("[getCanvas]: creating canvas for shared ID");
 				if (this.pendingUpload.has(vpath)) {
-					return this.uploadCanvas(vpath, update);
+					return this.uploadCanvas(vpath);
 				}
-				return this.createCanvas(vpath, update);
+				return this.createCanvas(vpath);
 			}
 		} else {
 			// the File exists, but the ID doesn't
@@ -3549,7 +3550,7 @@ export class SharedFolder extends HasProvider {
 			if (newDocs.length > 0) {
 				return this.uploadCanvas(vpath);
 			} else {
-				return this.createCanvas(vpath, update);
+				return this.createCanvas(vpath);
 			}
 		}
 	}
@@ -3700,7 +3701,7 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
-	getFile(tfile: TAbstractFile, update = true): IFile | null {
+	getFile(tfile: TAbstractFile): IFile | null {
 		const vpath = this.getVirtualPath(tfile.path);
 		const guid = this.syncStore.get(vpath);
 
@@ -3721,11 +3722,11 @@ export class SharedFolder extends HasProvider {
 					return this.getCanvas(vpath);
 				}
 				if (meta.type === "folder") {
-					return this.getSyncFolder(vpath, update);
+					return this.getSyncFolder(vpath);
 				}
 				// Default to sync file for other types
 				if (this.syncStore.canSync(vpath)) {
-					return this.getSyncFile(vpath, update);
+					return this.getSyncFile(vpath);
 				}
 			}
 		}
@@ -3735,7 +3736,7 @@ export class SharedFolder extends HasProvider {
 
 		// Fallback to extension-based detection for new files
 		if (tfile instanceof TFolder) {
-			return this.getSyncFolder(vpath, update);
+			return this.getSyncFolder(vpath);
 		} else if (tfile instanceof TFile) {
 			if (Document.checkExtension(vpath)) {
 				return this.getDoc(vpath);
@@ -3747,7 +3748,7 @@ export class SharedFolder extends HasProvider {
 				return this.getCanvas(vpath);
 			}
 			if (this.isSyncableTFile(tfile)) {
-				return this.getSyncFile(vpath, update);
+				return this.getSyncFile(vpath);
 			}
 		}
 		return null;
@@ -3816,7 +3817,7 @@ export class SharedFolder extends HasProvider {
 		return canvas;
 	}
 
-	async downloadCanvas(vpath: string, update = true): Promise<Canvas> {
+	async downloadCanvas(vpath: string, userVisible = true): Promise<Canvas> {
 		if (!Canvas.checkExtension(vpath)) {
 			throw new Error("unexpected extension");
 		}
@@ -3830,14 +3831,14 @@ export class SharedFolder extends HasProvider {
 		const canvas = this.getOrCreateCanvas(guid, vpath);
 		canvas.markOrigin("remote");
 
-		this.backgroundSync.enqueueCanvasDownload(canvas, update);
+		this.backgroundSync.enqueueCanvasDownload(canvas, userVisible);
 
 		this.files.set(guid, canvas);
-		this.fset.add(canvas, update);
+		this.fset.add(canvas);
 
 		return canvas;
 	}
-	public uploadCanvas(vpath: string, update = true): Canvas {
+	public uploadCanvas(vpath: string): Canvas {
 		if (!Canvas.checkExtension(vpath)) {
 			throw new Error("unexpected extension");
 		}
@@ -3889,11 +3890,11 @@ export class SharedFolder extends HasProvider {
 		})();
 
 		this.files.set(guid, canvas);
-		this.fset.add(canvas, update);
+		this.fset.add(canvas);
 		return canvas;
 	}
 
-	public createCanvas(vpath: string, update: boolean): Canvas {
+	public createCanvas(vpath: string): Canvas {
 		if (!Canvas.checkExtension(vpath)) {
 			throw new Error("unexpected extension");
 		}
@@ -3919,7 +3920,7 @@ export class SharedFolder extends HasProvider {
 			!this.pendingUpload.get(canvas.path)
 		) {
 			this.files.set(guid, canvas);
-			this.fset.add(canvas, update);
+			this.fset.add(canvas);
 			return canvas;
 		}
 
@@ -3943,7 +3944,7 @@ export class SharedFolder extends HasProvider {
 			});
 
 		this.files.set(guid, canvas);
-		this.fset.add(canvas, update);
+		this.fset.add(canvas);
 		return canvas;
 	}
 
@@ -3999,14 +4000,11 @@ export class SharedFolder extends HasProvider {
 		return doc;
 	}
 
-	async downloadDoc(
-		vpath: string,
-		update = true,
-	): Promise<Document | undefined> {
+	async downloadDoc(vpath: string): Promise<Document | undefined> {
 		const pending = this._pendingDownloadPromises.get(vpath);
 		if (pending) return pending;
 
-		const promise = this.downloadDocOnce(vpath, update);
+		const promise = this.downloadDocOnce(vpath);
 		this._pendingDownloadPromises.set(vpath, promise);
 		this._pendingDownloads.add(vpath);
 		try {
@@ -4017,10 +4015,7 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
-	private async downloadDocOnce(
-		vpath: string,
-		update: boolean,
-	): Promise<Document | undefined> {
+	private async downloadDocOnce(vpath: string): Promise<Document | undefined> {
 		if (!Document.checkExtension(vpath)) {
 			throw new Error("unexpected extension");
 		}
@@ -4116,7 +4111,7 @@ export class SharedFolder extends HasProvider {
 			this.deferDownloadUntilDocumentAccepts(doc, vpath);
 			return undefined;
 		}
-		this.fset.add(doc, update);
+		this.fset.add(doc);
 
 		return doc;
 	}
@@ -4282,7 +4277,7 @@ export class SharedFolder extends HasProvider {
 		this._downloadsDeferredByState.clear();
 	}
 
-	uploadDoc(vpath: string, update = true): Document {
+	uploadDoc(vpath: string): Document {
 		if (!Document.checkExtension(vpath)) {
 			throw new Error("unexpected extension");
 		}
@@ -4341,11 +4336,11 @@ export class SharedFolder extends HasProvider {
 		})();
 
 		this.files.set(guid, doc);
-		this.fset.add(doc, update);
+		this.fset.add(doc);
 		return doc;
 	}
 
-	createDoc(vpath: string, update = true): Document {
+	createDoc(vpath: string): Document {
 		if (!Document.checkExtension(vpath)) {
 			throw new Error("unexpected extension");
 		}
@@ -4378,7 +4373,7 @@ export class SharedFolder extends HasProvider {
 			});
 
 		this.files.set(guid, doc);
-		this.fset.add(doc, update);
+		this.fset.add(doc);
 
 		return doc;
 	}
@@ -4392,7 +4387,7 @@ export class SharedFolder extends HasProvider {
 		return file;
 	}
 
-	getSyncFolder(vpath: string, update: boolean) {
+	getSyncFolder(vpath: string) {
 		this.log("[getSyncFolder]", `getting syncfolder`);
 		if (!this.synced && !this.syncStore.has(vpath)) {
 			throw new Error(`potential for document split at ${vpath}`);
@@ -4404,7 +4399,7 @@ export class SharedFolder extends HasProvider {
 		const file = this.getOrCreateSyncFolder(guid, vpath);
 
 		this.files.set(guid, file);
-		this.fset.add(file, update);
+		this.fset.add(file);
 		return file;
 	}
 
@@ -4425,7 +4420,7 @@ export class SharedFolder extends HasProvider {
 		return file;
 	}
 
-	syncFile(vpath: string, update: boolean) {
+	syncFile(vpath: string) {
 		if (!this.syncStore.canSync(vpath)) {
 			throw new Error("unexpected extension");
 		}
@@ -4438,7 +4433,7 @@ export class SharedFolder extends HasProvider {
 		}
 		const meta = this.syncStore.getMeta(vpath);
 		if (!meta || !meta.hash) {
-			return this.uploadSyncFile(vpath, update);
+			return this.uploadSyncFile(vpath);
 		}
 		const file = this.getOrCreateSyncFile(guid, vpath, meta.hash);
 
@@ -4447,12 +4442,12 @@ export class SharedFolder extends HasProvider {
 		});
 
 		this.files.set(guid, file);
-		this.fset.add(file, update);
+		this.fset.add(file);
 
 		return file;
 	}
 
-	downloadSyncFile(vpath: string, update: boolean) {
+	downloadSyncFile(vpath: string) {
 		if (!this.syncStore.canSync(vpath)) {
 			throw new Error("unexpected extension");
 		}
@@ -4465,7 +4460,7 @@ export class SharedFolder extends HasProvider {
 		}
 		const meta = this.syncStore.getMeta(vpath);
 		if (!meta || !meta.hash) {
-			return this.uploadSyncFile(vpath, update);
+			return this.uploadSyncFile(vpath);
 		}
 		const file = this.getOrCreateSyncFile(guid, vpath, meta.hash);
 
@@ -4474,12 +4469,12 @@ export class SharedFolder extends HasProvider {
 		});
 
 		this.files.set(guid, file);
-		this.fset.add(file, update);
+		this.fset.add(file);
 
 		return file;
 	}
 
-	uploadSyncFile(vpath: string, update = true): SyncFile {
+	uploadSyncFile(vpath: string): SyncFile {
 		if (!this.syncStore.canSync(vpath)) {
 			throw new Error("unexpected extension");
 		}
@@ -4509,11 +4504,11 @@ export class SharedFolder extends HasProvider {
 			}
 		})();
 
-		this.fset.add(file, update);
+		this.fset.add(file);
 		return file;
 	}
 
-	getSyncFile(vpath: string, update = true): SyncFile {
+	getSyncFile(vpath: string): SyncFile {
 		if (!this.syncStore.canSync(vpath)) {
 			throw new Error("unexpected extension");
 		}
@@ -4561,30 +4556,30 @@ export class SharedFolder extends HasProvider {
 		}
 
 		this.files.set(guid, file);
-		this.fset.add(file, update);
+		this.fset.add(file);
 		return file;
 	}
 
-	uploadFile(tfile: TAbstractFile, update = true): IFile | null {
+	uploadFile(tfile: TAbstractFile): IFile | null {
 		const vpath = this.getVirtualPath(tfile.path);
 		if (!this.isSyncableTFile(tfile)) {
 			this.log("skipping upload for unsyncable file", vpath);
 			return null;
 		}
 		if (tfile instanceof TFolder) {
-			return this.getSyncFolder(vpath, update);
+			return this.getSyncFolder(vpath);
 		} else if (tfile instanceof TFile) {
 			if (Document.checkExtension(vpath)) {
-				return this.uploadDoc(vpath, update);
+				return this.uploadDoc(vpath);
 			}
 			if (
 				Canvas.checkExtension(vpath) &&
 				this.syncSettingsManager.isExtensionEnabled(vpath)
 			) {
-				return this.uploadCanvas(vpath, update);
+				return this.uploadCanvas(vpath);
 			}
 			if (this.syncStore.canSync(vpath)) {
-				return this.uploadSyncFile(vpath, update);
+				return this.uploadSyncFile(vpath);
 			}
 		}
 		throw new Error("unexpectedly unable to upload");
