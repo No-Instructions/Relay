@@ -133,6 +133,7 @@ export function buildFolderSyncSnapshot(
 }
 
 const PROGRESS_TRANSITION_MS = 1000;
+const PROGRESS_FRAME_MS = 16;
 
 export class FolderSyncSnapshotSmoother {
 	private latestSnapshot: FolderSyncSnapshot | null = null;
@@ -210,8 +211,11 @@ export class FolderSyncSnapshotSmoother {
 		const remainingSteps = Math.abs(this.targetPercent - this.displayedPercent);
 		const stepDelayMs =
 			remainingMs > 0
-				? Math.max(1, Math.ceil(remainingMs / remainingSteps))
-				: 1;
+				? Math.max(
+						PROGRESS_FRAME_MS,
+						Math.ceil(remainingMs / remainingSteps),
+					)
+				: PROGRESS_FRAME_MS;
 
 		this.progressTimer = this.timeProvider.setTimeout(() => {
 			this.progressTimer = null;
