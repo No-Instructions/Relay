@@ -402,6 +402,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 	// Whether PROVIDER_SYNCED has been received during the current lock cycle
 	private _providerSynced = false;
+	private _frontmatterMapWriteDeferred = false;
 
 	// Async operation tracking with cancellation support
 	private _asyncOps = new Map<string, { controller: AbortController; promise: Promise<void> }>();
@@ -5436,7 +5437,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			// dispatch the Y.Map-derived frontmatter instead of raw Y.Text delta.
 			// This avoids interleaved character-level ops corrupting frontmatter in CM6.
 			const ymapChangedInTx = tr.changed.has(ymap as any);
-			if (ymapChangedInTx && this._yaml) {
+			if (ymapChangedInTx && this._yaml && !this._frontmatterMapWriteDeferred) {
 				// Flag for deferred repairFrontmatterFromMap action
 				this._remoteFrontmatterMapUpdated = true;
 				const correctDoc = this.buildDocFromYMap();
@@ -6607,21 +6608,25 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	 */
 	private seedFrontmatterMapFromCurrentText(allowBeforeProviderSync = false): void {
 		if (!this.localDoc || !this._yaml) return;
-		if (this.localDoc.getMap("frontmatter").size > 0) return;
 		if (
 			!allowBeforeProviderSync &&
 			!this._providerSynced &&
 			!this._isProviderSynced()
 		) return;
 
+		let synced = false;
 		this.localDoc.transact(() => {
-			this.syncFrontmatterToMap();
+			synced = this.syncFrontmatterToMap(undefined, allowBeforeProviderSync);
 		}, this);
+		if (synced) this._frontmatterMapWriteDeferred = false;
 		this._bridge.flushOutbound();
 	}
 
-	private syncFrontmatterToMap(previousText?: string): void {
-		if (!this.localDoc || !this._yaml) return;
+	private syncFrontmatterToMap(
+		previousText?: string,
+		allowBeforeProviderSync = false,
+	): boolean {
+		if (!this.localDoc || !this._yaml) return false;
 
 		const text = this.localDoc.getText("contents").toString();
 		const fm = this.parseFrontmatter(text);
@@ -6642,7 +6647,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					ymap.delete(key);
 				}
 			}
-			return;
+			return !this._yaml.getFrontMatterInfo(text).exists;
 		}
 
 		let previousParsed: Record<string, any> | null = null;
@@ -6651,8 +6656,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			if (previousInfo.exists) {
 				const previousFm = this.parseFrontmatter(previousText);
 				// A malformed previous block has no safe structured delta.
-				if (!previousFm) return;
-				previousParsed = previousFm.parsed;
+				if (!previousFm) {
+					if (!this._frontmatterMapWriteDeferred) return false;
+				} else {
+					previousParsed = previousFm.parsed;
+				}
 			} else {
 				previousParsed = {};
 			}
@@ -6663,13 +6671,22 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		// provide it so unchanged stale values never become map writes.
 		for (const [key, value] of Object.entries(fm.parsed)) {
 			const serialized = JSON.stringify(value);
-			if (
+			const changed =
 				previousParsed === null ||
 				!(key in previousParsed) ||
-				JSON.stringify(previousParsed[key]) !== serialized
+				JSON.stringify(previousParsed[key]) !== serialized;
+			if (!changed || ymap.get(key) === serialized) continue;
+
+			if (
+				!allowBeforeProviderSync &&
+				!this._providerSynced &&
+				!this._isProviderSynced()
 			) {
-				ymap.set(key, serialized);
+				this._frontmatterMapWriteDeferred = true;
+				continue;
 			}
+
+			ymap.set(key, serialized);
 		}
 		// The text owns key removal: a key deleted from the frontmatter
 		// must leave the map, or the next reconstruction resurrects it.
@@ -6686,6 +6703,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				}
 			}
 		}
+		return true;
 	}
 
 	/**
@@ -6695,6 +6713,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	 */
 	private repairFrontmatterFromMap(): void {
 		if (!this.localDoc || !this._yaml) return;
+		if (this._frontmatterMapWriteDeferred) return;
 
 		// Only repair if the remote update contained Y.Map changes,
 		// meaning the remote client also populates the map.
