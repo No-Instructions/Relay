@@ -220,6 +220,9 @@ class Files extends ObservableSet<IFile> {
 export class SharedFolder extends HasProvider {
 	path: string;
 	files: Map<string, IFile>; // Maps guids to SharedDocs
+	// Guids learned per TAbstractFile instance; entries die with the
+	// instance, so a delete-and-recreate can never resolve stale.
+	private tfileGuids = new WeakMap<TAbstractFile, string>();
 	fset: Files;
 	relayId?: string;
 	_remote?: RemoteSharedFolder;
@@ -3701,7 +3704,29 @@ export class SharedFolder extends HasProvider {
 	}
 
 	getFile(tfile: TAbstractFile): IFile | null {
+		const file = this.resolveFile(tfile);
+		if (file) {
+			this.tfileGuids.set(tfile, file.guid);
+		}
+		return file;
+	}
+
+	private resolveFile(tfile: TAbstractFile): IFile | null {
 		const vpath = this.getVirtualPath(tfile.path);
+
+		// Identity first: Obsidian keeps one TAbstractFile instance per file
+		// and mutates its path in place, so a guid learned for the instance
+		// stays correct through the window where a rename has changed the
+		// path but the path-keyed store hasn't processed the move yet. A
+		// delete recreates the instance, so a stale entry cannot be reached.
+		const known = this.tfileGuids.get(tfile);
+		if (known !== undefined) {
+			const knownFile = this.files.get(known);
+			if (knownFile) {
+				return knownFile;
+			}
+		}
+
 		const guid = this.syncStore.get(vpath);
 
 		// If file exists in sync store, use its metadata type to determine what to return
@@ -3755,6 +3780,7 @@ export class SharedFolder extends HasProvider {
 
 	placeHold(newFiles: TAbstractFile[]): string[] {
 		const newDocs: string[] = [];
+		let loadedPaths: Set<string> | null = null;
 		this.folderDoc.transact(() => {
 			newFiles.forEach((file) => {
 				const vpath = this.getVirtualPath(file.path);
@@ -3763,6 +3789,24 @@ export class SharedFolder extends HasProvider {
 					return;
 				}
 				if (!this.syncStore.has(vpath)) {
+					// A loaded file still claiming this path marks it as the
+					// disk-side source of a move whose membership entry has
+					// already gone elsewhere — not a novel local create.
+					// Minting here would fork the document's identity; the
+					// disk rename settles the path on its own.
+					if (loadedPaths === null) {
+						loadedPaths = new Set();
+						for (const loaded of this.files.values()) {
+							loadedPaths.add(loaded.path);
+						}
+					}
+					if (loadedPaths.has(vpath)) {
+						this.log(
+							"skipping place hold for the source of an in-flight move",
+							vpath,
+						);
+						return;
+					}
 					this.log("place hold new", vpath);
 					this.syncStore.new(vpath);
 					newDocs.push(vpath);
