@@ -24,6 +24,7 @@ import { Canvas } from "src/Canvas";
 import { curryLog, metrics } from "src/debug";
 import { isDestroyedError } from "src/DestroyedError";
 import type { MergeHSM } from "src/merge-hsm/MergeHSM";
+import { changedQueueItemPaths } from "src/ui/FolderNavRefresh";
 
 class SiblingWatcher {
 	mutationObserver: MutationObserver | null;
@@ -268,25 +269,30 @@ class FolderPillVisitor extends BaseVisitor<PillDecoration> {
 }
 
 class QueueWatcher implements Destroyable {
-	private unsubscribers: Unsubscriber[] = [];
 	private titleEl: HTMLElement;
+	private destroyed = false;
 
 	constructor(
 		private el: HTMLElement,
 		private path: string,
 		private activeSync: ObservableSet<QueueItem>,
 		private activeDownloads: ObservableSet<QueueItem>,
+		private onDestroyed: (watcher: QueueWatcher) => void,
 	) {
 		this.titleEl = el.querySelector(".nav-file-title") || el;
-
-		this.unsubscribers.push(
-			this.activeSync.subscribe(() => this.checkStatus()),
-			this.activeDownloads.subscribe(() => this.checkStatus()),
-		);
 		this.checkStatus();
 	}
 
-	private checkStatus() {
+	matches(path: string): boolean {
+		return !this.destroyed && this.path === path;
+	}
+
+	update(): void {
+		if (this.destroyed) return;
+		this.checkStatus();
+	}
+
+	private checkStatus(): void {
 		const isSyncing = this.activeSync.some((item) => item.path === this.path);
 		const isDownloading = this.activeDownloads.some(
 			(item) => item.path === this.path,
@@ -305,19 +311,52 @@ class QueueWatcher implements Destroyable {
 		}
 	}
 
-	destroy() {
-		this.titleEl.removeClass("system3-uploading");
+	destroy(): void {
+		if (this.destroyed) return;
+		this.destroyed = true;
+		this.titleEl.removeClass("system3-syncing");
 		this.titleEl.removeClass("system3-downloading");
-		this.unsubscribers.forEach((unsub) => unsub());
+		this.onDestroyed(this);
 	}
 }
 
 class QueueWatcherVisitor extends BaseVisitor<QueueWatcher> {
+	private watchersByPath = new Map<string, Set<QueueWatcher>>();
+
 	constructor(
 		private activeSync: ObservableSet<QueueItem>,
 		private activeDownloads: ObservableSet<QueueItem>,
 	) {
 		super();
+	}
+
+	private createWatcher(el: HTMLElement, path: string): QueueWatcher {
+		const watcher = new QueueWatcher(
+			el,
+			path,
+			this.activeSync,
+			this.activeDownloads,
+			(destroyed) => {
+				const watchers = this.watchersByPath.get(path);
+				watchers?.delete(destroyed);
+				if (watchers?.size === 0) this.watchersByPath.delete(path);
+			},
+		);
+		let watchers = this.watchersByPath.get(path);
+		if (!watchers) {
+			watchers = new Set();
+			this.watchersByPath.set(path, watchers);
+		}
+		watchers.add(watcher);
+		return watcher;
+	}
+
+	refresh(paths: ReadonlySet<string>): void {
+		for (const path of paths) {
+			for (const watcher of this.watchersByPath.get(path) ?? []) {
+				watcher.update();
+			}
+		}
 	}
 
 	visitFile(
@@ -332,15 +371,12 @@ class QueueWatcherVisitor extends BaseVisitor<QueueWatcher> {
 			sharedFolder.checkPath(file.path) &&
 			Document.checkExtension(file.path)
 		) {
-			return (
-				storage ||
-				new QueueWatcher(
-					item.el,
-					file.path,
-					this.activeSync,
-					this.activeDownloads,
-				)
-			);
+			if (storage?.matches(file.path)) {
+				storage.update();
+				return storage;
+			}
+			storage?.destroy();
+			return this.createWatcher(item.el, file.path);
 		}
 		if (storage) {
 			storage.destroy();
@@ -705,6 +741,7 @@ class FileExplorerWalker {
 	visitors: FileSystemVisitor<Destroyable>[];
 	storage: Map<FileSystemVisitor<Destroyable>, Map<TreeNode, Destroyable>>;
 	private conflictVisitor: FileConflictVisitor | null;
+	private queueWatcherVisitor: QueueWatcherVisitor | null;
 
 	constructor(
 		fileExplorer: WorkspaceLeaf,
@@ -718,6 +755,11 @@ class FileExplorerWalker {
 			this.visitors.find(
 				(visitor): visitor is FileConflictVisitor =>
 					visitor instanceof FileConflictVisitor,
+			) ?? null;
+		this.queueWatcherVisitor =
+			this.visitors.find(
+				(visitor): visitor is QueueWatcherVisitor =>
+					visitor instanceof QueueWatcherVisitor,
 			) ?? null;
 
 		this.storage = new Map<
@@ -825,6 +867,10 @@ class FileExplorerWalker {
 		this.conflictVisitor?.refresh(sharedFolder, guids);
 	}
 
+	refreshQueueItems(paths: ReadonlySet<string>): void {
+		this.queueWatcherVisitor?.refresh(paths);
+	}
+
 	destroy() {
 		this.storage.forEach((store) => {
 			store.forEach((item) => {
@@ -832,6 +878,7 @@ class FileExplorerWalker {
 			});
 		});
 		this.conflictVisitor = null;
+		this.queueWatcherVisitor = null;
 	}
 }
 
@@ -880,12 +927,16 @@ export class FolderNavigationDecorations {
 	private subscribedFolderFsets = new WeakSet<SharedFolder>();
 
 	/**
-	 * Quick refresh requests share one microtask. Folder-specific requests are
-	 * unioned; an unscoped request subsumes every folder-specific request.
+	 * Quick refresh requests share one animation frame. Folder-specific requests
+	 * are unioned; an unscoped request subsumes every folder-specific request.
 	 */
 	private quickRefreshScheduled = false;
+	private quickRefreshFrame: number | null = null;
 	private pendingQuickRefreshAll = false;
 	private pendingQuickRefreshFolders = new Set<SharedFolder>();
+	private pendingQueueItemPaths = new Set<string>();
+	private activeSyncSnapshot = new Set<QueueItem>();
+	private activeDownloadSnapshot = new Set<QueueItem>();
 
 	/**
 	 * Changed GUIDs accumulated from sync-status change deliveries, drained
@@ -913,9 +964,12 @@ export class FolderNavigationDecorations {
 		});
 
 		this.globalSubs.push(
-			backgroundSync.activeSync.subscribe(() => this.quickRefresh()),
-			backgroundSync.activeDownloads.subscribe(() => this.quickRefresh()),
-			backgroundSync.syncGroups.subscribe(() => this.quickRefresh()),
+			backgroundSync.activeSync.subscribe((items) =>
+				this.queueItemsChanged("sync", items),
+			),
+			backgroundSync.activeDownloads.subscribe((items) =>
+				this.queueItemsChanged("download", items),
+			),
 		);
 
 		// Subscribe to the SharedFolders set. On every notification,
@@ -1050,11 +1104,29 @@ export class FolderNavigationDecorations {
 	private scheduleQuickRefresh(): void {
 		if (this.quickRefreshScheduled || this.destroyed) return;
 		this.quickRefreshScheduled = true;
-		queueMicrotask(() => {
+		this.quickRefreshFrame = window.requestAnimationFrame(() => {
+			this.quickRefreshFrame = null;
 			this.quickRefreshScheduled = false;
 			if (this.destroyed) return;
 			this.flushQuickRefresh();
 		});
+	}
+
+	private queueItemsChanged(
+		kind: "sync" | "download",
+		items: ObservableSet<QueueItem>,
+	): void {
+		const current = new Set(items.items());
+		const previous =
+			kind === "sync" ? this.activeSyncSnapshot : this.activeDownloadSnapshot;
+		for (const path of changedQueueItemPaths(previous, current)) {
+			this.pendingQueueItemPaths.add(path);
+		}
+		if (kind === "sync") this.activeSyncSnapshot = current;
+		else this.activeDownloadSnapshot = current;
+		if (this.layoutReady && this.pendingQueueItemPaths.size > 0) {
+			this.scheduleQuickRefresh();
+		}
 	}
 
 	quickRefresh(folder?: SharedFolder): void {
@@ -1075,8 +1147,10 @@ export class FolderNavigationDecorations {
 		const t0 = performance.now();
 		const refreshAll = this.pendingQuickRefreshAll;
 		const refreshFolders = new Set(this.pendingQuickRefreshFolders);
+		const queueItemPaths = new Set(this.pendingQueueItemPaths);
 		this.pendingQuickRefreshAll = false;
 		this.pendingQuickRefreshFolders.clear();
+		this.pendingQueueItemPaths.clear();
 
 		const changedStatuses = new Map<SharedFolder, Set<string>>();
 		for (const [folder, guids] of this.pendingSyncStatusGuids) {
@@ -1089,7 +1163,8 @@ export class FolderNavigationDecorations {
 		if (
 			!refreshAll &&
 			refreshFolders.size === 0 &&
-			changedStatuses.size === 0
+			changedStatuses.size === 0 &&
+			queueItemPaths.size === 0
 		) {
 			return;
 		}
@@ -1119,6 +1194,7 @@ export class FolderNavigationDecorations {
 					walker.refreshConflicts(folder, guids);
 				}
 			}
+			walker.refreshQueueItems(queueItemPaths);
 		}
 		metrics.observeFoldernavRefresh("quick", (performance.now() - t0) / 1000);
 	}
@@ -1129,6 +1205,7 @@ export class FolderNavigationDecorations {
 		this.pendingQuickRefreshAll = false;
 		this.pendingQuickRefreshFolders.clear();
 		this.pendingSyncStatusGuids.clear();
+		this.pendingQueueItemPaths.clear();
 		const fileExplorers = this.getFileExplorers();
 		for (const fileExplorer of fileExplorers) {
 			const walker =
@@ -1152,6 +1229,11 @@ export class FolderNavigationDecorations {
 		this.pendingQuickRefreshAll = false;
 		this.pendingQuickRefreshFolders.clear();
 		this.pendingSyncStatusGuids.clear();
+		this.pendingQueueItemPaths.clear();
+		if (this.quickRefreshFrame !== null) {
+			window.cancelAnimationFrame(this.quickRefreshFrame);
+			this.quickRefreshFrame = null;
+		}
 
 		// Release the root SharedFolders subscription first so no further
 		// folder-add notifications can arrive while we're tearing down.
