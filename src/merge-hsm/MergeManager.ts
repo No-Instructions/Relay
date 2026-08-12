@@ -44,6 +44,7 @@ import {
   type DecodedDeleteSet,
   decodeUpdateDeleteSet,
   deleteSetContains,
+  docMatchesSnapshot,
   mergeDecodedDeleteSets,
   restoreDocAtSnapshot,
   snapshotContains,
@@ -1726,6 +1727,11 @@ export class MergeManager {
     const advertised = this._serverAdvertisedHeads.get(guid);
     if (!advertised) return false;
 
+    if (!localSnapshotBytes) {
+      const loadedMatch = this.knownLocalDocMatchesSnapshot(guid, advertised);
+      if (loadedMatch !== null) return loadedMatch;
+    }
+
     const localSnapshot = localSnapshotBytes
       ? { snapshot: localSnapshotBytes }
       : this.getKnownLocalSnapshot(guid);
@@ -1793,6 +1799,16 @@ export class MergeManager {
       return snapshotFromDoc(localDoc);
     } catch {
       return null;
+    }
+  }
+
+  private knownLocalDocMatchesSnapshot(guid: string, snapshot: YjsSnapshot): boolean | null {
+    const localDoc = this._getDocument(guid)?.hsm?.getLocalDoc();
+    if (!localDoc) return null;
+    try {
+      return docMatchesSnapshot(localDoc, snapshot);
+    } catch {
+      return false;
     }
   }
 

@@ -31,6 +31,12 @@ export interface YjsSnapshot {
 	snapshot: Uint8Array;
 }
 
+const docSnapshotCache = new WeakMap<Y.Doc, YjsSnapshot>();
+
+function invalidateDocSnapshot(doc: Y.Doc): void {
+	docSnapshotCache.delete(doc);
+}
+
 type SnapshotLike = {
 	sv: DecodedSV;
 	ds: {
@@ -209,7 +215,25 @@ export function deleteSetContains(superset: DecodedDeleteSet, subset: DecodedDel
  * Capture the full Yjs snapshot for a document: insert clocks + delete set.
  */
 export function snapshotFromDoc(doc: Y.Doc): YjsSnapshot {
-	return { snapshot: Y.encodeSnapshot(Y.snapshot(doc)) };
+	const cached = docSnapshotCache.get(doc);
+	if (cached) return cached;
+
+	const snapshot = { snapshot: Y.encodeSnapshot(Y.snapshot(doc)) };
+	docSnapshotCache.set(doc, snapshot);
+	doc.once("beforeObserverCalls", () => invalidateDocSnapshot(doc));
+	return snapshot;
+}
+
+/**
+ * Compare a live document with an encoded snapshot. Unequal insert clocks
+ * prove inequality without materializing the document's delete set; equal
+ * clocks still require the full snapshot comparison.
+ */
+export function docMatchesSnapshot(doc: Y.Doc, snapshot: YjsSnapshot): boolean {
+	const docSV = Y.decodeStateVector(Y.encodeStateVector(doc));
+	const expectedSV = snapshotStateVector(snapshot);
+	if (!svEqual(docSV, expectedSV)) return false;
+	return snapshotsEqual(snapshotFromDoc(doc), snapshot);
 }
 
 /**

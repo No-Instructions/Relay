@@ -5339,7 +5339,6 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		// Update the head snapshot to reflect what's in localDoc.
 		if (this.localDoc) {
 			this._localSnapshot = snapshotFromDoc(this.localDoc).snapshot;
-			this.hydrateLCAContentsFromMatchingDoc();
 			this.markLocalDocSnapshotSafeIfLoadedHeadMatches();
 
 			// Record the client ID for reuse across lock cycles.
