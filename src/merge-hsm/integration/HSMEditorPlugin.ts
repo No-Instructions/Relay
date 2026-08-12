@@ -19,7 +19,7 @@ import { Transaction } from "@codemirror/state";
 import { editorInfoField } from "obsidian";
 import type { TFile } from "obsidian";
 import { getLiveViews } from "../../editorContext";
-import type { Document } from "../../Document";
+import { isDocument, type Document } from "../../Document";
 import type { MergeHSM } from "../MergeHSM";
 import { CM6Integration } from "./CM6Integration";
 import { ySyncAnnotation } from "./annotations";
@@ -189,7 +189,8 @@ export class HSMEditorPluginValue implements PluginValue {
     if (!folder) return null;
 
     try {
-      return folder.proxy.getDoc(file.path) as Document;
+      const doc = folder.getFile(file);
+      return isDocument(doc) ? doc : null;
     } catch (error) {
       this.debug("resolveCurrentDocument failed", {
         filePath: file.path,

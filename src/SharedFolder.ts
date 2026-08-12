@@ -3487,7 +3487,7 @@ export class SharedFolder extends HasProvider {
 		return null;
 	}
 
-	public getDoc(vpath: string): Document {
+	private getDoc(vpath: string): Document {
 		const id = this.syncStore.get(vpath);
 		if (id !== undefined) {
 			const doc = this.files.get(id);
@@ -3521,7 +3521,7 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
-	public getCanvas(vpath: string): Canvas {
+	private getCanvas(vpath: string): Canvas {
 		const id = this.syncStore.get(vpath);
 		if (id !== undefined) {
 			const canvas = this.files.get(id);
@@ -4387,7 +4387,7 @@ export class SharedFolder extends HasProvider {
 		return file;
 	}
 
-	getSyncFolder(vpath: string) {
+	private getSyncFolder(vpath: string) {
 		this.log("[getSyncFolder]", `getting syncfolder`);
 		if (!this.synced && !this.syncStore.has(vpath)) {
 			throw new Error(`potential for document split at ${vpath}`);
@@ -4508,7 +4508,7 @@ export class SharedFolder extends HasProvider {
 		return file;
 	}
 
-	getSyncFile(vpath: string): SyncFile {
+	private getSyncFile(vpath: string): SyncFile {
 		if (!this.syncStore.canSync(vpath)) {
 			throw new Error("unexpected extension");
 		}

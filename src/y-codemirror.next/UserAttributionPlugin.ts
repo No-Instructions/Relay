@@ -10,6 +10,7 @@ import { editorInfoField } from "obsidian";
 import * as Y from "yjs";
 
 import { getLiveViews } from "../editorContext";
+import { isDocument } from "../Document";
 import { usercolors } from "../User";
 
 /**
@@ -120,7 +121,8 @@ export class UserAttributionPluginValue {
 		const folder = connectionManager?.sharedFolders.lookup(file.path);
 		let doc;
 		try {
-			doc = folder?.proxy.getDoc(file.path);
+			const ifile = folder?.getFile(file);
+			doc = isDocument(ifile) ? ifile : undefined;
 		} catch {
 			// No shared handle (membership refused or undecided).
 			doc = undefined;
