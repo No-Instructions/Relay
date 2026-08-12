@@ -1138,7 +1138,7 @@ export class RelayDebugAPI {
     let canvas = owner.files.get(guid);
     if (!canvas) {
       const tfile = this.plugin.app.vault.getAbstractFileByPath(path);
-      if (tfile) canvas = owner.getFile(tfile, false);
+      if (tfile) canvas = owner.getFile(tfile);
     }
     if (!isCanvas(canvas)) {
       throw new Error(`Not a canvas: ${path}`);

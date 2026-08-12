@@ -13,7 +13,7 @@ import {
 } from "obsidian";
 import ViewActions from "src/components/ViewActions.svelte";
 import * as Y from "yjs";
-import { Document } from "./Document";
+import { Document, isDocument } from "./Document";
 import type { EditorViewRef } from "./merge-hsm/types";
 import type { ConnectionState } from "./HasProvider";
 import { LoginManager } from "./LoginManager";
@@ -1354,9 +1354,10 @@ export class LiveViewManager {
 				const folder = this.sharedFolders.lookup(filePath);
 				if (!folder?.mergeManager || !folder.ready) continue;
 
-				let embeddedDoc: Document;
+				let embeddedDoc: Document | null;
 				try {
-					embeddedDoc = folder.proxy.getDoc(filePath);
+					const ifile = folder.getFile(child.file);
+					embeddedDoc = isDocument(ifile) ? ifile : null;
 				} catch {
 					// No shared handle (membership refused or undecided).
 					continue;
@@ -1468,10 +1469,11 @@ export class LiveViewManager {
 	private async getViews(): Promise<S3View[]> {
 		const views: S3View[] = [];
 		iterateTextFileViews(this.workspace, this.textViewRegistry, async (textFileView) => {
-			const viewFilePath = textFileView.file?.path;
-			if (!viewFilePath) {
+			const viewFile = textFileView.file;
+			if (!viewFile) {
 				return;
 			}
+			const viewFilePath = viewFile.path;
 			const folder = this.sharedFolders.lookup(viewFilePath);
 			if (folder) {
 				if (!this.loginManager.loggedIn) {
@@ -1481,13 +1483,19 @@ export class LiveViewManager {
 					views.push(view);
 				} else if (folder.ready) {
 					try {
-						const doc = folder.proxy.getDoc(viewFilePath);
-						const view = new LiveView<typeof textFileView>(
-							this,
-							textFileView,
-							doc,
-						);
-						views.push(view);
+						const doc = folder.getFile(viewFile);
+						if (isDocument(doc)) {
+							const view = new LiveView<typeof textFileView>(
+								this,
+								textFileView,
+								doc,
+							);
+							views.push(view);
+						} else {
+							this.log(
+								`No shared document for ${viewFilePath}; skipping view.`,
+							);
+						}
 					} catch (e) {
 						// No shared handle (membership refused or undecided):
 						// the file opens as a plain local editor.

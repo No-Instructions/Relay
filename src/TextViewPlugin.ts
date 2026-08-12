@@ -1,7 +1,7 @@
 import { MarkdownView, type TextFileView } from "obsidian";
 import { getPatcher } from "./Patcher";
 import { HasLogging } from "src/debug";
-import { Document } from "./Document";
+import { Document, isDocument } from "./Document";
 import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 
 import { isLive, type LiveView } from "./LiveViews";
@@ -34,14 +34,19 @@ export class TextFileViewPlugin extends HasLogging {
 			);
 			if (folder) {
 				try {
-					const newDoc = folder.proxy.getDoc(file.path);
-					this.warn("[TextViewPlugin] getDocument() found:", {
-						newDocPath: newDoc.path,
-						newDocGuid: newDoc.guid,
-						newDocTFile: newDoc._tfile?.path,
+					const newDoc = folder.getFile(file);
+					if (isDocument(newDoc)) {
+						this.warn("[TextViewPlugin] getDocument() found:", {
+							newDocPath: newDoc.path,
+							newDocGuid: newDoc.guid,
+							newDocTFile: newDoc._tfile?.path,
+						});
+						this.doc = newDoc;
+						return this.doc;
+					}
+					this.warn("[TextViewPlugin] getDocument(): no shared document", {
+						filePath: file.path,
 					});
-					this.doc = newDoc;
-					return this.doc;
 				} catch (error) {
 					this.warn("[TextViewPlugin] getDocument() failed:", {
 						filePath: file.path,

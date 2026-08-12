@@ -9,7 +9,7 @@ import {
 import { WidgetType } from "@codemirror/view";
 import { curryLog } from "src/debug";
 import { setIcon, type App, type CachedMetadata, type TFile } from "obsidian";
-import type { Document } from "../Document";
+import { isDocument, type Document } from "../Document";
 import {
 	getApp,
 	getSharedFolders,
@@ -90,7 +90,8 @@ export class InvalidLinkPluginValue {
 		const folder = sharedFolders.lookup(file.path);
 		if (!folder) return undefined;
 		try {
-			return folder.proxy.getDoc(file.path);
+			const doc = folder.getFile(file);
+			return isDocument(doc) ? doc : undefined;
 		} catch {
 			return undefined;
 		}
