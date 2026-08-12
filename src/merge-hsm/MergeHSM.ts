@@ -704,12 +704,22 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			};
 			return;
 		}
-		for (const doc of [this.localDoc, this.remoteDoc]) {
-			if (!doc) continue;
-			const contents = restoreTextAtSnapshot(doc, baseline, "contents");
-			if (contents === null) continue;
-			this._lca = { ...this._lca, contents };
-			return;
+		if (this.localDoc) {
+			const contents = restoreTextAtSnapshot(this.localDoc, baseline, "contents");
+			if (contents !== null) {
+				this._lca = { ...this._lca, contents };
+				return;
+			}
+		}
+		// While local persistence is still syncing, localDoc has not made its
+		// claim on the baseline yet — do not let a restoration from remoteDoc
+		// preempt it.
+		if (this.lcaContentsWaitingOnLocalPersistence()) return;
+		if (this.remoteDoc) {
+			const contents = restoreTextAtSnapshot(this.remoteDoc, baseline, "contents");
+			if (contents !== null) {
+				this._lca = { ...this._lca, contents };
+			}
 		}
 	}
 
