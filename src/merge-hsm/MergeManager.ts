@@ -1869,7 +1869,9 @@ export class MergeManager {
     this._managedFiles.clear();
     this._managedMetaCache.clear();
     this._conflictProviders.clear();
-    this._updateWakeQueueMetrics();
+    // Per-document teardown suppresses metric refreshes after beginShutdown;
+    // publish the cleared state once after every tracked collection is empty.
+    this._updateWakeQueueMetrics(true);
 
     // These callbacks close over SharedFolder and related plugin services.
     // Clear them so a retained MergeManager shell does not pin the folder graph.
@@ -2108,7 +2110,8 @@ export class MergeManager {
     this._updateWakeQueueMetrics();
   }
 
-  private _updateWakeQueueMetrics(): void {
+  private _updateWakeQueueMetrics(force = false): void {
+    if (this.shuttingDown && !force) return;
     const stats = this.getWakeQueueStats();
     metrics.setWakeQueueSlots(this._folderGuid, stats.used, stats.pending, stats.total);
     metrics.setHSMDocumentsByState(this._folderGuid, this.getHibernationStateCounts());

@@ -52,6 +52,7 @@ import { DiskBuffer } from "./DiskBuffer";
 import { trackPromise } from "./trackPromise";
 import { isDocumentDestroyedError } from "./DocumentDestroyedError";
 import { trackAsyncCleanup } from "./reloadUtils";
+import { transitionViewsOffline } from "./offlineViews";
 
 /**
  * Access the LiveViewManager singleton via the Obsidian plugin registry.
@@ -1146,7 +1147,7 @@ export class LiveViewManager {
 
 	goOffline() {
 		this.log("[System 3][Relay][Live Views] going offline");
-		this.views.forEach((view) => view.document?.disconnect());
+		transitionViewsOffline(this.views);
 		void this.refresh("[NetworkStatus]");
 	}
 
