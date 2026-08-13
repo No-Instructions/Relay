@@ -79,6 +79,15 @@ export interface MergeManagerDocument {
   ensureRemoteDoc(): import('yjs').Doc;
 }
 
+function uint8ArraysEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a === b) return true;
+  if (a.byteLength !== b.byteLength) return false;
+  for (let index = 0; index < a.byteLength; index++) {
+    if (a[index] !== b[index]) return false;
+  }
+  return true;
+}
+
 export interface MergeManagerConfig {
   /**
    * Function to generate vault ID for a document.
@@ -1671,11 +1680,13 @@ export class MergeManager {
    * Record the server-advertised head directly from raw Yjs snapshot bytes.
    * Snapshot advertisements retain delete-set information, so queueing hints
    * can detect delete-only remote changes when a local snapshot is available.
+   * Re-encoding gives map entries the same stable order as local snapshots,
+   * allowing exact matches to skip semantic decoding during queue checks.
    */
   seedServerAdvertisedSnapshotFromBytes(guid: string, snapshotBytes: Uint8Array): void {
     try {
-      Y.decodeSnapshot(snapshotBytes);
-      this._serverAdvertisedHeads.set(guid, { snapshot: snapshotBytes });
+      const snapshot = Y.encodeSnapshot(Y.decodeSnapshot(snapshotBytes));
+      this._serverAdvertisedHeads.set(guid, { snapshot });
     } catch {
       this._serverAdvertisedHeads.delete(guid);
     }
@@ -1738,6 +1749,7 @@ export class MergeManager {
     if (!localSnapshot) return false;
 
     try {
+      if (uint8ArraysEqual(advertised.snapshot, localSnapshot.snapshot)) return true;
       return snapshotsEqual(advertised, localSnapshot);
     } catch {
       return false;
