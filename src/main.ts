@@ -75,6 +75,7 @@ import {
 import { NamespacedSettings, Settings } from "./SettingsStorage";
 import { ObsidianFileAdapter, ObsidianNotifier } from "./debugObsididan";
 import { BugReportModal } from "./ui/BugReportModal";
+import { DeletionGateModal } from "./ui/DeletionGateModal";
 import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
 
 import { UpdateManager } from "./UpdateManager";
@@ -271,7 +272,11 @@ export default class Live extends Plugin {
 		}
 		const destroyedRoots = removedSharedRoots;
 		for (const { folder } of destroyedRoots) {
-			this.sharedFolders.delete(folder);
+			// The root signal is out-of-band: the registration suspends
+			// relinkably — nothing replicates, local databases survive, and
+			// re-creating the root relinks rather than re-shares. The
+			// suspension expires after the deletion retention window.
+			this.sharedFolders.suspend(folder);
 		}
 
 		const isUnderRemovedSharedRoot = (path: string): boolean => {
@@ -1184,6 +1189,11 @@ export default class Live extends Plugin {
 			authoritative,
 			remote,
 		);
+		// The deletion gate's resolution surface. A held burst resolves only
+		// by explicit user decision; dismissing the modal leaves it held.
+		folder.onDeletionGateHold = ({ folder: heldFolder, paths, resolve }) => {
+			new DeletionGateModal(this.app, heldFolder.path, paths, resolve).open();
+		};
 		return folder;
 	}
 

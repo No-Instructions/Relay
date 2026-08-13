@@ -44,6 +44,19 @@ import { SyncStore } from "./SyncStore";
 import { FolderRealms } from "./FolderRealms";
 import { FolderBootstrap } from "./FolderBootstrap";
 import {
+	FolderCaptureBridge,
+	FOLDER_CLAIM_ORIGIN,
+	FOLDER_LOCAL_DELETE_ORIGIN,
+} from "./FolderCaptureBridge";
+import { ClaimLedger } from "./ClaimLedger";
+import {
+	FolderDeletionGate,
+	type DeletionBurstResolution,
+} from "./FolderDeletionGate";
+import { OpCapture } from "./merge-hsm/undo";
+import { getMimeType } from "./mimetypes";
+import type { ClientToken } from "./client/types";
+import {
 	SyncType,
 	makeCanvasMeta,
 	makeDocumentMeta,
@@ -52,6 +65,7 @@ import {
 	isFileMetas,
 	isDocumentMeta,
 	isCanvasMeta,
+	isSyncFolderMeta,
 	type FileMeta,
 	type FileMetas,
 	type Meta,
@@ -314,6 +328,23 @@ export class SharedFolder extends HasProvider {
 	private realms!: FolderRealms;
 	/** The bootstrap gates, as states derived from monotone facts. */
 	private bootstrap!: FolderBootstrap;
+	/** The vault-facing realm; the provider document is the server's. */
+	private _localFolderDoc: Y.Doc | null = null;
+	private claimLedger: ClaimLedger | null = null;
+	private captureBridge: FolderCaptureBridge | null = null;
+	private deletionGate: FolderDeletionGate | null = null;
+	/**
+	 * Resolution surface for a held deletion burst. Assigned by the host
+	 * application; a gate with no surface stays held, never resolving
+	 * automatically.
+	 */
+	public onDeletionGateHold:
+		| ((request: {
+				folder: SharedFolder;
+				paths: string[];
+				resolve: (resolution: DeletionBurstResolution) => void;
+		  }) => void)
+		| null = null;
 	/** One parked publication re-entry per held path. */
 	private _parkedPublications: Map<string, Promise<void>> = new Map();
 	/** One publication decision executor per held path. */
@@ -386,6 +417,12 @@ export class SharedFolder extends HasProvider {
 		}
 
 		this.authoritative = authoritative;
+		// Two documents, not one: this local document is the vault-facing
+		// realm, while the provider-attached document (`this.ydoc`) is the
+		// server's replica. The capture bridge is the only conduit between
+		// them. An authoritative folder has no provider to handshake with;
+		// its replica is simply the committed half of its own state.
+		this._localFolderDoc = new Y.Doc();
 		// An authoritative folder is its own membership authority and may have
 		// no provider to handshake with; every other folder waits for the
 		// server view before publishing local discoveries.
@@ -399,6 +436,10 @@ export class SharedFolder extends HasProvider {
 				if (state === "crossing" && previous !== "crossing") {
 					this.runCrossing();
 				}
+				// Posture edges are flush edges: opening the bridge admits
+				// inbound, entering the crossing admits outbound.
+				this.captureBridge?.flushInbound();
+				this.flushCaptureOutbound();
 			}),
 		);
 
@@ -412,6 +453,9 @@ export class SharedFolder extends HasProvider {
 			this.path,
 			this.pendingUpload,
 			this.syncSettingsManager,
+			// Committed reads answer from the server's realm; blended reads
+			// stay on the local realm.
+			this.ydoc,
 		);
 		this.syncStore.on(async () => {
 			await this.syncFileTree();
@@ -426,11 +470,6 @@ export class SharedFolder extends HasProvider {
 			this.syncStore.typeRegistry.getEnabledFileSyncTypes(),
 		);
 
-		this.syncStore.onCompetingClaim = (path: string, meta: Meta) => {
-			void Promise.resolve().then(() => {
-				this.handleCompetingClaim(path, meta);
-			});
-		};
 		// The withdrawn set: a remote removal answers "known" until its disk
 		// adoption completes, so a scan or a debounced vault-create landing in
 		// that window cannot re-mint the path. Entries clear when the adoption
@@ -438,6 +477,14 @@ export class SharedFolder extends HasProvider {
 		this.unsubscribes.push(
 			this.syncStore.subscribeMapDelta((delta, origin) => {
 				if (origin === this || origin === this._persistence) return;
+				// Capture staging writes with these origins are local intent
+				// (claims and gated deletions), never remote membership news.
+				if (
+					origin === FOLDER_CLAIM_ORIGIN ||
+					origin === FOLDER_LOCAL_DELETE_ORIGIN
+				) {
+					return;
+				}
 				for (const removal of delta.deletes) {
 					if (this.existsSync(removal.path)) {
 						this.realms.recordRemoteRemoval(removal.path);
@@ -501,10 +548,22 @@ export class SharedFolder extends HasProvider {
 		try {
 			const folderDbName = `${this.appId}-relay-folder-${this.guid}`;
 			const migrateFrom = flags().enableFolderIdbMigration ? this.guid : null;
+			// The captured-op ledger rides the local document's database: the
+			// history store persists each staged membership op until it is
+			// cancelled or acknowledged.
+			const captureOpts = {
+				scope: ["filemeta_v0", "docs"],
+				scopeType: "map" as const,
+				trackedOrigins: new Set<unknown>([
+					FOLDER_CLAIM_ORIGIN,
+					FOLDER_LOCAL_DELETE_ORIGIN,
+				]),
+				captureTimeout: 0,
+			};
 			this._persistence = new IndexeddbPersistence(
 				folderDbName,
 				this.folderDoc,
-				null,
+				captureOpts,
 				migrateFrom,
 				this.timeProvider,
 			);
@@ -659,6 +718,8 @@ export class SharedFolder extends HasProvider {
 				if (this.destroyed) return;
 
 				this.syncStore.start();
+				this.initializeCaptureStaging();
+				if (this.destroyed) return;
 				// Fix the boot baseline from the replayed remote realm, then
 				// report the replay in the same step: the transition that
 				// permits traffic is the event that fixes the baseline, so no
@@ -684,6 +745,9 @@ export class SharedFolder extends HasProvider {
 				if (this.destroyed) return;
 				this.addLocalDocs();
 				this.bootstrap.reportDiskReconciled();
+				// A burst held at quit is still held at next launch: the
+				// persisted ledger re-arms the deletion gate every boot.
+				this.deletionGate?.rearm();
 				await this.syncFileTree();
 				try {
 					this._persistence.set("path", this.path);
@@ -986,7 +1050,9 @@ export class SharedFolder extends HasProvider {
 			return { guid: setCandidate.guid, file: setCandidate };
 		}
 
-		const pendingGuid = this.pendingUpload.get(path);
+		const pendingGuid =
+			this.pendingUpload.get(path) ??
+			this.claimLedger?.claimIdentity(path);
 		if (pendingGuid && pendingGuid !== canonicalGuid) {
 			return { guid: pendingGuid };
 		}
@@ -1003,7 +1069,7 @@ export class SharedFolder extends HasProvider {
 		if (!localIdentity) return;
 		const committedMeta = this.syncStore.getCommittedMeta(path);
 		if (committedMeta?.id !== guid) return;
-		if (this.pendingUpload.has(path)) {
+		if (this.syncStore.hasClaim(path)) {
 			this.applyPendingUpload(path).promise.catch((e) => {
 				this.warn(`[${path}] coordinated remap retry failed`, e);
 			});
@@ -1041,39 +1107,6 @@ export class SharedFolder extends HasProvider {
 				this._pendingRemaps.delete(path);
 			});
 		}
-	}
-
-	/**
-	 * A committed claim landed for a path whose own mint is still
-	 * unpublished (hold present, upload queued or in flight). The
-	 * markUploaded recheck will refuse the mint's publication, so every
-	 * byte its transfer still moves is spent on a publication that cannot
-	 * happen — content-addressed files are where that bill is largest.
-	 * Cancel the mint's work and adopt the committed identity through the
-	 * reconciliation path. Two backstops hold behind this: the resumed
-	 * pipeline's markUploaded stands down on the cancelled completion
-	 * outcome (whatever the slot holds by then), and the recheck refuses
-	 * any publication over a claim still committed.
-	 */
-	private handleCompetingClaim(path: string, committedMeta: Meta): void {
-		if (this.destroyed) return;
-		// The handler runs a microtask after the observer, so the slot can
-		// move again before it acts (a newer claim, a deletion). Act only
-		// while the claim that fired the event is still the committed one
-		// (the same freshness re-read retryDeferredRemapForGuid does);
-		// whatever replaced it re-drives its own event.
-		if (this.syncStore.getCommittedMeta(path)?.id !== committedMeta.id) {
-			return;
-		}
-		const pendingGuid = this.syncStore.pendingUpload.get(path);
-		if (!pendingGuid || pendingGuid === committedMeta.id) return;
-		this.backgroundSync.cancelDocumentWork(pendingGuid);
-		// The coordinated publication run owns the resolution: it re-reads
-		// the committed slot and takes the rebind arm for the surviving
-		// claim type (document remap, canvas remap, lost file claim).
-		this.applyPendingUpload(path).promise.catch((e) => {
-			this.warn(`[${path}] coordinated remap from claim failed`, e);
-		});
 	}
 
 	/** True when empty downloads for the guid have exhausted their attempts. */
@@ -1924,7 +1957,17 @@ export class SharedFolder extends HasProvider {
 	}
 
 	protected handleProviderSynced(): void {
+		// The provider attaches to the server realm, so a completed handshake
+		// means that document is genuine server truth. Reconcile it into the
+		// local realm before reporting the server view: the crossing must
+		// never decide against a cold view.
+		this.captureBridge?.flushInbound();
 		this.bootstrap.reportServerViewArrived();
+		// Acknowledged entries retire, held bursts re-evaluate against the
+		// fresh server view, and decided outbound work ships.
+		this.claimLedger?.acknowledge();
+		this.deletionGate?.rearm();
+		this.flushCaptureOutbound();
 		// The folder provider completing a sync is the connectivity-level signal
 		// that the transport has returned. It fires on the provider's own
 		// reconnect-backoff self-heal, which never routes through connect(), so a
@@ -1943,7 +1986,10 @@ export class SharedFolder extends HasProvider {
 	}
 
 	get folderDoc(): Y.Doc {
-		return this.ydoc;
+		// The vault-facing realm: the split local document under capture
+		// staging, the provider document otherwise. The name every local
+		// read and write goes through keeps its identity either way.
+		return this._localFolderDoc ?? this.ydoc;
 	}
 
 	async getServerSynced(): Promise<boolean> {
@@ -2670,7 +2716,7 @@ export class SharedFolder extends HasProvider {
 			const vpath = this.getVirtualPath(file.path);
 			const fileInMap = remotePaths.has(vpath);
 			const filePending =
-				this.pendingUpload.has(vpath) || this.pendingCreates.has(vpath);
+				this.syncStore.hasClaim(vpath) || this.pendingCreates.has(vpath);
 			const synced = this._provider?.synced && this._persistence?.synced;
 			if (fileInFolder && isSyncableFile && !fileInMap && !filePending) {
 				if (synced) {
@@ -2742,7 +2788,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	public shouldDeferPendingPublication(path: string): boolean {
-		return !this.bootstrap.mayPublish && this.pendingUpload.has(path);
+		return !this.bootstrap.mayPublish && this.syncStore.hasClaim(path);
 	}
 
 	/**
@@ -2752,13 +2798,21 @@ export class SharedFolder extends HasProvider {
 	 * deletions on disk. The baseline retires with the crossing's drain.
 	 */
 	private runCrossing(): void {
+		// The withdrawal pass runs first: every staged claim is decided
+		// against the acknowledged server view before any parked publication
+		// can resume, so a claim that lost its race cancels instead of
+		// publishing. The inbound reconcile then re-runs: a winner that
+		// arrived while its key was still claimed was held out of the
+		// value-level heal, and the withdrawal is what un-holds it.
+		this.runClaimWithdrawals();
+		this.captureBridge?.flushInbound();
 		const gone = this.realms.deletedThere(
 			// The probe excludes the device's own claims: a path the device
 			// still holds a claim on is "known" to the blended accessor
 			// precisely because of the claim under review, which would let
 			// every stale hold vouch for itself.
 			(path) =>
-				this.syncStore.has(path) && !this.pendingUpload.has(path),
+				this.syncStore.has(path) && !this.syncStore.hasClaim(path),
 		);
 		for (const path of gone) {
 			const guid = this.pendingUpload.get(path);
@@ -2786,6 +2840,441 @@ export class SharedFolder extends HasProvider {
 				this.bootstrap.reportCrossingDrained();
 			});
 		trackPromise(`folder:crossing:${this.guid}`, crossing);
+	}
+
+	/**
+	 * Stand up the capture staging over the split documents: the ledger over
+	 * the persisted capture, the materialized remote model, the deletion
+	 * gate, and the bridge. Runs after the local replay has completed,
+	 * before the boot baseline is taken.
+	 */
+	private initializeCaptureStaging(): void {
+		const localDoc = this.folderDoc;
+		const remoteDoc = this.ydoc;
+		const opCapture =
+			this._persistence.opCapture ??
+			new OpCapture(
+				[
+					localDoc.getMap("filemeta_v0"),
+					localDoc.getMap("docs"),
+				] as never[],
+				{
+					trackedOrigins: new Set<unknown>([
+						FOLDER_CLAIM_ORIGIN,
+						FOLDER_LOCAL_DELETE_ORIGIN,
+					]),
+					captureTimeout: 0,
+				},
+			);
+		this.claimLedger = new ClaimLedger(opCapture, () => this.ydoc);
+		this.syncStore.stagedClaims = (path) =>
+			this.claimLedger?.claims().has(path) ?? false;
+		this.syncStore.moveClaim = (oldVPath, newVPath) =>
+			this.moveStagedClaim(oldVPath, newVPath);
+
+		// The provider document holds nothing until a handshake fills it —
+		// pure server truth, nothing else. Committed reads answer from it
+		// alone, and everything that compares against committed state is
+		// gated on the server's view having arrived; offline behavior needs
+		// only local records — the boot baseline, blended reads, and
+		// captured intent that stays reworkable until it ships.
+		this.syncStore.heldDeletionPaths = () =>
+			this.claimLedger?.heldDeletions() ?? new Set();
+
+		this.deletionGate = new FolderDeletionGate({
+			heldDeletions: () => this.claimLedger?.heldDeletions() ?? new Set(),
+			membershipSize: () => this.syncStore.committedPaths().size,
+			replicate: (paths) => this.replicateHeldDeletions(paths),
+			restore: (paths) => this.restoreHeldDeletions(paths),
+			onHold: (paths, resolve) =>
+				this.surfaceHeldDeletionBurst(paths, resolve),
+			timeProvider: this.timeProvider,
+		});
+
+		this.captureBridge = new FolderCaptureBridge({
+			localDoc,
+			remoteDoc,
+			scope: ["filemeta_v0", "docs"],
+			heldPaths: () => this.claimLedger?.heldPaths() ?? new Set(),
+			mayFlushInbound: () => !this.destroyed && this.bootstrap.mayOpenBridge,
+			mayFlushOutbound: () =>
+				!this.destroyed && this.bootstrap.mayPublish && !this.readOnlyScope,
+			// The persistence replays its own store — historical ops the
+			// flush safety net re-derives if any never shipped. Everything
+			// else ships eventually, cancels included: a skipped insert
+			// would leave every later ship with an integration gap.
+			outboundExcludedOrigins: () => new Set([this._persistence]),
+			beforeInbound: () => this.withdrawLosingClaims(),
+		});
+		this.captureBridge.start();
+	}
+
+	/**
+	 * Withdraw claims the server's realm has decided against, before the
+	 * deciding traffic crosses into localDoc. The order is load-bearing: a
+	 * winner's entry integrated while the claim's item still occupies the
+	 * key is tombstoned on arrival by map conflict resolution, and no
+	 * later withdrawal can resurrect it — cancel first, apply second, and
+	 * the winner lands as if the claim had never been made. Content
+	 * adoption then runs on a fresh microtask with the losing identity
+	 * carried explicitly — after the cancel, no store remembers it.
+	 *
+	 * Migrated pending-upload holds — claims from before capture staging,
+	 * with no ledger entry — take the same decision here: their map slot
+	 * was never staged, so there is nothing to cancel, but their transfer
+	 * is cancelled and their path adopts the committed identity through
+	 * the same routine.
+	 */
+	/**
+	 * A claim the server decided against becomes the committed entry, in
+	 * place: no replica ever saw the staged items, so they are rewritten
+	 * to carry the committed value and released as ordinary agreeing
+	 * writes. Nothing is deleted, nothing compensates, and what
+	 * eventually ships is indistinguishable from a write of the winner.
+	 * Returns false when the key holds no rewritable claim (nothing
+	 * staged, or the items already shipped).
+	 */
+	private mirrorClaim(path: string, committed: Meta): boolean {
+		const ledger = this.claimLedger;
+		if (!ledger) return false;
+		const rewritten = ledger.rewriteClaim(path, committed);
+		if (!rewritten) return false;
+		this.captureBridge?.replaceOutboundUpdate(
+			new Set([path]),
+			rewritten.update,
+		);
+		// Resolved: the entries leave the ledger, the hold lifts, and the
+		// rewritten bytes ship as an ordinary agreeing write.
+		ledger.resolveClaim(rewritten.entries);
+		// The write-time bytes with the private value survive only in the
+		// persistence log; compact so a replay cannot resurrect them.
+		this.compactFolderStore();
+		this.flushCaptureOutbound();
+		return true;
+	}
+
+	/**
+	 * Abandon a claim with no successor value. The staged values scrub to
+	 * empty sentinels before the cancel, so the private identity reaches
+	 * neither the wire nor any store: what eventually ships is a
+	 * content-free write-and-delete occupying the clocks contiguity owes.
+	 */
+	private abandonClaim(path: string): void {
+		const ledger = this.claimLedger;
+		if (!ledger) return;
+		const scrubbed = ledger.rewriteClaim(path, { id: "" } as Meta);
+		if (!scrubbed) return;
+		this.captureBridge?.replaceOutboundUpdate(
+			new Set([path]),
+			scrubbed.update,
+		);
+		ledger.cancelClaim(path);
+		this.compactFolderStore();
+	}
+
+	/**
+	 * Make the persistence log reflect the document after an in-place
+	 * rewrite: mutation emits no update, so without the compaction a
+	 * replay would re-apply the superseded bytes.
+	 */
+	private compactFolderStore(): void {
+		const persistence = this._persistence as unknown as {
+			forceCompaction?: () => Promise<void>;
+		};
+		const done = persistence.forceCompaction?.();
+		if (done) {
+			trackAsyncCleanup(done.catch(() => {}));
+		}
+	}
+
+	private withdrawLosingClaims(): void {
+		const ledger = this.claimLedger;
+		if (!ledger || this.destroyed) return;
+		const losers: Array<{ path: string; claimedGuid: string; meta: Meta }> =
+			[];
+		for (const path of ledger.claims()) {
+			const committed = this.syncStore.getCommittedMeta(path);
+			if (!committed) continue;
+			const claimedGuid = ledger.claimIdentity(path);
+			if (!claimedGuid || committed.id === claimedGuid) continue;
+			this.log("mirroring claim the server decided against", path, {
+				claimed: claimedGuid,
+				committed: committed.id,
+			});
+			if (!this.mirrorClaim(path, committed)) continue;
+			losers.push({ path, claimedGuid, meta: committed });
+		}
+		this.syncStore.pendingUpload.forEach((claimedGuid, path) => {
+			if (ledger.claims().has(path)) return;
+			const committed = this.syncStore.getCommittedMeta(path);
+			if (!committed || committed.id === claimedGuid) return;
+			losers.push({ path, claimedGuid, meta: committed });
+		});
+		for (const { path, claimedGuid, meta } of losers) {
+			this.backgroundSync.cancelDocumentWork(claimedGuid);
+			void Promise.resolve().then(() => {
+				if (this.destroyed) return;
+				// Freshness re-read: the slot can move again before the
+				// microtask runs; whatever replaced it re-drives its own
+				// withdrawal.
+				const latest = this.syncStore.getCommittedMeta(path);
+				if (!latest || latest.id !== meta.id) return;
+				this.adoptCommittedIdentity(path, claimedGuid, latest).catch(
+					(e) => {
+						this.warn(`[${path}] claim withdrawal adoption failed`, e);
+					},
+				);
+			});
+		}
+	}
+
+	/**
+	 * Adopt the committed identity for a path whose local claim lost: the
+	 * losing transfer stands down, the withdrawn map entry (if any staged
+	 * entry remains) cancels, and content machinery re-keys or re-pulls
+	 * under the winner. The losing identity arrives as an argument because
+	 * a withdrawn claim leaves no store that remembers it.
+	 */
+	private async adoptCommittedIdentity(
+		path: string,
+		pendingGuid: string,
+		committedMeta: Meta,
+	): Promise<void> {
+		this.mirrorClaim(path, committedMeta);
+		this.backgroundSync.cancelDocumentWork(pendingGuid);
+		const pendingFile = this.files.get(pendingGuid);
+		// A document rebind does not need the losing file loaded: the
+		// remap materializes the committed identity itself.
+		if (
+			isDocumentMeta(committedMeta) &&
+			(!pendingFile || isDocument(pendingFile))
+		) {
+			return this.executeRemap({
+				path,
+				fromGuid: pendingGuid,
+				toGuid: committedMeta.id,
+			});
+		}
+		if (isCanvasMeta(committedMeta) && pendingFile && isCanvas(pendingFile)) {
+			return this.executeCanvasRemap({
+				path,
+				fromGuid: pendingGuid,
+				toGuid: committedMeta.id,
+			});
+		}
+		if (isFileMetas(committedMeta) && pendingFile && isSyncFile(pendingFile)) {
+			return this.resolveLostFileClaim(
+				pendingFile,
+				pendingGuid,
+				committedMeta.id,
+				path,
+				committedMeta,
+			);
+		}
+	}
+
+	/** True when the folder's token grants no writes to the group. */
+	public get readOnlyScope(): boolean {
+		return this.clientToken?.authorization === "read-only";
+	}
+
+	/**
+	 * A publication decided under a read-only scope stays a held claim,
+	 * surfaced through the not-synced family with this predicate.
+	 */
+	public isPublicationHeldByScope(vpath: string): boolean {
+		return this.readOnlyScope && this.syncStore.hasClaim(vpath);
+	}
+
+	refreshProvider(clientToken: ClientToken): void {
+		const wasReadOnly = this.readOnlyScope;
+		super.refreshProvider(clientToken);
+		if (wasReadOnly && !this.readOnlyScope && !this.destroyed) {
+			// The scope widened: held publications pass automatically.
+			this.flushCaptureOutbound();
+			this.deletionGate?.rearm();
+			void this.syncFileTree().catch((e) => {
+				if (!isDestroyedError(e)) {
+					this.warn("post-scope-widening tree sync failed", e);
+				}
+			});
+		}
+	}
+
+	/**
+	 * Ship every decided outbound entry and retire the entries the replica
+	 * now contains. Refused wholesale outside the publication grant or
+	 * under a read-only scope — the bridge's own gate — so every
+	 * write-shaped transition is gated at once.
+	 */
+	private flushCaptureOutbound(): void {
+		if (!this.captureBridge) return;
+		this.captureBridge.flushOutbound();
+		this.claimLedger?.acknowledge();
+	}
+
+	/**
+	 * Release a path's staged entries for publication. Called only after
+	 * the markUploaded recheck proved the committed slot is clean.
+	 */
+	private publishStagedClaim(path: string): void {
+		if (!this.claimLedger) return;
+		this.claimLedger.flush([path]);
+		this.flushCaptureOutbound();
+	}
+
+	/**
+	 * The crossing's withdrawal pass: each staged claim is decided against
+	 * the acknowledged server view. Lost races cancel — a true undo, no
+	 * tombstone war — and their transfers stand down; survivors remain
+	 * staged for publication. Acknowledged entries retire.
+	 */
+	private runClaimWithdrawals(): void {
+		const ledger = this.claimLedger;
+		if (!ledger) return;
+		for (const path of ledger.claims()) {
+			const committed = this.syncStore.getCommittedMeta(path);
+			if (!committed) continue; // Survivor: absent from the server's
+			// view because it never reached it, not because it was deleted.
+			const stagedGuid =
+				this.syncStore.pendingUpload.get(path) ?? ledger.claimIdentity(path);
+			if (stagedGuid && committed.id === stagedGuid) continue; // Published.
+			if (this.mirrorClaim(path, committed)) {
+				this.log(
+					"mirrored claim that lost its race",
+					path,
+					stagedGuid,
+					committed.id,
+				);
+				this.pendingUpload.delete(path);
+				if (stagedGuid) {
+					this.backgroundSync.cancelDocumentWork(stagedGuid);
+				}
+			}
+			// "reverse": the claim's items were published; the committed map
+			// converged past them, content adoption belongs to the tree
+			// sync's remap machinery, and acknowledge() retires the entries.
+		}
+		ledger.acknowledge();
+	}
+
+	/**
+	 * A staged claim moved paths. The old key's staged entries cancel (a
+	 * true undo — nothing was published) and the claim re-stages at the new
+	 * key on a fresh task, outside whatever transaction carried the rename,
+	 * so the re-staged write is captured under the claim origin.
+	 */
+	private moveStagedClaim(oldVPath: string, newVPath: string): void {
+		const ledger = this.claimLedger;
+		if (!ledger) return;
+		// The claim's identity is read before the cancel: after it, no store
+		// remembers the minted guid.
+		const staged = this.folderDoc.getMap<Meta>("filemeta_v0").get(oldVPath);
+		const guid = ledger.claimIdentity(oldVPath) ?? staged?.id;
+		this.abandonClaim(oldVPath);
+		if (!guid) return;
+		void Promise.resolve().then(() => {
+			if (this.destroyed) return;
+			const meta =
+				staged && staged.id === guid
+					? staged
+					: this.claimMetaForPath(newVPath, guid, isSyncFolderMeta(staged));
+			this.syncStore.stageClaim(newVPath, meta, FOLDER_CLAIM_ORIGIN);
+		});
+	}
+
+	/** The best-known staged Meta for a freshly minted claim. */
+	private claimMetaForPath(
+		vpath: string,
+		guid: string,
+		isFolder: boolean,
+	): Meta {
+		if (isFolder) return makeFolderMeta(guid);
+		if (Document.checkExtension(vpath)) return makeDocumentMeta(guid);
+		if (
+			Canvas.checkExtension(vpath) &&
+			this.syncSettingsManager.isExtensionEnabled(vpath)
+		) {
+			return makeCanvasMeta(guid);
+		}
+		const type = this.syncStore.typeRegistry.getTypeForPath(vpath);
+		return makeFileMeta(
+			type as SyncFileType,
+			guid,
+			getMimeType(vpath),
+			"",
+			0,
+		);
+	}
+
+	/**
+	 * Ship a decided deletion burst. Each entry passes the expired-intent
+	 * check at send: it replays only while the committed value still
+	 * carries the identity observed at decision time; a stale deletion
+	 * drops, surfaces, and its entry refreshes from remote truth through
+	 * the tree sync.
+	 */
+	private replicateHeldDeletions(paths: string[]): void {
+		const ledger = this.claimLedger;
+		if (!ledger) return;
+		if (this.readOnlyScope) {
+			// Outbound destruction is write-shaped: under a read-only scope
+			// the burst stays held, and the scope widening re-arms the gate.
+			return;
+		}
+		if (!this.bootstrap.mayPublish) {
+			// The expired-intent check must read genuine server truth. The
+			// burst stays held; the handshake re-arms the gate.
+			return;
+		}
+		const shippable: string[] = [];
+		for (const path of paths) {
+			const observed = ledger.deletionIdentity(path);
+			const committed = this.syncStore.getCommittedMeta(path);
+			if (!committed || !observed || committed.id !== observed) {
+				this.warn("dropping expired deletion intent", path, {
+					observed,
+					committed: committed?.id,
+				});
+				ledger.cancelDeletions([path]);
+				continue;
+			}
+			shippable.push(path);
+		}
+		if (shippable.length > 0) {
+			this.log("replicating local deletions", shippable);
+			ledger.flush(shippable);
+			this.flushCaptureOutbound();
+		}
+	}
+
+	/**
+	 * Discard a held deletion burst: cancel the captured deletions — a true
+	 * undo that re-asserts the entries with no new items — and let the tree
+	 * sync re-materialize the files from remote truth.
+	 */
+	private restoreHeldDeletions(paths: string[]): void {
+		const ledger = this.claimLedger;
+		if (!ledger) return;
+		this.log("restoring held local deletions", paths);
+		// The queued raw deletion updates must go with the cancelled ops, or
+		// the next flush would ship delete-sets for entries the restore just
+		// re-asserted. Deletion-only entries discard without a clock gap.
+		this.captureBridge?.discardOutbound(paths);
+		ledger.cancelDeletions(paths);
+		// The un-tombstone emits no update; without the compaction the
+		// persisted deletion replays at next boot over an emptied ledger.
+		this.compactFolderStore();
+	}
+
+	private surfaceHeldDeletionBurst(
+		paths: string[],
+		resolve: (resolution: DeletionBurstResolution) => void,
+	): void {
+		this.warn(
+			`holding an anomalous local deletion burst at the bridge (${paths.length} entries)`,
+		);
+		this.onDeletionGateHold?.({ folder: this, paths, resolve });
 	}
 
 	/**
@@ -2887,6 +3376,16 @@ export class SharedFolder extends HasProvider {
 	) {
 		syncStore.forEachWithPending((meta, path) => {
 			if (!this._assertNamespacing(path)) return;
+			if (syncStore.hasClaim(path)) {
+				// A staged claim's entry sits in the local maps, but it is
+				// publication intent, not remote state: route it to the
+				// publication decision on the pass that owns claims (the
+				// same pass hold-only paths have always taken).
+				if (types.contains(SyncType.Document)) {
+					ops.push(this.applyPendingUpload(path));
+				}
+				return;
+			}
 			if (meta && types.contains(meta.type)) {
 				ops.push(
 					this.applyRemoteState(meta.id, path, syncStore.remoteIds, diffLog),
@@ -2911,7 +3410,13 @@ export class SharedFolder extends HasProvider {
 		if (this.destroyed) {
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
-		const pendingGuid = this.syncStore.pendingUpload.get(path);
+		// A staged claim can outlive its hold (the publication write clears
+		// the hold before the flush decision lands); the claim's own entry
+		// still carries the minted identity.
+		const pendingGuid =
+			this.syncStore.pendingUpload.get(path) ??
+			this.claimLedger?.claimIdentity(path) ??
+			undefined;
 		if (!pendingGuid) {
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
@@ -2939,6 +3444,13 @@ export class SharedFolder extends HasProvider {
 				promise: parked,
 			};
 		}
+		if (this.readOnlyScope) {
+			// A publication decided under a read-only scope stays a held
+			// claim, surfaced through the not-synced family; the scope
+			// widening re-drives the sweep and it passes automatically.
+			if (run) run.decision = "noop";
+			return { op: "noop", path, promise: Promise.resolve() };
+		}
 		if (!coordinated) {
 			return this.coordinatePendingPublication(path, pendingGuid);
 		}
@@ -2952,7 +3464,6 @@ export class SharedFolder extends HasProvider {
 		// metadata. Adopt the committed GUID instead.
 		if (committedMeta && committedMeta.id !== pendingGuid) {
 			if (run) run.decision = "rebind";
-			this.backgroundSync.cancelDocumentWork(pendingGuid);
 			this.warn(
 				"[applyPendingUpload] committed GUID differs from pending upload",
 				{
@@ -2961,48 +3472,11 @@ export class SharedFolder extends HasProvider {
 					committedGuid: committedMeta.id,
 				},
 			);
-			const pendingFile = this.files.get(pendingGuid);
-			// A document rebind does not need the losing file loaded: the
-			// remap materializes the committed identity itself.
-			if (
-				isDocumentMeta(committedMeta) &&
-				(!pendingFile || isDocument(pendingFile))
-			) {
-				return {
-					op: "update",
-					path,
-					promise: this.executeRemap({
-						path,
-						fromGuid: pendingGuid,
-						toGuid: committedMeta.id,
-					}),
-				};
-			}
-			if (isCanvasMeta(committedMeta) && pendingFile && isCanvas(pendingFile)) {
-				return {
-					op: "update",
-					path,
-					promise: this.executeCanvasRemap({
-						path,
-						fromGuid: pendingGuid,
-						toGuid: committedMeta.id,
-					}),
-				};
-			}
-			if (isFileMetas(committedMeta) && pendingFile && isSyncFile(pendingFile)) {
-				return {
-					op: "update",
-					path,
-					promise: this.resolveLostFileClaim(
-						pendingFile,
-						pendingGuid,
-						committedMeta.id,
-						path,
-						committedMeta,
-					),
-				};
-			}
-			return { op: "noop", path, promise: Promise.resolve() };
+			return {
+				op: "update",
+				path,
+				promise: this.adoptCommittedIdentity(path, pendingGuid, committedMeta),
+			};
 		}
 
 		if (this.skipStorageBlockedUpload(path)) {
@@ -3087,13 +3561,16 @@ export class SharedFolder extends HasProvider {
 		do {
 			run.rerun = false;
 			run.cancelled = false;
-			run.pendingGuid = this.pendingUpload.get(path) ?? run.pendingGuid;
+			run.pendingGuid =
+				this.pendingUpload.get(path) ??
+				this.claimLedger?.claimIdentity(path) ??
+				run.pendingGuid;
 			const operation = this.applyPendingUpload(path, true, run);
 			await operation.promise;
 		} while (
 			run.rerun &&
 			!this.destroyed &&
-			this.pendingUpload.has(path)
+			this.syncStore.hasClaim(path)
 		);
 	}
 
@@ -3130,15 +3607,16 @@ export class SharedFolder extends HasProvider {
 	}
 
 	/**
-	 * A pending-upload hold whose path already has committed metadata is
-	 * finished business: a matching guid means the publication completed and
-	 * the clear was missed; a different guid means the claim lost its race
-	 * and adoption has had its chance by the end of a converged sync. A
-	 * leaked hold is not inert — it shields the local file from
-	 * remote-delete cleanup and re-publishes the path on the first tree
-	 * sync after its committed meta is deleted (deleted files silently
-	 * reappear) — and its backing storage preserves it across sessions
-	 * indefinitely.
+	 * Migration backstop for the draining pending-upload namespace: a hold
+	 * whose path already has committed metadata is finished business. A
+	 * matching guid means the publication completed and the clear was
+	 * missed; a different guid means the claim lost its race and adoption
+	 * has had its chance by the end of a converged sync. A leaked hold is
+	 * not inert — it shields the local file from remote-delete cleanup and
+	 * re-publishes the path on the first tree sync after its committed
+	 * meta is deleted — and its backing storage preserves it across
+	 * sessions indefinitely. Nothing mints into this namespace; the sweep
+	 * retires with its last entry.
 	 */
 	private sweepStalePendingUploads(): void {
 		if (!(this._provider?.synced && this._persistence?.synced)) return;
@@ -3395,7 +3873,7 @@ export class SharedFolder extends HasProvider {
 			} else {
 				// the ID exists, but the file doesn't
 				this.log("[getDoc]: creating doc for shared ID");
-				if (this.pendingUpload.has(vpath)) {
+				if (this.syncStore.hasClaim(vpath)) {
 					return this.uploadDoc(vpath, update);
 				}
 				return this.createDoc(vpath, update);
@@ -3429,7 +3907,7 @@ export class SharedFolder extends HasProvider {
 			} else {
 				// the ID exists, but the file doesn't
 				this.log("[getCanvas]: creating canvas for shared ID");
-				if (this.pendingUpload.has(vpath)) {
+				if (this.syncStore.hasClaim(vpath)) {
 					return this.uploadCanvas(vpath, update);
 				}
 				return this.createCanvas(vpath, update);
@@ -3491,6 +3969,9 @@ export class SharedFolder extends HasProvider {
 			// the slot is still empty (or already carries this identity), so
 			// no step can interleave between the proof and the write.
 			let contestedMeta: Meta | undefined = undefined;
+			// Under capture staging the publication write is captured (the
+			// claim origin) and held; the clean-recheck branch below flushes
+			// exactly this path's entries — the flush is the publication.
 			this.folderDoc.transact(() => {
 				const committedMeta = this.syncStore.getCommittedMeta(file.path);
 				if (committedMeta && committedMeta.id !== meta.id) {
@@ -3501,10 +3982,19 @@ export class SharedFolder extends HasProvider {
 					this.log("new meta", file.path, meta);
 					this.syncStore.markUploaded(file.path, meta);
 				}
-			}, this);
+			}, FOLDER_CLAIM_ORIGIN);
 			// Read through an assertion: control flow cannot see the closure
 			// assignment above.
 			const committedMeta = contestedMeta as Meta | undefined;
+			if (!committedMeta) {
+				// A staged claim can already carry the final meta, making the
+				// transaction above a no-op that never reaches the hold
+				// settlement inside set(); the flush decision settles it.
+				if (this.pendingUpload.get(file.path) === meta.id) {
+					this.pendingUpload.delete(file.path);
+				}
+				this.publishStagedClaim(file.path);
+			}
 			if (committedMeta) {
 				this.warn(
 					"[markUploaded] committed GUID differs from local upload metadata",
@@ -3514,11 +4004,15 @@ export class SharedFolder extends HasProvider {
 						committedGuid: committedMeta.id,
 					},
 				);
+				// The staged claim lost its race: it becomes the committed
+				// entry in place, and content adoption follows through the
+				// remap routing.
+				this.mirrorClaim(file.path, committedMeta);
 				// Server metadata already chose a different GUID for this path.
 				// The local upload succeeded, but the path must adopt the
 				// committed identity instead of leaving pendingUpload to shadow
 				// every later path lookup.
-				if (this.pendingUpload.has(file.path)) {
+				if (this.syncStore.hasClaim(file.path)) {
 					this.applyPendingUpload(file.path).promise.catch((e) => {
 						this.warn(`[${file.path}] coordinated remap after upload failed`, e);
 					});
@@ -3665,25 +4159,33 @@ export class SharedFolder extends HasProvider {
 		// adoption is in flight, or a path already claimed is refused here
 		// — the refusal is what keeps a deletion from resurrecting.
 		const mayMint = this.bootstrap.mayMint;
-		this.folderDoc.transact(() => {
-			newFiles.forEach((file) => {
-				const vpath = this.getVirtualPath(file.path);
-				if (this.isPendingDelete(vpath)) {
-					this.log("skipping place hold for pending delete", vpath);
-					return;
-				}
-				if (this.realms.classify(vpath) !== "novel") {
-					return;
-				}
-				if (!mayMint) {
-					this.log("place hold refused before baseline", vpath);
-					return;
-				}
-				this.log("place hold new", vpath);
-				this.syncStore.new(vpath);
-				newDocs.push(vpath);
-			});
-		}, this);
+		const mint = (file: TAbstractFile) => {
+			const vpath = this.getVirtualPath(file.path);
+			if (this.isPendingDelete(vpath)) {
+				this.log("skipping place hold for pending delete", vpath);
+				return;
+			}
+			if (this.realms.classify(vpath) !== "novel") {
+				return;
+			}
+			if (!mayMint) {
+				this.log("place hold refused before baseline", vpath);
+				return;
+			}
+			this.log("place hold new", vpath);
+			const guid = this.syncStore.new(vpath);
+			// The claim lands in the local maps under the claim origin in
+			// the same step that records the hold; the bridge holds it.
+			// One transaction per path: entries with different fates must
+			// never merge into one uncancellable unit.
+			this.syncStore.stageClaim(
+				vpath,
+				this.claimMetaForPath(vpath, guid, file instanceof TFolder),
+				FOLDER_CLAIM_ORIGIN,
+			);
+			newDocs.push(vpath);
+		};
+		newFiles.forEach(mint);
 		return newDocs;
 	}
 
@@ -3777,7 +4279,7 @@ export class SharedFolder extends HasProvider {
 			}
 			// The publication run parks until the machine permits publishing
 			// and enrolls the canvas's disk content just before its upload.
-			if (this.pendingUpload.has(vpath)) {
+			if (this.syncStore.hasClaim(vpath)) {
 				await this.applyPendingUpload(vpath).promise;
 			}
 		})();
@@ -3810,7 +4312,7 @@ export class SharedFolder extends HasProvider {
 			managedMeta?.lcaMeta &&
 			managedMeta.disk &&
 			canvas.tfile?.stat.mtime === managedMeta.disk.mtime &&
-			!this.pendingUpload.get(canvas.path)
+			!this.syncStore.hasClaim(canvas.path)
 		) {
 			this.files.set(guid, canvas);
 			this.fset.add(canvas, update);
@@ -3822,7 +4324,7 @@ export class SharedFolder extends HasProvider {
 				const synced = await canvas.getServerSynced();
 				if (canvas.stat.size === 0 && !synced) {
 					this.backgroundSync.enqueueCanvasDownload(canvas);
-				} else if (this.pendingUpload.get(canvas.path)) {
+				} else if (this.syncStore.hasClaim(canvas.path)) {
 					await this.applyPendingUpload(canvas.path).promise;
 				}
 			})
@@ -4198,7 +4700,7 @@ export class SharedFolder extends HasProvider {
 			}
 			// The publication run parks until the machine permits publishing
 			// and enrolls the document's content just before its upload.
-			if (this.pendingUpload.has(vpath)) {
+			if (this.syncStore.hasClaim(vpath)) {
 				await this.applyPendingUpload(vpath).promise;
 			}
 		})();
@@ -4226,7 +4728,7 @@ export class SharedFolder extends HasProvider {
 				const synced = await doc.getServerSynced();
 				if (doc.tfile?.stat.size === 0 && !synced) {
 					this.backgroundSync.enqueueDownload(doc, false);
-				} else if (this.pendingUpload.get(doc.path)) {
+				} else if (this.syncStore.hasClaim(doc.path)) {
 					await this.applyPendingUpload(doc.path).promise;
 				}
 			})
@@ -4358,7 +4860,7 @@ export class SharedFolder extends HasProvider {
 		const file = this.getOrCreateSyncFile(guid, vpath, tfile);
 
 		void (async () => {
-			if (!this.pendingUpload.get(file.path)) return;
+			if (!this.syncStore.hasClaim(file.path)) return;
 			await this.applyPendingUpload(file.path).promise;
 		})();
 
@@ -4390,7 +4892,7 @@ export class SharedFolder extends HasProvider {
 		if (!meta) {
 			this.log("get syncfile missing meta");
 			void (async () => {
-				if (!this.pendingUpload.get(file.path)) return;
+				if (!this.syncStore.hasClaim(file.path)) return;
 				await this.applyPendingUpload(file.path).promise;
 			})();
 		} else {
@@ -4469,7 +4971,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	isPendingUpload(vpath: string): boolean {
-		return this.pendingUpload.has(vpath);
+		return this.syncStore.hasClaim(vpath);
 	}
 
 	expandDeletePaths(
@@ -4511,34 +5013,48 @@ export class SharedFolder extends HasProvider {
 			return;
 		}
 		const cleanupGuids = new Map<string, string>();
-		this.folderDoc.transact(() => {
-			for (const vpath of paths) {
-				this.pendingUpload.delete(vpath);
-				const guid = this.syncStore?.get(vpath);
-				if (guid) {
-					this.syncStore.delete(vpath);
-					const doc = this.files.get(guid);
-					if (doc) {
-						this.fset.delete(doc);
-						this.files.delete(guid);
-						doc.cleanup();
-						doc.destroy();
-					}
-					cleanupGuids.set(guid, vpath);
-				} else {
-					// syncStore entry already gone (remote delete) - find by path
-					const doc = this.fset.find((f) => f.path === vpath);
-					if (doc) {
-						const docGuid = doc.guid;
-						this.fset.delete(doc);
-						this.files.delete(docGuid);
-						doc.cleanup();
-						doc.destroy();
-						cleanupGuids.set(docGuid, vpath);
-					}
+		const removeOne = (vpath: string) => {
+			this.pendingUpload.delete(vpath);
+			const guid = this.syncStore?.get(vpath);
+			if (guid) {
+				this.syncStore.delete(vpath);
+				const doc = this.files.get(guid);
+				if (doc) {
+					this.fset.delete(doc);
+					this.files.delete(guid);
+					doc.cleanup();
+					doc.destroy();
+				}
+				cleanupGuids.set(guid, vpath);
+			} else {
+				// syncStore entry already gone (remote delete) - find by path
+				const doc = this.fset.find((f) => f.path === vpath);
+				if (doc) {
+					const docGuid = doc.guid;
+					this.fset.delete(doc);
+					this.files.delete(docGuid);
+					doc.cleanup();
+					doc.destroy();
+					cleanupGuids.set(docGuid, vpath);
 				}
 			}
-		}, this);
+		};
+		// Local deletions are captured intent, held at the bridge until
+		// the deletion gate's flush decision. One transaction per path so
+		// each deletion can ship or cancel on its own; a deleted claim
+		// that never published simply withdraws — there is nothing to
+		// retract from the group.
+		for (const vpath of paths) {
+			if (this.claimLedger?.claims().has(vpath)) {
+				// An unpublished claim being deleted has no successor value:
+				// scrub and abandon, so its identity never leaves the device.
+				this.abandonClaim(vpath);
+			}
+			this.folderDoc.transact(() => {
+				removeOne(vpath);
+			}, FOLDER_LOCAL_DELETE_ORIGIN);
+		}
+		this.deletionGate?.noteLocalDeletion();
 
 		for (const guid of cleanupGuids.keys()) {
 			this.teardownDocState(guid);
@@ -4675,6 +5191,11 @@ export class SharedFolder extends HasProvider {
 		});
 
 		this.recordingBridge?.dispose();
+		this.deletionGate?.destroy();
+		this.deletionGate = null;
+		this.captureBridge?.destroy();
+		this.captureBridge = null;
+		this.claimLedger = null;
 		this.cas.destroy();
 		this.syncStore.destroy();
 		this.syncSettingsManager.destroy();
@@ -4689,6 +5210,8 @@ export class SharedFolder extends HasProvider {
 			const p = this._persistence.destroy().catch(() => {});
 			trackAsyncCleanup(p);
 		}
+		this._localFolderDoc?.destroy();
+		this._localFolderDoc = null;
 		super.destroy();
 		this.fset.destroy();
 		this._settings.destroy();

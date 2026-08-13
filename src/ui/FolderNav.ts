@@ -485,17 +485,29 @@ class NotSyncedPillVisitor extends BaseVisitor<NotSyncedPillDecoration> {
 		storage?: NotSyncedPillDecoration,
 		sharedFolder?: SharedFolder,
 	): NotSyncedPillDecoration | null {
-		if (
-			sharedFolder &&
-			sharedFolder.checkPath(file.path) &&
-			(sharedFolder.isStorageBlockedTFile(file) ||
-				!sharedFolder.isSyncableTFile(file))
-		) {
-			const storageBlocked = sharedFolder.isStorageBlockedTFile(file);
-			const label = storageBlocked
-				? "Attachment storage is required to sync this file"
-				: "Syncing this file type is disabled";
-			const reason = storageBlocked ? "storage-required" : "file-type-disabled";
+		let label: string | null = null;
+		let reason = "";
+		if (sharedFolder && sharedFolder.checkPath(file.path)) {
+			if (
+				sharedFolder.isStorageBlockedTFile(file) ||
+				!sharedFolder.isSyncableTFile(file)
+			) {
+				const storageBlocked = sharedFolder.isStorageBlockedTFile(file);
+				label = storageBlocked
+					? "Attachment storage is required to sync this file"
+					: "Syncing this file type is disabled";
+				reason = storageBlocked ? "storage-required" : "file-type-disabled";
+			} else if (
+				sharedFolder.isPublicationHeldByScope(
+					sharedFolder.getVirtualPath(file.path),
+				)
+			) {
+				label =
+					"You have read-only access to this folder; this file stays on this device until your access widens";
+				reason = "read-only-scope";
+			}
+		}
+		if (label !== null) {
 			if (storage) {
 				storage.setLabel(label, reason);
 				return storage;

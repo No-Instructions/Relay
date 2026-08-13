@@ -118,20 +118,54 @@ export function extractMapDelta(
 export class SyncStore extends Observable<SyncStore> {
 	private legacyIds: Y.Map<string>; // Maps file paths to Document guids
 	private meta: Y.Map<Meta>;
+	private committedMeta: Y.Map<Meta>;
+	private committedLegacyIds: Y.Map<string>;
 	overlay: Map<string, Meta>;
 	deleteSet: Set<string>;
 	typeRegistry: TypeRegistry;
 	renames: Map<string, string>;
+	/**
+	 * The device's staged claims — un-flushed captured claim ops on the
+	 * local document's maps. Null on a store constructed without a host
+	 * ledger, where the only claims are pending-upload holds.
+	 *
+	 * `pendingUpload` itself is a draining migration namespace: sessions
+	 * predating capture staging recorded claims there, those entries flow
+	 * through the same reconciliation, and nothing writes new ones.
+	 */
+	stagedClaims: ((path: string) => boolean) | null = null;
+	/**
+	 * Keys whose local deletions are held at the bridge. Their rows remain
+	 * committed membership until the burst resolves, so the boot baseline
+	 * counts them even though the local maps carry their tombstones.
+	 */
+	heldDeletionPaths: (() => Set<string>) | null = null;
+	/**
+	 * A staged claim is moving paths. The plain committed-entry move would
+	 * rewrite the map outside the claim origin — an uncaptured, flushable
+	 * write for content that never uploaded — so the host re-stages the
+	 * claim at the new key instead.
+	 */
+	moveClaim: ((oldVPath: string, newVPath: string) => void) | null = null;
 
 	constructor(
 		public ydoc: Y.Doc,
 		private namespace: string,
 		public pendingUpload: Map<string, string>,
 		private syncSettingsManager: SyncSettingsManager,
+		committedDoc?: Y.Doc,
 	) {
 		super();
 		this.legacyIds = this.ydoc.getMap("docs");
 		this.meta = this.ydoc.getMap("filemeta_v0");
+		// Committed reads answer from the server's realm. With one blended
+		// document (no committedDoc) these are the same map objects and
+		// every accessor behaves as it always has; with split realms the
+		// committed accessors read the remote document, so the blended-view
+		// hazard — asking "is this committed" of a map local staging is
+		// also writing — cannot be expressed.
+		this.committedMeta = (committedDoc ?? this.ydoc).getMap("filemeta_v0");
+		this.committedLegacyIds = (committedDoc ?? this.ydoc).getMap("docs");
 		this.overlay = new Map();
 		this.renames = new Map();
 		this.deleteSet = new Set();
@@ -194,6 +228,10 @@ export class SyncStore extends Observable<SyncStore> {
 			this.overlay.set(newVPath, overlayMeta);
 			this.overlay.delete(oldVPath);
 		}
+		if (this.moveClaim && this.stagedClaims?.(oldVPath)) {
+			this.moveClaim(oldVPath, newVPath);
+			return;
+		}
 		const meta = this.meta.get(oldVPath);
 		if (isSyncFolderMeta(meta)) {
 			this.moveFolder(oldVPath, newVPath);
@@ -206,9 +244,26 @@ export class SyncStore extends Observable<SyncStore> {
 	new(vpath: string): string {
 		this.assertVPath(vpath);
 		const guid = uuidv4();
-		this.pendingUpload.set(vpath, guid);
 		this.log("minted identity", vpath, guid);
 		return guid;
+	}
+
+	/**
+	 * Stage a minted claim into the local maps under the claim origin, in
+	 * its own transaction so the capture records it granular — one entry,
+	 * one fate. The captured entry is the claim's record: identity is read
+	 * back from it, and the bridge holds the write until the publication
+	 * decision flushes it. Callers stage one path per call; batching would
+	 * merge entries with different fates into one uncancellable unit.
+	 */
+	stageClaim(vpath: string, meta: Meta, origin: unknown): void {
+		this.assertVPath(vpath);
+		this.ydoc.transact(() => {
+			this.meta.set(vpath, meta);
+			if (isDocumentMeta(meta)) {
+				this.legacyIds.set(vpath, meta.id);
+			}
+		}, origin);
 	}
 
 	forEach(callbackFn: (meta: Meta, path: string) => void) {
@@ -225,12 +280,18 @@ export class SyncStore extends Observable<SyncStore> {
 		});
 	}
 
+	/**
+	 * Document and canvas guids the device's own records enroll in this
+	 * folder. Scoping reads local knowledge — it must answer offline, and
+	 * a record for membership the device holds belongs to the folder
+	 * whether or not the server has confirmed it this session.
+	 */
 	getCommittedSubdocGuids(): string[] {
 		const guids = new Set<string>();
-		this.meta.forEach((meta, path) => {
+		this.meta.forEach((value, path) => {
 			if (this.deleteSet.has(path)) return;
-			if (isDocumentMeta(meta) || isCanvasMeta(meta)) {
-				guids.add(meta.id);
+			if (isDocumentMeta(value) || isCanvasMeta(value)) {
+				guids.add(value.id);
 			}
 		});
 		this.legacyIds.forEach((guid, path) => {
@@ -284,6 +345,11 @@ export class SyncStore extends Observable<SyncStore> {
 		if (this.deleteSet.has(path)) {
 			return false;
 		}
+		// Staged claims sit in the local maps too. They may answer "known"
+		// here: classification asks about claims first, and the two
+		// decision sites that must never let a claim vouch for itself —
+		// the boot baseline and the crossing's deletion probe — subtract
+		// claims explicitly.
 		return (
 			this.meta.has(path) ||
 			this.legacyIds.has(path) ||
@@ -299,22 +365,31 @@ export class SyncStore extends Observable<SyncStore> {
 		if (this.deleteSet.has(path)) {
 			return false;
 		}
-		return this.pendingUpload.has(path);
+		return this.pendingUpload.has(path) || (this.stagedClaims?.(path) ?? false);
 	}
 
 	/**
-	 * Every path the persisted remote realm holds membership for: the
-	 * committed map and the legacy map, raw. Claims and the migration
-	 * overlay are excluded — the boot baseline holds membership only.
+	 * Every path the device's records hold committed membership for: the
+	 * local maps minus staged claims, plus keys whose local deletions are
+	 * held at the bridge — their rows stay committed until the burst
+	 * resolves. The boot baseline is taken from exactly this set at replay
+	 * completion, before any traffic can move it; the claims subtraction
+	 * is the baseline's purity (a claim that never published is absent
+	 * from the server's view for the innocent reason that it never
+	 * reached it). The migration overlay is excluded — the baseline holds
+	 * membership only.
 	 */
 	committedPaths(): Set<string> {
 		const paths = new Set<string>();
 		this.meta.forEach((_meta, path) => {
-			paths.add(path);
+			if (!this.stagedClaims?.(path)) paths.add(path);
 		});
 		this.legacyIds.forEach((_guid, path) => {
-			paths.add(path);
+			if (!this.stagedClaims?.(path)) paths.add(path);
 		});
+		for (const path of this.heldDeletionPaths?.() ?? []) {
+			paths.add(path);
+		}
 		return paths;
 	}
 
@@ -352,6 +427,20 @@ export class SyncStore extends Observable<SyncStore> {
 			if (isDocumentMeta(meta) && this.legacyIds.get(vpath) !== meta.id) {
 				this.legacyIds.set(vpath, meta.id);
 			}
+			// The hold settles whether or not the map needs a write: a staged
+			// claim already carries this exact meta, so publication over it
+			// is a no-op write whose hold must still clear.
+			const pendingGuid = this.pendingUpload.get(vpath);
+			if (pendingGuid && pendingGuid === meta.id) {
+				this.pendingUpload.delete(vpath);
+			} else if (pendingGuid) {
+				// The pending-upload hold is now stale; if nothing clears it,
+				// the path re-publishes when this committed entry is deleted.
+				this.warn("committed claim shadows a pending-upload hold", vpath, {
+					pending: pendingGuid,
+					committed: meta.id,
+				});
+			}
 			const existing = this.meta.get(vpath);
 			if (
 				existing &&
@@ -364,17 +453,6 @@ export class SyncStore extends Observable<SyncStore> {
 			}
 			this.log("metadata write (path, existing, meta)", vpath, existing, meta);
 			this.meta.set(vpath, meta);
-			const pendingGuid = this.pendingUpload.get(vpath);
-			if (pendingGuid && pendingGuid === meta.id) {
-				this.pendingUpload.delete(vpath);
-			} else if (pendingGuid) {
-				// The pending-upload hold is now stale; if nothing clears it,
-				// the path re-publishes when this committed entry is deleted.
-				this.warn("committed claim shadows a pending-upload hold", vpath, {
-					pending: pendingGuid,
-					committed: meta.id,
-				});
-			}
 		});
 	}
 
@@ -391,18 +469,6 @@ export class SyncStore extends Observable<SyncStore> {
 		this.mapDeltaSubscribers.add(listener);
 		return () => this.mapDeltaSubscribers.delete(listener);
 	}
-
-	/**
-	 * Observer for committed claims landing on paths that still carry a
-	 * pending upload hold under a different identity. Membership publishes
-	 * only after content transfer, so a competing claim can commit while
-	 * the transfer is in flight; this feed lets the host cancel that
-	 * transfer instead of paying for bytes whose publication the
-	 * markUploaded recheck will refuse. Local transactions cannot contest
-	 * their own hold (publication clears the hold in the same transaction),
-	 * so every claim surfaced here came from another writer.
-	 */
-	onCompetingClaim: ((path: string, meta: Meta) => void) | null = null;
 
 	processFolderOperation(event: Y.YMapEvent<Meta>) {
 		const deletedFolders = new Map<string, string>();
@@ -453,7 +519,9 @@ export class SyncStore extends Observable<SyncStore> {
 		withFlag(flag.enableDeltaLogging, () => {
 			const logObserver = (event: Y.YMapEvent<any>) => {
 				let log = "";
-				log += `Transaction origin: ${event.transaction.origin}${event.transaction.origin?.constructor?.name}\n`;
+				// String() explicitly: a Symbol origin throws in a template
+				// literal's implicit conversion.
+				log += `Transaction origin: ${String(event.transaction.origin)}${event.transaction.origin?.constructor?.name}\n`;
 				event.changes.keys.forEach((change, key) => {
 					if (change.action === "add") {
 						log += `Added ${key}: ${this.get(key)}\n`;
@@ -503,22 +571,6 @@ export class SyncStore extends Observable<SyncStore> {
 				const delta = extractMapDelta(event, this.meta);
 				this.onMapDelta?.(delta, origin);
 				this.mapDeltaSubscribers.forEach((listener) => listener(delta, origin));
-			}
-			// The size gate reads the in-memory hold index, so the default
-			// path (no pending upload — the steady state) pays nothing per
-			// membership transaction. Without it, every changed key costs a
-			// backing-storage read — and the initial provider sync of a large
-			// folder lands its whole membership map as one transaction.
-			if (this.onCompetingClaim && this.pendingUpload.size > 0) {
-				event.changes.keys.forEach((change, path) => {
-					if (change.action === "delete") return;
-					const committed = this.meta.get(path);
-					if (!committed) return;
-					const pendingGuid = this.pendingUpload.get(path);
-					if (pendingGuid && pendingGuid !== committed.id) {
-						this.onCompetingClaim?.(path, committed);
-					}
-				});
 			}
 			this.notifyListeners();
 		};
@@ -610,8 +662,9 @@ export class SyncStore extends Observable<SyncStore> {
 	}
 
 	/**
-	 * Get committed file metadata from the shared Y.Map only.
-	 * Does not include pending uploads, overlay migration entries, or legacy ids.
+	 * Get committed file metadata from the committed realm only.
+	 * Does not include pending uploads, staged claims, overlay migration
+	 * entries, or legacy ids.
 	 */
 	getCommittedMeta(vpath: string): Meta | undefined {
 		this.assertVPath(vpath);
@@ -621,7 +674,7 @@ export class SyncStore extends Observable<SyncStore> {
 		if (this.deleteSet.has(vpath)) {
 			return undefined;
 		}
-		return this.meta.get(vpath);
+		return this.committedMeta.get(vpath);
 	}
 
 	delete(vpath: string) {

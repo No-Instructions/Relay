@@ -540,7 +540,7 @@ export class IndexeddbPersistence extends Observable {
     }, this._storeTimeout)
   }
 
-  _requestCompaction () {
+  _requestCompaction (force = false) {
     if (this._pendingCompaction) return this._pendingCompaction
     this._pendingCompaction = Promise.resolve()
       .then(async () => {
@@ -549,8 +549,8 @@ export class IndexeddbPersistence extends Observable {
         while (this._pendingWrites.size > 0) {
           await Promise.all(Array.from(this._pendingWrites))
         }
-        if (!this._destroyed && this.db && this._dbsize >= RUNTIME_TRIM_SIZE) {
-          await storeState(this, false)
+        if (!this._destroyed && this.db && (force || this._dbsize >= RUNTIME_TRIM_SIZE)) {
+          await storeState(this, force)
         }
       })
       .finally(() => {
@@ -560,6 +560,20 @@ export class IndexeddbPersistence extends Observable {
         }
       })
     return this._pendingCompaction
+  }
+
+  /**
+   * Rewrite the stored update log as one snapshot of the document's current
+   * state, immediately. A caller that rewrote the document without emitting
+   * an update — replacing a never-shipped item's value, or un-tombstoning
+   * items in place — uses this to make the store reflect the document, or
+   * the next replay would re-apply the superseded updates.
+   * @return {Promise<void>}
+   */
+  forceCompaction () {
+    if (this._destroyed) return Promise.resolve()
+    this._compactionRequested = true
+    return this._requestCompaction(true)
   }
 
   destroy () {

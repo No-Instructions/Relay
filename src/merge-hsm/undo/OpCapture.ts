@@ -23,8 +23,10 @@ import {
 	transact,
 	DSEncoderV1,
 	DSDecoderV1,
+	UpdateEncoderV1,
 	writeDeleteSet,
 	readDeleteSet,
+	ContentAny,
 	Item,
 	GC,
 	DeleteSet,
@@ -35,6 +37,7 @@ import {
 
 import * as time from "lib0/time";
 import * as decoding from "lib0/decoding";
+import * as encoding from "lib0/encoding";
 
 import type { SerializedCapturedOp, SerializedCaptureState } from "./types";
 import { serializeOrigin, deserializeOrigin } from "./origins";
@@ -453,6 +456,17 @@ export class OpCapture {
 	}
 
 	/**
+	 * Mark exactly the given entries as synced to remote. Flushes that
+	 * release a subset of the log must not mark unflushed entries — an
+	 * unflushed entry marked synced becomes uncancellable for no reason.
+	 */
+	notifySyncedEntries(entries: CapturedOp[]): void {
+		for (const entry of entries) {
+			entry._synced = true;
+		}
+	}
+
+	/**
 	 * Cancel entries: truly undo the CRDT ops so the document state is as
 	 * if they never happened. Inserted items are deleted; deleted items are
 	 * un-tombstoned by flipping the internal `deleted` flag directly.
@@ -612,6 +626,177 @@ export class OpCapture {
 			});
 		});
 		return [...keys];
+	}
+
+	/**
+	 * Map keys inserted by an entry, for scopes over Y.Map roots (an item's
+	 * parentSub is its map key). The insertions DeleteSet addresses live
+	 * items by id range, so the same iteration the deletions use applies.
+	 */
+	insertedKeys(entry: CapturedOp): string[] {
+		const keys = new Set<string>();
+		transact(this.doc, (transaction: Transaction) => {
+			iterateDeletedStructs(transaction, entry.insertions, (item: Item | GC) => {
+				if (
+					item instanceof Item &&
+					item.parentSub != null &&
+					this.scope.some((type) => isParentOf(type, item))
+				) {
+					keys.add(item.parentSub);
+				}
+			});
+		});
+		return [...keys];
+	}
+
+	/**
+	 * The map values an entry's deletions tombstoned, by key, for scopes
+	 * over Y.Map roots. The keepItem holds this capture places on its
+	 * deletions keep the tombstoned content readable, so a deletion's
+	 * observed identity can be re-derived from the entry itself — across
+	 * restarts, with nothing recorded beside the op.
+	 */
+	deletedEntryValues(entry: CapturedOp): Map<string, unknown> {
+		return this.entryValues(entry.deletions);
+	}
+
+	/**
+	 * The map values an entry's insertions wrote, by key, for scopes over
+	 * Y.Map roots — a staged claim's own identity, readable whether the
+	 * item is live or has since been superseded.
+	 */
+	insertedEntryValues(entry: CapturedOp): Map<string, unknown> {
+		return this.entryValues(entry.insertions);
+	}
+
+	private entryValues(ds: DeleteSet): Map<string, unknown> {
+		const values = new Map<string, unknown>();
+		transact(this.doc, (transaction: Transaction) => {
+			iterateDeletedStructs(transaction, ds, (item: Item | GC) => {
+				if (
+					item instanceof Item &&
+					item.parentSub != null &&
+					this.scope.some((type) => isParentOf(type, item))
+				) {
+					const content = item.content.getContent();
+					if (content.length > 0) {
+						values.set(item.parentSub, content[content.length - 1]);
+					}
+				}
+			});
+		});
+		return values;
+	}
+
+	/**
+	 * Replace the values of an entry's inserted map items, in place.
+	 *
+	 * Legal only for items no replica has ever seen: an item's identity is
+	 * its (client, clock), and every consistency argument in Yjs assumes
+	 * that identity maps immutably to one content — an assumption with no
+	 * observer to violate while the item has never left the device. The
+	 * entry must be un-synced; callers additionally verify the items are
+	 * not contained in the remote document. Map items carry length-1
+	 * content, so replacement never moves clock math.
+	 *
+	 * The caller owns the couplings that keep the world consistent with
+	 * the rewrite: queued outbound bytes still carry the old values and
+	 * must be replaced (`encodeEntryInsertions`), and the persistence log
+	 * must be compacted so a replay cannot resurrect them.
+	 *
+	 * `replace` is called per live inserted map item with its key and
+	 * current value; returning `undefined` leaves the item untouched.
+	 */
+	replaceUnshippedContent(
+		entry: CapturedOp,
+		replace: (key: string, current: unknown) => unknown,
+	): void {
+		if (entry._synced) {
+			throw new Error(
+				"OpCapture.replaceUnshippedContent(): entry was synced to remote",
+			);
+		}
+		this._suppressCapture = true;
+		try {
+			transact(
+				this.doc,
+				(transaction: Transaction) => {
+					iterateDeletedStructs(
+						transaction,
+						entry.insertions,
+						(struct: Item | GC) => {
+							if (
+								!(struct instanceof Item) ||
+								struct.deleted ||
+								struct.parentSub == null ||
+								!this.scope.some((type) => isParentOf(type, struct))
+							) {
+								return;
+							}
+							const content = struct.content.getContent();
+							const current = content[content.length - 1];
+							const next = replace(struct.parentSub, current);
+							if (next === undefined) return;
+							(struct as { content: unknown }).content = new ContentAny([
+								next,
+							]);
+						},
+					);
+				},
+				this,
+			);
+		} finally {
+			this._suppressCapture = false;
+		}
+	}
+
+	/**
+	 * Encode an entry's inserted items as a standalone update carrying
+	 * their current content and an empty delete set. Queued wire bytes
+	 * captured at write time go stale when `replaceUnshippedContent`
+	 * rewrites the items; this re-derives them from the document. The
+	 * entry's insertions must be contiguous per client — which captured
+	 * transactions are by construction.
+	 */
+	encodeEntryInsertions(entry: CapturedOp): Uint8Array {
+		const byClient = new Map<number, Item[]>();
+		transact(this.doc, (transaction: Transaction) => {
+			iterateDeletedStructs(
+				transaction,
+				entry.insertions,
+				(struct: Item | GC) => {
+					if (
+						struct instanceof Item &&
+						this.scope.some((type) => isParentOf(type, struct))
+					) {
+						const items = byClient.get(struct.id.client) ?? [];
+						items.push(struct);
+						byClient.set(struct.id.client, items);
+					}
+				},
+			);
+		});
+		const encoder = new UpdateEncoderV1();
+		encoding.writeVarUint(encoder.restEncoder, byClient.size);
+		for (const [client, items] of byClient) {
+			items.sort((a, b) => a.id.clock - b.id.clock);
+			for (let i = 1; i < items.length; i++) {
+				const prev = items[i - 1];
+				if (prev.id.clock + prev.length !== items[i].id.clock) {
+					throw new Error(
+						"OpCapture.encodeEntryInsertions(): non-contiguous entry",
+					);
+				}
+			}
+			encoding.writeVarUint(encoder.restEncoder, items.length);
+			encoder.writeClient(client);
+			encoding.writeVarUint(encoder.restEncoder, items[0].id.clock);
+			for (const item of items) {
+				item.write(encoder, 0);
+			}
+		}
+		writeDeleteSet(encoder, new DeleteSet());
+		return encoder.toUint8Array();
 	}
 
 	/**
