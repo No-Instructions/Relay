@@ -637,7 +637,7 @@ export class BackgroundSync extends HasLogging {
 		this.clearFailure(this.failureKey("sync", item.guid));
 		if (!this.syncQueue.some((queued) => queued.guid === item.guid)) {
 			this.syncQueue.push(item);
-			this.sortByPath(this.syncQueue, "sync", "retry");
+			this.sortQueueByPath(this.syncQueue, "sync", "retry");
 		}
 		this.debug(
 			`[sync] retryable sync failure for ${item.path}: ${error.message}; retrying in ${delayMs}ms`,
@@ -672,7 +672,7 @@ export class BackgroundSync extends HasLogging {
 		this.clearFailure(this.failureKey("download", item.guid));
 		if (!this.downloadQueue.some((queued) => queued.guid === item.guid)) {
 			this.downloadQueue.push(item);
-			this.sortByPath(this.downloadQueue, "download", "retry");
+			this.sortQueueByPath(this.downloadQueue, "download", "retry");
 		}
 		this.debug(
 			`[download] retryable download failure for ${item.path}: ${error.message}; retrying in ${delayMs}ms`,
@@ -745,10 +745,11 @@ export class BackgroundSync extends HasLogging {
 		items: T[],
 		operation: BackgroundSyncOperation,
 		reason: BackgroundSyncSortReason,
+		reverse = false,
 	): T[] {
 		if (items.length < 2) return items;
 		const sortStart = performance.now();
-		items.sort(compareFilePaths);
+		items.sort(reverse ? (a, b) => compareFilePaths(b, a) : compareFilePaths);
 		metrics.observeBgSyncSort(
 			operation,
 			reason,
@@ -756,6 +757,76 @@ export class BackgroundSync extends HasLogging {
 			(performance.now() - sortStart) / 1000,
 		);
 		return items;
+	}
+
+	/**
+	 * Queue items are stored in reverse path order so the next item normally
+	 * sits at the array tail. Draining a ready queue can then use pop() without
+	 * shifting or filtering every remaining item.
+	 */
+	private sortQueueByPath(
+		items: QueueItem[],
+		operation: BackgroundSyncOperation,
+		reason: BackgroundSyncSortReason,
+	): QueueItem[] {
+		return this.sortByPath(items, operation, reason, true);
+	}
+
+	private flushSyncQueue(reason: BackgroundSyncSortReason): void {
+		this.sortQueueByPath(this.syncQueue, "sync", reason);
+		this.queueStatusChanged.notifyListeners();
+		this.processSyncQueue();
+	}
+
+	private removeQueueItemAt(queue: QueueItem[], index: number): QueueItem {
+		if (index === queue.length - 1) {
+			return queue.pop()!;
+		}
+		return queue.splice(index, 1)[0];
+	}
+
+	private discardDestroyedQueueItem(
+		item: QueueItem,
+		operation: BackgroundSyncOperation,
+	): void {
+		if (operation === "sync") {
+			this.markSyncTerminal(item.sharedFolder, "skipped");
+			this.inProgressSyncs.delete(item.guid);
+			const callback = this.syncCompletionCallbacks.get(item.guid);
+			if (callback) callback.reject(new Error("Document destroyed"));
+			this.syncCompletionCallbacks.delete(item.guid);
+			this.syncPromises.delete(item.guid);
+			return;
+		}
+
+		this.markDownloadTerminal(item, "skipped");
+		this.inProgressDownloads.delete(item.guid);
+		const callback = this.downloadCompletionCallbacks.get(item.guid);
+		if (callback) callback.reject(new Error("Document destroyed"));
+		this.downloadCompletionCallbacks.delete(item.guid);
+		this.downloadPromises.delete(item.guid);
+	}
+
+	private takeNextQueueItem(
+		queue: QueueItem[],
+		operation: BackgroundSyncOperation,
+		now: number,
+	): QueueItem | undefined {
+		for (let index = queue.length - 1; index >= 0; index--) {
+			const item = queue[index];
+			if (item.doc.destroyed) {
+				this.removeQueueItemAt(queue, index);
+				this.discardDestroyedQueueItem(item, operation);
+				continue;
+			}
+			if (
+				this.isDrainable(item) &&
+				(item.nextAttemptAt === undefined || item.nextAttemptAt <= now)
+			) {
+				return this.removeQueueItemAt(queue, index);
+			}
+		}
+		return undefined;
 	}
 
 	private recordDrain(
@@ -1147,37 +1218,12 @@ export class BackgroundSync extends HasLogging {
 		let itemsStarted = 0;
 		this.isProcessingSync = true;
 		try {
-			// Evict destroyed documents from the queue and clean up their inProgress entries
-			const destroyed = this.syncQueue.filter((item) => item.doc.destroyed);
-			for (const item of destroyed) {
-				this.markSyncTerminal(item.sharedFolder, "skipped");
-				this.inProgressSyncs.delete(item.guid);
-				const callback = this.syncCompletionCallbacks.get(item.guid);
-				if (callback) callback.reject(new Error("Document destroyed"));
-				this.syncCompletionCallbacks.delete(item.guid);
-				this.syncPromises.delete(item.guid);
-			}
-			this.syncQueue = this.syncQueue.filter((item) => !item.doc.destroyed);
-
 			metrics.setBgSyncQueueLength("sync", this.syncQueue.length);
 
-			// Filter for items with connected folders
 			const now = this.timeProvider.now();
-			const connectableItems = this.syncQueue.filter(
-				(item) =>
-					this.isDrainable(item) &&
-					(item.nextAttemptAt === undefined || item.nextAttemptAt <= now),
-			);
-
-			while (
-				connectableItems.length > 0 &&
-				this.activeSync.size < this.concurrency
-			) {
-				const item = connectableItems.shift();
+			while (this.activeSync.size < this.concurrency) {
+				const item = this.takeNextQueueItem(this.syncQueue, "sync", now);
 				if (!item) break;
-
-				// Remove this item from the main queue
-				this.syncQueue = this.syncQueue.filter((i) => i.guid !== item.guid);
 
 				this.observeItemStart("sync", item, this.timeProvider.now());
 				item.nextAttemptAt = undefined;
@@ -1268,7 +1314,7 @@ export class BackgroundSync extends HasLogging {
 							metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
 							this.activeSync.delete(item);
 							metrics.setBgSyncActive("sync", this.activeSync.size);
-							if (!this.syncQueue.some((queued) => queued.guid === item.guid)) {
+							if (item.status !== "pending") {
 								this.inProgressSyncs.delete(item.guid);
 								this.cancelledSyncs.delete(item.guid);
 							}
@@ -1325,6 +1371,7 @@ export class BackgroundSync extends HasLogging {
 
 		} finally {
 			this.isProcessingSync = false;
+			metrics.setBgSyncQueueLength("sync", this.syncQueue.length);
 			this.recordDrain("sync", drainStart, itemsStarted);
 		}
 	}
@@ -1335,39 +1382,12 @@ export class BackgroundSync extends HasLogging {
 		let itemsStarted = 0;
 		this.isProcessingDownloads = true;
 		try {
-			// Evict destroyed documents from the queue and clean up their inProgress entries
-			const destroyedDownloads = this.downloadQueue.filter((item) => item.doc.destroyed);
-			for (const item of destroyedDownloads) {
-				this.markDownloadTerminal(item, "skipped");
-				this.inProgressDownloads.delete(item.guid);
-				const callback = this.downloadCompletionCallbacks.get(item.guid);
-				if (callback) callback.reject(new Error("Document destroyed"));
-				this.downloadCompletionCallbacks.delete(item.guid);
-				this.downloadPromises.delete(item.guid);
-			}
-			this.downloadQueue = this.downloadQueue.filter((item) => !item.doc.destroyed);
-
 			metrics.setBgSyncQueueLength("download", this.downloadQueue.length);
 
-			// Filter for items with connected folders whose backoff has elapsed
 			const now = this.timeProvider.now();
-			const connectableItems = this.downloadQueue.filter(
-				(item) =>
-					this.isDrainable(item) &&
-					(item.nextAttemptAt === undefined || item.nextAttemptAt <= now),
-			);
-
-			while (
-				connectableItems.length > 0 &&
-				this.activeDownloads.size < this.concurrency
-			) {
-				const item = connectableItems.shift();
+			while (this.activeDownloads.size < this.concurrency) {
+				const item = this.takeNextQueueItem(this.downloadQueue, "download", now);
 				if (!item) break;
-
-				// Remove this item from the main queue
-				this.downloadQueue = this.downloadQueue.filter(
-					(i) => i.guid !== item.guid,
-				);
 
 				this.observeItemStart("download", item, this.timeProvider.now());
 				item.nextAttemptAt = undefined;
@@ -1447,7 +1467,7 @@ export class BackgroundSync extends HasLogging {
 							metrics.setBgSyncActive("download", this.activeDownloads.size);
 							// A requeued retry keeps its in-progress entry so callers
 							// sharing the completion promise stay attached to it.
-							if (!this.downloadQueue.some((queued) => queued.guid === item.guid)) {
+							if (item.status !== "pending") {
 								this.inProgressDownloads.delete(item.guid);
 								this.cancelledDownloads.delete(item.guid);
 							}
@@ -1504,6 +1524,7 @@ export class BackgroundSync extends HasLogging {
 
 		} finally {
 			this.isProcessingDownloads = false;
+			metrics.setBgSyncQueueLength("download", this.downloadQueue.length);
 			this.recordDrain("download", drainStart, itemsStarted);
 		}
 	}
@@ -1515,10 +1536,13 @@ export class BackgroundSync extends HasLogging {
 	 * the associated sync group to track progress.
 	 *
 	 * @param item The document to synchronize
+	 * @param deferQueueFlush Batch callers set this while adding all items, then
+	 * flush the queue once after the batch is complete.
 	 * @returns A promise that resolves when the sync completes
 	 */
 	async enqueueSync(
 		item: SyncFile | Document | Canvas,
+		deferQueueFlush = false,
 	): Promise<SyncCompletionOutcome> {
 		if (this.shouldSkipDocumentSync(item)) {
 			this.clearFailure(this.failureKey("sync", item.guid));
@@ -1585,9 +1609,9 @@ export class BackgroundSync extends HasLogging {
 		this.syncPromises.set(item.guid, syncPromise);
 
 		this.syncQueue.push(queueItem);
-		this.sortByPath(this.syncQueue, "sync", "enqueue");
-		this.queueStatusChanged.notifyListeners();
-		this.processSyncQueue();
+		if (!deferQueueFlush) {
+			this.flushSyncQueue("enqueue");
+		}
 
 		return syncPromise;
 	}
@@ -1749,7 +1773,7 @@ export class BackgroundSync extends HasLogging {
 		this.syncPromises.set(item.guid, syncPromise);
 
 		this.syncQueue.push(queueItem);
-		this.sortByPath(this.syncQueue, "sync", "enqueue");
+		this.sortQueueByPath(this.syncQueue, "sync", "enqueue");
 		this.queueStatusChanged.notifyListeners();
 		this.processSyncQueue();
 
@@ -1851,7 +1875,7 @@ export class BackgroundSync extends HasLogging {
 
 		// Add to the queue and start processing
 		this.downloadQueue.push(queueItem);
-		this.sortByPath(this.downloadQueue, "download", "enqueue");
+		this.sortQueueByPath(this.downloadQueue, "download", "enqueue");
 		this.queueStatusChanged.notifyListeners();
 		this.processDownloadQueue();
 
@@ -1909,7 +1933,7 @@ export class BackgroundSync extends HasLogging {
 		}
 
 		if (this.syncQueue.length > queueLengthBefore) {
-			this.sortByPath(this.syncQueue, "sync", "group");
+			this.sortQueueByPath(this.syncQueue, "sync", "group");
 			this.queueStatusChanged.notifyListeners();
 			this.processSyncQueue();
 		}
@@ -1928,14 +1952,19 @@ export class BackgroundSync extends HasLogging {
 
 		if (docs.length === 0) return 0;
 
-		for (const doc of this.sortByPath(docs, "sync", "batch")) {
-			void this.enqueueLCABackfillDoc(doc);
+		const queueLengthBefore = this.syncQueue.length;
+		for (const doc of docs) {
+			void this.enqueueLCABackfillDoc(doc, true);
+		}
+		if (this.syncQueue.length > queueLengthBefore) {
+			this.flushSyncQueue("batch");
 		}
 		return docs.length;
 	}
 
 	private async enqueueLCABackfillDoc(
 		doc: Document,
+		deferQueueFlush = false,
 	): Promise<SyncCompletionOutcome> {
 		if (this.shouldSkipDocumentSync(doc)) {
 			this.clearFailure(this.failureKey("sync", doc.guid));
@@ -2001,9 +2030,9 @@ export class BackgroundSync extends HasLogging {
 		this.syncPromises.set(doc.guid, syncPromise);
 
 		this.syncQueue.push(queueItem);
-		this.sortByPath(this.syncQueue, "sync", "enqueue");
-		this.queueStatusChanged.notifyListeners();
-		this.processSyncQueue();
+		if (!deferQueueFlush) {
+			this.flushSyncQueue("enqueue");
+		}
 
 		return syncPromise;
 	}
@@ -2023,8 +2052,12 @@ export class BackgroundSync extends HasLogging {
 			.filter((doc) => !this.inProgressSyncs.has(doc.guid))
 			.filter((doc) => this.shouldEnqueueForRemoteHeadSync(doc));
 
-		for (const doc of this.sortByPath(docs, "sync", "batch")) {
-			void this.enqueueSync(doc);
+		const queueLengthBefore = this.syncQueue.length;
+		for (const doc of docs) {
+			void this.enqueueSync(doc, true);
+		}
+		if (this.syncQueue.length > queueLengthBefore) {
+			this.flushSyncQueue("batch");
 		}
 
 		// Canvases: SERVER_AHEAD is a signal, not a command — each canvas's
@@ -2078,8 +2111,12 @@ export class BackgroundSync extends HasLogging {
 			.filter((doc) => !this.inProgressSyncs.has(doc.guid))
 			.filter((doc) => this.shouldEnqueueForLCABackfill(doc));
 
-		for (const doc of this.sortByPath(docs, "sync", "batch")) {
-			void this.enqueueLCABackfillDoc(doc);
+		const queueLengthBefore = this.syncQueue.length;
+		for (const doc of docs) {
+			void this.enqueueLCABackfillDoc(doc, true);
+		}
+		if (this.syncQueue.length > queueLengthBefore) {
+			this.flushSyncQueue("batch");
 		}
 		return docs.length;
 	}
