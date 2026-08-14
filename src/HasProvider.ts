@@ -335,6 +335,13 @@ export class HasProvider extends HasLogging {
 	}
 
 	public set s3rn(value: S3RNType) {
+		if (this._s3rn && value) {
+			const previousKey = S3RN.encode(this._s3rn);
+			const nextKey = S3RN.encode(value);
+			if (previousKey !== nextKey) {
+				this.tokenStore.release(previousKey);
+			}
+		}
 		this._s3rn = value;
 		if (this._provider) {
 			this.refreshProvider(this.clientToken);
@@ -560,7 +567,6 @@ export class HasProvider extends HasLogging {
 		if (!this.deferDisconnectForPendingMessages()) {
 			this.disconnect();
 		}
-		this.tokenStore.removeFromRefreshQueue(S3RN.encode(this.s3rn));
 	}
 
 	disconnect() {
@@ -572,7 +578,9 @@ export class HasProvider extends HasLogging {
 		if (this._provider) {
 			this._provider.disconnect();
 		}
-		this.tokenStore.removeFromRefreshQueue(this.guid);
+		// The refresh queue is keyed by the encoded resource name; a
+		// reconnect re-registers through getProviderToken.
+		this.tokenStore.release(S3RN.encode(this.s3rn));
 		this.notifyListeners();
 	}
 

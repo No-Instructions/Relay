@@ -285,6 +285,19 @@ export class TokenStore<TokenType extends HasToken> {
 		}
 	}
 
+	/** Fully release a registration: a disconnect must drop the callback,
+	 * because the sweep re-enqueues any key the callbacks map still holds
+	 * and an unqueued key refreshes straight through when connections have
+	 * headroom. The queue-only removal below stays for transient error
+	 * paths where the registration must survive. */
+	release(documentId: string) {
+		if (this.destroyed) {
+			return false;
+		}
+		const wasRegistered = this.callbacks.delete(documentId);
+		return this.removeFromRefreshQueue(documentId) || wasRegistered;
+	}
+
 	removeFromRefreshQueue(documentId: string) {
 		if (this.destroyed) {
 			return false;
@@ -308,7 +321,10 @@ export class TokenStore<TokenType extends HasToken> {
 		const expiryTime = this.getJwtExpiry(token);
 		if (this.tokenMap.has(documentId)) {
 			const existing = this.tokenMap.get(documentId)!;
-			const callback = this.callbacks.get(documentId)!;
+			// A release can land while this refresh was in flight; the map
+			// entry still updates (it is inert without a callback and the
+			// expiry sweep collects it), but there is no one to notify.
+			const callback = this.callbacks.get(documentId);
 			this.log(`new expiry time is ${expiryTime}`);
 			this.tokenMap.set(documentId, {
 				...existing,
@@ -316,7 +332,9 @@ export class TokenStore<TokenType extends HasToken> {
 				expiryTime,
 				refreshTime: this.timeProvider.now(),
 			} as TokenInfo<TokenType>);
-			callback(token);
+			if (callback) {
+				callback(token);
+			}
 			this.log(`Token refreshed for ${existing.friendlyName} (${documentId})`);
 		}
 	}
@@ -410,6 +428,7 @@ export class TokenStore<TokenType extends HasToken> {
 		}
 		const activePromise = this._activePromises.get(documentId);
 		if (activePromise) {
+			this.callbacks.set(documentId, callback);
 			return activePromise;
 		}
 		const existing = this.tokenMap.get(documentId);
