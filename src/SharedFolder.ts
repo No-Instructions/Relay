@@ -265,6 +265,7 @@ export class SharedFolder extends HasProvider {
 	 * vanishes within the window is cancelled before it registers.
 	 */
 	private pendingCreates: Map<string, number> = new Map();
+	private pendingMoveResolutions: Map<string, number> = new Map();
 	private enabledSyncTypes: Set<SyncType> = new Set();
 
 	private _persistence: IndexeddbPersistence;
@@ -2809,6 +2810,26 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
+	/**
+	 * Keep the move alias alive through the create-settling window. Writers
+	 * racing a rename can briefly recreate its source path; while the alias is
+	 * present, resolution follows the moved guid instead of registering that
+	 * transient source as a new file.
+	 */
+	private scheduleMoveResolution(oldVPath: string): void {
+		const existing = this.pendingMoveResolutions.get(oldVPath);
+		if (existing !== undefined) {
+			this.timeProvider.clearTimeout(existing);
+		}
+		const timer = this.timeProvider.setTimeout(() => {
+			this.pendingMoveResolutions.delete(oldVPath);
+			if (!this.destroyed) {
+				this.syncStore.resolveMove(oldVPath);
+			}
+		}, NEW_FILE_REGISTRATION_DEBOUNCE_MS);
+		this.pendingMoveResolutions.set(oldVPath, timer);
+	}
+
 	/** Route an in-folder vault rename. */
 	public notifyVaultRename(file: TAbstractFile, oldPath: string): void {
 		const oldVPath = this.getVirtualPath(oldPath);
@@ -4775,7 +4796,7 @@ export class SharedFolder extends HasProvider {
 				// Due to nested folder moves the tfiles and syncStore can diverge.
 				// The nested folder moves are done in bulk in the sync store, but the tfile
 				// events come in individually.
-				this.syncStore.resolveMove(oldVPath);
+				this.scheduleMoveResolution(oldVPath);
 			}
 		}
 	}
@@ -4801,6 +4822,10 @@ export class SharedFolder extends HasProvider {
 		this.markFirstSyncConverged();
 		this.pendingCreates.forEach((timer) => this.timeProvider.clearTimeout(timer));
 		this.pendingCreates.clear();
+		this.pendingMoveResolutions.forEach((timer) =>
+			this.timeProvider.clearTimeout(timer),
+		);
+		this.pendingMoveResolutions.clear();
 		this.clearDownloadsDeferredByState();
 		this.unsubscribes.forEach((unsub) => {
 			unsub();
