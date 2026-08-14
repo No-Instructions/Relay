@@ -624,11 +624,11 @@ export class RelayDebugAPI {
       lookupFolder: (path: string) => {
         if (!this.plugin?.sharedFolders?._set) return null;
         for (const folder of this.plugin.sharedFolders._set.values()) {
-          if ((folder as any).path === path) return folder;
+          if (folder.path === path) return folder;
         }
         // Also try matching as a prefix (e.g. "private" matches folder at path "private")
         for (const folder of this.plugin.sharedFolders._set.values()) {
-          if (path.startsWith((folder as any).path + '/')) return folder;
+          if (path.startsWith(folder.path + '/')) return folder;
         }
         return null;
       },
@@ -660,7 +660,7 @@ export class RelayDebugAPI {
     const sharedFolders = this.plugin?.sharedFolders;
     if (!sharedFolders || !path) return null;
     if (!path.startsWith('/')) {
-      for (const folder of (sharedFolders as any)._set.values()) {
+      for (const folder of sharedFolders._set.values()) {
         const doc = folder.mergeManager?._getDocument(path);
         const hsm = doc?._hsm;
         if (hsm) return { doc, hsm, guid: path, folder, filePath: hsm.path || path };
@@ -670,7 +670,7 @@ export class RelayDebugAPI {
     const vaultPath = path.slice(1);
     const folder: any = sharedFolders.lookup(vaultPath);
     if (!folder) {
-      const available = Array.from((sharedFolders as any)._set.values())
+      const available = Array.from(sharedFolders._set.values())
         .map((f: any) => '/' + f.path + '/')
         .join(', ') || '(none)';
       throw new Error(
@@ -959,7 +959,7 @@ export class RelayDebugAPI {
 
       if (baseText !== before) {
         const patches = dmp.patch_make(baseText, content);
-        const [rebased, applied] = dmp.patch_apply(patches, before) as [string, boolean[]];
+        const [rebased, applied] = dmp.patch_apply(patches, before);
         if (!applied.every(Boolean)) {
           return { success: false, error: 'base snapshot patch no longer applies to editor' };
         }
@@ -1123,7 +1123,7 @@ export class RelayDebugAPI {
     let owner: any = null;
     if (this.plugin?.sharedFolders?._set) {
       for (const folder of this.plugin.sharedFolders._set.values()) {
-        if (path.startsWith((folder as any).path + '/')) {
+        if (path.startsWith(folder.path + '/')) {
           owner = folder;
           break;
         }
@@ -1306,10 +1306,10 @@ export class RelayDebugAPI {
     }
     const { doc, hsm, guid, folder, filePath } = lookup;
 
-    const hsmAny = hsm as any;
+    const hsmAny = hsm;
 
     // Disk — prefer the vault adapter so we see exactly what the HSM sees.
-    const vaultPath = (folder as any).path + filePath;
+    const vaultPath = folder.path + filePath;
     let diskContent: string | null = null;
     try {
       diskContent = await this.plugin.app.vault.adapter.read(vaultPath);
@@ -1397,7 +1397,7 @@ export class RelayDebugAPI {
     let persistedLcaContent: string | null = null;
     let persistedAt: number | null = null;
     try {
-      const persistedState = await (folder as any)._hsmStore?.loadState?.(guid);
+      const persistedState = await folder._hsmStore?.loadState?.(guid);
       const persistedLca = persistedState?.lca ?? null;
       if (persistedLca) {
         persistedLcaHash = persistedLca.hash ?? null;
@@ -1443,7 +1443,7 @@ export class RelayDebugAPI {
     return {
       path: this.toVaultPath(folder, filePath),
       guid,
-      folder: (folder as any).name,
+      folder: folder.name,
       statePath,
       syncGate,
       hasLCA: hasValidLCA,
@@ -1490,7 +1490,7 @@ export class RelayDebugAPI {
   ): Promise<string> {
     const lookup = this.debugGlobal()?.lookupDocument?.(path);
     if (!lookup) throw new Error(`HSM not found: ${path}`);
-    const hsm = lookup.hsm as any;
+    const hsm = lookup.hsm;
 
     const matcher = (s: string) => s.startsWith(statePrefix);
     if (matcher(hsm._statePath)) return hsm._statePath;
@@ -1570,10 +1570,10 @@ export class RelayDebugAPI {
   private resolveFolder(path: string): any | null {
     if (!this.plugin?.sharedFolders?._set) return null;
     for (const folder of this.plugin.sharedFolders._set.values()) {
-      if ((folder as any).path === path) return folder;
+      if (folder.path === path) return folder;
     }
     for (const folder of this.plugin.sharedFolders._set.values()) {
-      if (path.startsWith((folder as any).path + '/')) return folder;
+      if (path.startsWith(folder.path + '/')) return folder;
     }
     return null;
   }
@@ -1581,7 +1581,7 @@ export class RelayDebugAPI {
   private getFolderByGuid(folderGuid: string): any | null {
     if (!this.plugin?.sharedFolders?._set) return null;
     for (const folder of this.plugin.sharedFolders._set.values()) {
-      if ((folder as any).guid === folderGuid) return folder;
+      if (folder.guid === folderGuid) return folder;
     }
     return null;
   }
@@ -1713,7 +1713,7 @@ export class RelayDebugAPI {
   private async clearLca(path: string): Promise<void> {
     const lookup = this.debugGlobal()?.lookupDocument?.(path);
     if (!lookup) throw new Error(`HSM not found: ${path}`);
-    (lookup.hsm as any)._lca = null;
+    lookup.hsm._lca = null;
   }
 
   /**
@@ -1724,7 +1724,7 @@ export class RelayDebugAPI {
   private sendConflictEvent(path: string, event: { type: string }): string {
     const lookup = this.debugGlobal()?.lookupDocument?.(path);
     if (!lookup) throw new Error(`HSM not found: ${path}`);
-    const hsm = lookup.hsm as any;
+    const hsm = lookup.hsm;
     hsm.send(event);
     return hsm._statePath || 'unknown';
   }
@@ -1752,7 +1752,7 @@ export class RelayDebugAPI {
     const lookup = this.debugGlobal()?.lookupDocument?.(path);
     if (!lookup) throw new Error(`HSM not found: ${path}`);
     const { hsm, guid, folder, filePath } = lookup;
-    const appId = (hsm as any)._persistenceMetadata?.appId;
+    const appId = hsm._persistenceMetadata?.appId;
     if (!appId) throw new Error('No appId in persistence metadata');
     return {
       hsm,
@@ -1816,17 +1816,17 @@ export class RelayDebugAPI {
       // When hibernated, fall back to opening IndexeddbPersistence via
       // readIdbContent.
       let idbContent: string | null = null;
-      if ((hsm as any).localDoc) {
-        idbContent = (hsm as any).localDoc.getText('contents').toString();
+      if (hsm.localDoc) {
+        idbContent = hsm.localDoc.getText('contents').toString();
       } else {
         try {
-          const result = await readIdbContent(guid, (hsm as any)._persistenceMetadata?.appId, this.plugin?.timeProvider);
+          const result = await readIdbContent(guid, hsm._persistenceMetadata?.appId, this.plugin?.timeProvider);
           if (result) idbContent = result.content;
         } catch { /* noop */ }
       }
 
       // Read disk for comparison.
-      const vaultPath = (folder as any).path + filePath;
+      const vaultPath = folder.path + filePath;
       let diskContent: string | null = null;
       try {
         diskContent = await this.plugin.app.vault.adapter.read(vaultPath);
@@ -1837,7 +1837,7 @@ export class RelayDebugAPI {
       return {
         path: this.toVaultPath(folder, filePath),
         guid,
-        folder: (folder as any).name,
+        folder: folder.name,
         dbName,
         metadata,
         updatesCount: updates.length,
@@ -1864,7 +1864,7 @@ export class RelayDebugAPI {
         return {
           path: this.toVaultPath(folder, filePath),
           guid,
-          folder: (folder as any).name,
+          folder: folder.name,
           dbName,
           historyCount: 0,
           inMemoryCount: null,
@@ -1879,7 +1879,7 @@ export class RelayDebugAPI {
       const values = await this.awaitRequest(store.getAll(), 'read history values');
 
       const entries: IdbHistoryEntry[] = keys.map((key, i) => {
-        const v = values[i] as any;
+        const v = values[i];
         return {
           key,
           origin: v.origin ?? null,
@@ -1890,13 +1890,13 @@ export class RelayDebugAPI {
         };
       });
 
-      const persistence = (hsm as any)._persistenceMetadata?.persistence;
+      const persistence = hsm._persistenceMetadata?.persistence;
       const inMemoryCount = persistence?.opCapture?.entries?.length ?? null;
 
       return {
         path: this.toVaultPath(folder, filePath),
         guid,
-        folder: (folder as any).name,
+        folder: folder.name,
         dbName,
         historyCount: entries.length,
         inMemoryCount,
@@ -1924,7 +1924,7 @@ export class RelayDebugAPI {
       remoteSnapshotBytes: f.remoteSnapshot?.byteLength ?? 0,
     });
 
-    const inMemoryFork = (hsm as any)._fork;
+    const inMemoryFork = hsm._fork;
     const inMemory: ForkSnapshot | null = inMemoryFork ? toSnapshot(inMemoryFork) : null;
 
     // Read persisted fork from the shared HSM store. Swallow errors so
@@ -1939,7 +1939,7 @@ export class RelayDebugAPI {
           const state = await this.awaitRequest(
             tx.objectStore('states').get(guid),
             'read persisted state',
-          ) as any;
+          );
           if (state?.fork) {
             persistedFork = toSnapshot(state.fork);
           }
@@ -1962,8 +1962,8 @@ export class RelayDebugAPI {
     return {
       path: this.toVaultPath(folder, filePath),
       guid,
-      folder: (folder as any).name,
-      statePath: (hsm as any)._statePath || 'unknown',
+      folder: folder.name,
+      statePath: hsm._statePath || 'unknown',
       hasFork: inMemoryFork != null,
       inMemoryFork: inMemory,
       persistedFork,

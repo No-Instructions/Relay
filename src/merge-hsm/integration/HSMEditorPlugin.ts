@@ -863,7 +863,7 @@ export class HSMEditorPluginValue implements PluginValue {
     }
 
     // Forward to CM6Integration which sends to HSM
-    this.cm6Integration!.onEditorUpdate(update);
+		this.cm6Integration.onEditorUpdate(update);
 
     // Embedded canvas editors don't auto-save — trigger explicit save
     if (this.embed && this.document) {

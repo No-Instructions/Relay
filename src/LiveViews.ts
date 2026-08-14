@@ -385,18 +385,18 @@ export class RelayCanvasView implements S3View {
 					view: this.view,
 					doc: this.canvas,
 					resolveAnchor: (containerEl) => {
-						const viewContent = containerEl.querySelector(
+						const viewContent = containerEl.querySelector<HTMLElement>(
 							".view-content",
-						) as HTMLElement | null;
+						);
 						return viewContent
 							? { anchor: viewContent, position: "afterbegin" }
 							: null;
 					},
 					vertical: true,
 					configureContainer: (el) => {
-						const controls = viewEl.querySelector(
+						const controls = viewEl.querySelector<HTMLElement>(
 							".canvas-controls",
-						) as HTMLElement | null;
+						);
 						const gap = 12;
 						const top = controls
 							? controls.offsetTop + controls.offsetHeight + gap
@@ -1836,7 +1836,9 @@ export class LiveViewManager {
 		iterateTextFileViews(this.workspace, this.textViewRegistry, (view) => {
 			const leaf = view.leaf;
 			if (!leaf || refreshed.has(leaf)) return;
-			if (!((view as any).editor as any)?.cm) return;
+			const editor = Reflect.get(view, "editor");
+			if (!editor || typeof editor !== "object" || !("cm" in editor) || !editor.cm)
+				return;
 			refreshed.add(leaf);
 			refreshLeafViewForUnload(leaf, {
 				file: view.file,

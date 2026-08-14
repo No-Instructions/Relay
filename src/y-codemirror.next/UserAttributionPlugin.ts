@@ -150,7 +150,7 @@ export class UserAttributionPluginValue {
 			return u?.name || userId;
 		};
 
-		const awareness = (doc as any)?._provider?.awareness;
+		const awareness = doc?._provider?.awareness;
 		const userColors = new Map<string, { color: string; light: string }>();
 		const usedColors = new Set<string>();
 		awareness?.getStates?.().forEach((state: any) => {

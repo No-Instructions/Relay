@@ -5,7 +5,7 @@ import {
 } from "../BackgroundSyncProgress";
 import type { SharedFolder } from "../SharedFolder";
 import { formatUserFacingError } from "../UserFacingError";
-import type { StatePath, SyncStatus, SyncStatusType } from "../merge-hsm/types";
+import type { StatePath, SyncStatus } from "../merge-hsm/types";
 
 export type FileSyncUiStatus = "synced" | "syncing" | "conflict" | "error";
 export type ActionableCategory = "conflict" | "error";
@@ -281,7 +281,7 @@ export function shouldShowRecentActivity(status: string, author: string): boolea
 }
 
 export function normalizeActivityStatus(status: string): FileSyncUiStatus {
-	switch (status as SyncStatusType | string) {
+	switch (status) {
 		case "conflict":
 			return "conflict";
 		case "error":

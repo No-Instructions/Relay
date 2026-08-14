@@ -1134,16 +1134,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	}
 
 	async getPersistenceServerSynced(): Promise<boolean> {
-		const persistence = this.localPersistence as
-			| (IYDocPersistence & { getServerSynced?: () => Promise<boolean> })
-			| null;
+		const persistence = this.localPersistence;
 		return (await persistence?.getServerSynced?.()) ?? false;
 	}
 
 	async markPersistenceServerSynced(): Promise<void> {
-		const persistence = this.localPersistence as
-			| (IYDocPersistence & { markServerSynced?: () => Promise<void> })
-			| null;
+		const persistence = this.localPersistence;
 		await persistence?.markServerSynced?.();
 	}
 
@@ -3412,7 +3408,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			seedFrontmatterMap: () => this.seedFrontmatterMapFromCurrentText(),
 			repairFrontmatter: () => this.repairFrontmatterFromMap(),
 			absorbTextPreservingRemoteUpdate: (_hsm, event) =>
-				this.absorbTextPreservingRemoteUpdate(event as MergeEvent),
+				this.absorbTextPreservingRemoteUpdate(event),
 			assertConvergence: () => this._bridge.assertConvergence(),
 			replayAccumulatedEvents: () => this.replayAccumulatedEvents(),
 			applyThreeWayMergeResult: (_hsm, event) => {

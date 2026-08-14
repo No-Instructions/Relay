@@ -110,10 +110,7 @@ export function rebaseBufferedTextAcrossReplacement(
 
 	const dmp = new diff_match_patch();
 	const patches = dmp.patch_make(patchBase, editedText);
-	const [rebased, applied] = dmp.patch_apply(patches, replacementText) as [
-		string,
-		boolean[],
-	];
+	const [rebased, applied] = dmp.patch_apply(patches, replacementText);
 	return applied.every(Boolean) ? rebased : null;
 }
 

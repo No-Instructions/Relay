@@ -942,6 +942,10 @@ export interface IYDocPersistence {
 	 * Set the origin of this document.
 	 */
 	setOrigin?(origin: "local" | "remote"): Promise<void>;
+	/** Read whether persistence has observed the current server state. */
+	getServerSynced?(): Promise<boolean>;
+	/** Record that persistence has observed the current server state. */
+	markServerSynced?(): Promise<void>;
 	/**
 	 * Initialize document with content if not already initialized.
 	 * Checks origin in one IDB session, calls contentLoader only if needed.

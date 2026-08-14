@@ -42,26 +42,26 @@ export function resolveMarkdownAwarenessAnchor(
 	containerEl: HTMLElement,
 	mode: "preview" | "source",
 ): AwarenessAnchor | null {
-	const modeRoot = containerEl.querySelector(
+	const modeRoot = containerEl.querySelector<HTMLElement>(
 		mode === "preview" ? ".markdown-reading-view" : ".markdown-source-view",
-	) as HTMLElement | null;
-	const inlineTitle = modeRoot?.querySelector(
+	);
+	const inlineTitle = modeRoot?.querySelector<HTMLElement>(
 		".inline-title",
-	) as HTMLElement | null;
+	);
 	if (inlineTitle) {
 		return { anchor: inlineTitle, position: "afterend" };
 	}
 
-	const modeContent = modeRoot?.querySelector(
+	const modeContent = modeRoot?.querySelector<HTMLElement>(
 		mode === "preview" ? ".markdown-preview-sizer" : ".cm-sizer",
-	) as HTMLElement | null;
+	);
 	if (modeContent) {
 		return { anchor: modeContent, position: "afterbegin" };
 	}
 
-	const viewContent = containerEl.querySelector(
+	const viewContent = containerEl.querySelector<HTMLElement>(
 		".view-content",
-	) as HTMLElement | null;
+	);
 	return viewContent
 		? { anchor: viewContent, position: "afterbegin" }
 		: null;

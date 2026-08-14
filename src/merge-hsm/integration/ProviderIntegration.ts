@@ -54,7 +54,9 @@ export interface YjsProvider {
   on(event: 'sync', callback: (synced?: boolean) => void): void;
   on(event: 'connection-close' | 'disconnect', callback: () => void): void;
   on(event: 'connection-error', callback: (error: unknown) => void): void;
-  off(event: string, callback: (...args: unknown[]) => void): void;
+  off(event: 'sync', callback: (synced?: boolean) => void): void;
+  off(event: 'connection-close' | 'disconnect', callback: () => void): void;
+  off(event: 'connection-error', callback: (error: unknown) => void): void;
   connect(): void;
   disconnect(): void;
   destroy(): void;
@@ -231,9 +233,9 @@ export class ProviderIntegration {
    */
   destroy(): void {
     // Unsubscribe from provider events
-    this.provider.off('sync', this.onSync as (...args: unknown[]) => void);
-    this.provider.off('connection-close', this.onDisconnect as (...args: unknown[]) => void);
-    this.provider.off('connection-error', this.onError as (...args: unknown[]) => void);
+		this.provider.off('sync', this.onSync);
+		this.provider.off('connection-close', this.onDisconnect);
+		this.provider.off('connection-error', this.onError);
 
     // Unobserve remoteDoc
     this.remoteDoc.off('update', this.onRemoteUpdate);

@@ -433,7 +433,7 @@ export class CanvasPlugin extends HasLogging {
 							"initial-sync",
 						);
 
-						const cm = (embedView.editor as any)?.cm;
+						const cm = embedView.editor?.cm;
 						const hsmEditorPlugin = cm?.plugin?.(HSMEditorPlugin);
 						hsmEditorPlugin?.initializeIfReady();
 

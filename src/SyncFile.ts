@@ -658,7 +658,7 @@ export class SyncFile
 			return;
 		}
 
-		if (this.isCleanLastServerEdit(this.meta as FileMetas, this.stat)) {
+		if (this.isCleanLastServerEdit(this.meta, this.stat)) {
 			this.debug("sync decision", {
 				path: this.path,
 				guid: this.guid,
@@ -708,7 +708,7 @@ export class SyncFile
 			} else {
 				this.noteCurrentUserEdit();
 				// local is newer
-				if (this.stat.mtime > (this.meta as FileMetas).synctime) {
+				if (this.stat.mtime > this.meta.synctime) {
 					this.debug("sync decision", {
 						path: this.path,
 						guid: this.guid,
