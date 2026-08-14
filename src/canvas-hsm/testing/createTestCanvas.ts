@@ -81,7 +81,7 @@ export interface TestCanvasWorld {
 /** Drain evaluate invokes and doc-change fanout. */
 async function drain(): Promise<void> {
 	for (let i = 0; i < 4; i++) {
-		await new Promise((resolve) => setTimeout(resolve, 0));
+		await new Promise((resolve) => window.setTimeout(resolve, 0));
 	}
 }
 

@@ -394,12 +394,12 @@ export class CanvasHSM implements SyncMachine {
 		}
 		return new Promise((resolve, reject) => {
 			const settle = (fn: () => void) => {
-				clearTimeout(timer);
+				window.clearTimeout(timer);
 				this._stateWaiters.delete(waiter);
 				this._waiterAborts.delete(abort);
 				fn();
 			};
-			const timer = setTimeout(() => {
+			const timer = window.setTimeout(() => {
 				settle(() =>
 					reject(
 						new Error(
