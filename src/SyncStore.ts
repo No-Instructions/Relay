@@ -671,7 +671,10 @@ export class SyncStore extends Observable<SyncStore> {
 		if (this.renames.has(vpath)) {
 			vpath = this.renames.get(vpath)!;
 		}
-		if (this.deleteSet.has(vpath)) {
+		if (
+			this.deleteSet.has(vpath) ||
+			(this.heldDeletionPaths?.().has(vpath) ?? false)
+		) {
 			return undefined;
 		}
 		return this.committedMeta.get(vpath);
