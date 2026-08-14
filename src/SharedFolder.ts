@@ -238,6 +238,7 @@ export class SharedFolder extends HasProvider {
 	private whenSyncedPromise: Dependency<void> | null = null;
 	private persistenceSynced: boolean = false;
 	private syncFileTreePromise: SharedPromise<void> | null = null;
+	private syncFileTreePass: () => Promise<void> = async () => {};
 	private syncRequestedDuringSync: boolean = false;
 	private authoritative: boolean;
 	private pendingUpload: LocalStorage<string>;
@@ -3310,6 +3311,38 @@ export class SharedFolder extends HasProvider {
 
 		const promiseFn = async (): Promise<void> => {
 			try {
+				// Drain: a map update that lands mid-pass requests another
+				// pass, and a failed pass retries with backoff instead of
+				// abandoning every operation the batch still owes the disk.
+				let failures = 0;
+				do {
+					this.syncRequestedDuringSync = false;
+					try {
+						await this.syncFileTreePass();
+						failures = 0;
+					} catch (error) {
+						if (this.destroyed || isDestroyedError(error)) {
+							return;
+						}
+						failures += 1;
+						if (failures >= 5) {
+							throw error;
+						}
+						this.warn("syncFileTree pass failed; retrying", error);
+						await new Promise<void>((resolve) =>
+							this.timeProvider.setTimeout(resolve, 250 * failures),
+						);
+						this.syncRequestedDuringSync = true;
+					}
+				} while (this.syncRequestedDuringSync && !this.destroyed);
+			} finally {
+				// Reset the promise after completion (success or failure)
+				this.syncFileTreePromise = null;
+			}
+		};
+
+		const passBody = async (): Promise<void> => {
+			{
 				if (!this.mergeManager || this.destroyed) return;
 				await this.mergeManager.initialize();
 				if (this.destroyed) return;
@@ -3334,6 +3367,7 @@ export class SharedFolder extends HasProvider {
 					this.syncByType(this.syncStore, diffLog, ops, [SyncType.Folder]);
 				}, this);
 				await Promise.all(ops.map((op) => op.promise));
+				let remotePaths = new Set<string>();
 				this.folderDoc.transact(async () => {
 					this.syncByType(
 						this.syncStore,
@@ -3342,6 +3376,13 @@ export class SharedFolder extends HasProvider {
 						this.syncStore.typeRegistry.getEnabledFileSyncTypes(),
 					);
 					this.syncStore.commit();
+					// The deletion pass must read the same map view these ops
+					// were computed from: a move that lands after this point
+					// would otherwise vacate its old path in the desired set
+					// while its create/rename op is absent from this batch,
+					// turning an in-flight rename into a bare local delete.
+					// A later pass owns anything that arrives from here on.
+					remotePaths = this.getDesiredRemotePaths();
 				}, this);
 
 				const creates = ops.filter((op) => op.op === "create");
@@ -3358,7 +3399,6 @@ export class SharedFolder extends HasProvider {
 					),
 				);
 
-				const remotePaths = this.getDesiredRemotePaths();
 				const deletes = this.cleanupExtraLocalFiles(remotePaths, diffLog);
 				if (![...ops, ...deletes].every((op) => op.op === "noop")) {
 					this.log("remote paths", Array.from(remotePaths));
@@ -3375,11 +3415,9 @@ export class SharedFolder extends HasProvider {
 					this.log("syncFileTree diff:\n" + diffLog.join("\n"));
 				}
 				this.sweepStalePendingUploads();
-			} finally {
-				// Reset the promise after completion (success or failure)
-				this.syncFileTreePromise = null;
 			}
 		};
+		this.syncFileTreePass = passBody;
 
 		this.syncFileTreePromise = new SharedPromise<void>(
 			promiseFn,
