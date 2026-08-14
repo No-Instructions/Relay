@@ -2094,6 +2094,7 @@ export class SharedFolder extends HasProvider {
 		diffLog?: string[],
 	): Promise<void> {
 		// take a doc and it's new path.
+		const oldVPath = this.getVirtualPath(file.path);
 		diffLog?.push(`${file.path} was renamed to ${this.getPath(path)}`);
 		if (file instanceof TFile) {
 			const dir = dirname(path);
@@ -2106,6 +2107,12 @@ export class SharedFolder extends HasProvider {
 			.renameFile(file, normalizePath(this.getPath(path)))
 			.then(() => {
 				doc.move(path, this);
+				// Remote file moves update membership before this disk rename,
+				// so SyncStore.move never installed the source alias locally.
+				// Start the claim window at disk completion, when a lagging writer
+				// can first recreate the now-vacant source path.
+				this.syncStore.retainMoveAlias(oldVPath, path);
+				this.scheduleMoveResolution(oldVPath);
 			});
 	}
 
@@ -2864,6 +2871,11 @@ export class SharedFolder extends HasProvider {
 	public notifyVaultCreateLegacy(tfile: TAbstractFile): boolean {
 		const vpath = this.getVirtualPath(tfile.path);
 		if (this.isPendingDelete(vpath)) return false;
+		if (this.syncStore.hasMoveAlias(vpath)) {
+			// The observation itself proves a writer is still using the source;
+			// give its resolution the full settling window from this event.
+			this.scheduleMoveResolution(vpath);
+		}
 		if (this.syncStore.has(vpath)) return true;
 		this.scheduleLegacyCreate(vpath);
 		return false;

@@ -170,6 +170,18 @@ export class SyncStore extends Observable<SyncStore> {
 		this.renames.delete(oldVPath);
 	}
 
+	hasMoveAlias(vpath: string): boolean {
+		this.assertVPath(vpath);
+		return this.renames.has(vpath);
+	}
+
+	/** Retain a path claim for a move whose membership is already committed. */
+	retainMoveAlias(oldVPath: string, newVPath: string): void {
+		this.assertVPath(oldVPath);
+		this.assertVPath(newVPath);
+		this.renames.set(oldVPath, newVPath);
+	}
+
 	resolveAll() {
 		this.renames.clear();
 	}
