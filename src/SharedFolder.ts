@@ -422,7 +422,12 @@ export class SharedFolder extends HasProvider {
 		// server's replica. The capture bridge is the only conduit between
 		// them. An authoritative folder has no provider to handshake with;
 		// its replica is simply the committed half of its own state.
-		this._localFolderDoc = new Y.Doc();
+		// The persisted capture ledger restores after the document update log.
+		// Retain deleted membership-item content through replay so restored
+		// deletion entries can recover the identity they observed and honor a
+		// post-restart replicate or restore decision. This document is bounded
+		// to folder membership, and forced compaction still bounds its update log.
+		this._localFolderDoc = new Y.Doc({ gc: false });
 		// An authoritative folder is its own membership authority and may have
 		// no provider to handshake with; every other folder waits for the
 		// server view before publishing local discoveries.
