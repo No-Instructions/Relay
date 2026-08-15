@@ -343,7 +343,7 @@ export class SharedFolder extends HasProvider {
 				folder: SharedFolder;
 				paths: string[];
 				resolve: (resolution: DeletionBurstResolution) => void;
-		  }) => void)
+			}) => void)
 		| null = null;
 	/** One parked publication re-entry per held path. */
 	private _parkedPublications: Map<string, Promise<void>> = new Map();
@@ -2959,13 +2959,20 @@ export class SharedFolder extends HasProvider {
 			new Set([path]),
 			rewritten.update,
 		);
-		// Resolved: the entries leave the ledger, the hold lifts, and the
-		// rewritten bytes ship as an ordinary agreeing write.
-		ledger.resolveClaim(rewritten.entries);
 		// The write-time bytes with the private value survive only in the
-		// persistence log; compact so a replay cannot resurrect them.
-		this.compactFolderStore();
-		this.flushCaptureOutbound();
+		// persistence log. Keep the ledger rows (and therefore the bridge hold)
+		// until compaction durably replaces those bytes; dropping them first
+		// leaves a crash window where replay can expose the private value as an
+		// ordinary committed write.
+		void this.compactFolderStore().then((compacted) => {
+			if (!compacted) {
+				this.warn("claim rewrite compaction failed; keeping publication held", path);
+				return;
+			}
+			if (this.destroyed) return;
+			ledger.resolveClaim(rewritten.entries);
+			this.flushCaptureOutbound();
+		});
 		return true;
 	}
 
@@ -2993,14 +3000,18 @@ export class SharedFolder extends HasProvider {
 	 * rewrite: mutation emits no update, so without the compaction a
 	 * replay would re-apply the superseded bytes.
 	 */
-	private compactFolderStore(): void {
+	private compactFolderStore(): Promise<boolean> {
 		const persistence = this._persistence as unknown as {
 			forceCompaction?: () => Promise<void>;
 		};
 		const done = persistence.forceCompaction?.();
-		if (done) {
-			trackAsyncCleanup(done.catch(() => {}));
-		}
+		if (!done) return Promise.resolve(true);
+		const tracked = done.then(
+			() => true,
+			() => false,
+		);
+		trackAsyncCleanup(tracked.then(() => {}));
+		return tracked;
 	}
 
 	private withdrawLosingClaims(): void {

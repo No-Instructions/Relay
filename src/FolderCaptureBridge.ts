@@ -225,6 +225,13 @@ export class FolderCaptureBridge {
 	flushInbound(): void {
 		if (!this.opts.mayFlushInbound()) return;
 		const { localDoc, remoteDoc } = this.opts;
+		// Persistence replay predates our listener, so restored local work has
+		// no outbound queue entry to identify it. Preserve the keys that the
+		// local-beyond-remote safety-net diff changes before inbound traffic can
+		// trigger value healing; otherwise a server value can resurrect a
+		// locally replayed tombstone before that diff gets its first chance to
+		// ship.
+		const restoredOutbound = this.localDivergencePaths();
 		let diff = Y.encodeStateAsUpdate(remoteDoc, Y.encodeStateVector(localDoc));
 		if (Y.snapshotContainsUpdate(Y.snapshot(localDoc), diff)) return;
 		if (this.opts.beforeInbound) {
@@ -233,14 +240,40 @@ export class FolderCaptureBridge {
 			// the apply is against the state the decision left behind.
 			diff = Y.encodeStateAsUpdate(remoteDoc, Y.encodeStateVector(localDoc));
 			if (Y.snapshotContainsUpdate(Y.snapshot(localDoc), diff)) {
-				this.reconcileShadowedKeys();
+				this.reconcileShadowedKeys(restoredOutbound);
 				this.opts.onInbound?.();
 				return;
 			}
 		}
 		Y.applyUpdate(localDoc, diff, FOLDER_BRIDGE_INBOUND_ORIGIN);
-		this.reconcileShadowedKeys();
+		this.reconcileShadowedKeys(restoredOutbound);
 		this.opts.onInbound?.();
+	}
+
+	private localDivergencePaths(): Set<string> {
+		const { localDoc, remoteDoc } = this.opts;
+		const diff = Y.encodeStateAsUpdate(localDoc, Y.encodeStateVector(remoteDoc));
+		if (Y.snapshotContainsUpdate(Y.snapshot(remoteDoc), diff)) return new Set();
+
+		const projected = new Y.Doc();
+		Y.applyUpdate(projected, Y.encodeStateAsUpdate(remoteDoc));
+		Y.applyUpdate(projected, diff);
+		const paths = new Set<string>();
+		for (const name of this.opts.scope) {
+			const remoteMap = remoteDoc.getMap(name);
+			const projectedMap = projected.getMap(name);
+			const keys = new Set([...remoteMap.keys(), ...projectedMap.keys()]);
+			for (const key of keys) {
+				if (
+					JSON.stringify(remoteMap.get(key)) !==
+					JSON.stringify(projectedMap.get(key))
+				) {
+					paths.add(key);
+				}
+			}
+		}
+		projected.destroy();
+		return paths;
 	}
 
 	/**
@@ -256,7 +289,7 @@ export class FolderCaptureBridge {
 	 * remote's committed value (a reconciliation adoption), and the steady
 	 * state writes nothing.
 	 */
-	private reconcileShadowedKeys(): void {
+	private reconcileShadowedKeys(restoredOutbound = new Set<string>()): void {
 		const { localDoc, remoteDoc } = this.opts;
 		const held = this.opts.heldPaths();
 		const queued = this.queuedOutboundPaths();
@@ -265,7 +298,7 @@ export class FolderCaptureBridge {
 			const remoteMap = remoteDoc.getMap(name);
 			const localMap = localDoc.getMap(name);
 			remoteMap.forEach((value, key) => {
-				if (held.has(key) || queued.has(key)) return;
+				if (held.has(key) || queued.has(key) || restoredOutbound.has(key)) return;
 				const localValue = localMap.get(key);
 				if (JSON.stringify(localValue) !== JSON.stringify(value)) {
 					shadowed.push([name, key, value]);
