@@ -1350,6 +1350,51 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		}
 	}
 
+	// ---- ManagedFile contract (the residency pool's uniform lifecycle) ----
+
+	/** Whether the working form (local YDoc) is in memory. */
+	isWarm(): boolean {
+		return !!this.hsm?.getLocalDoc();
+	}
+
+	/** Build the working form (idempotent). */
+	wake(): void {
+		this.hsm?.ensureLocalDocForIdle();
+	}
+
+	/**
+	 * Release the working form. The idle provider integration is torn down
+	 * even when hibernation defers; an in-flight async invoke (idle-merge,
+	 * fork-reconcile) defers so the work finishes rather than aborting
+	 * mid-merge. The HSM survives with cached state vectors.
+	 */
+	tryHibernate(): boolean {
+		this.destroyIdleProviderIntegration();
+		const hsm = this.hsm;
+		if (!hsm) return true;
+		if (hsm.getActiveInvoke()) return false;
+		hsm.prepareForHibernate();
+		hsm.setRemoteDoc(null);
+		// destroyLocalDoc() nulls out references synchronously, then does
+		// async IDB cleanup on the captured refs. Fire-and-forget is safe
+		// because wake → ensureLocalDocForIdle() creates fresh instances.
+		trackAsyncCleanup(hsm.destroyLocalDoc());
+		return true;
+	}
+
+	/**
+	 * Apply remote update bytes: the HSM needs a remoteDoc attached so it
+	 * can read remote content during three-way merge — without one the
+	 * REMOTE_UPDATE drops the data and conflicts show empty "theirs".
+	 */
+	applyRemoteUpdate(update: Uint8Array): void {
+		const hsm = this.hsm;
+		if (!hsm) return;
+		const remoteDoc = this.ensureRemoteDoc();
+		hsm.setRemoteDoc(remoteDoc);
+		hsm.send({ type: "REMOTE_UPDATE", update });
+	}
+
 	/**
 	 * Ensure the HSM is attached to a live remoteDoc/provider bridge while the
 	 * document stays in idle mode.
