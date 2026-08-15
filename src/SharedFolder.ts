@@ -4694,6 +4694,13 @@ export class SharedFolder extends HasProvider {
 		this.folderDoc.transact(() => {
 			for (const vpath of paths) {
 				this.pendingUpload.delete(vpath);
+				// A delete echo at a retained move source belongs to the path the
+				// document vacated, not to the document now living at its target.
+				// Following that alias here would destroy the moved live document
+				// and discard its persisted local state.
+				if (this.syncStore.hasMoveAlias(vpath)) {
+					continue;
+				}
 				const guid = this.syncStore?.get(vpath);
 				if (guid) {
 					this.syncStore.delete(vpath);
