@@ -87,6 +87,8 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	private _forkReconcileWatch: { hsm: MergeHSM; unsub: () => void } | null =
 		null;
 	private _forkReconcileWatchRegistered = false;
+	private _remapEnrollmentWatch: { hsm: MergeHSM; unsub: () => void } | null =
+		null;
 
 	private recordProviderSyncedRemoteHead = (snapshot: Uint8Array): void => {
 		this.sharedFolder.mergeManager?.seedServerAdvertisedSnapshotFromBytes(
@@ -620,12 +622,47 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 * its machine derives an ancestor or conflict from disk.
 	 */
 	async syncForRemapEnrollment(): Promise<boolean> {
+		const hsm = this._hsm;
+		if (!hsm) return false;
+		const releaseIfSettled = () => {
+			if (this._remapEnrollmentWatch?.hsm !== hsm) return;
+			if (!hsm.state.lca || !hsm.matches("idle.synced")) return;
+			this.releaseRemapEnrollmentWatch();
+		};
+		if (this._remapEnrollmentWatch?.hsm !== hsm) {
+			this.releaseRemapEnrollmentWatch();
+			if (!this.ensureIdleProviderIntegration()) return false;
+			this._remapEnrollmentWatch = {
+				hsm,
+				unsub: hsm.onStateChange(releaseIfSettled),
+			};
+		}
 		const connected = await this.connect();
-		if (!connected || this.destroyed) return false;
+		if (!connected || this.destroyed) {
+			this.releaseRemapEnrollmentWatch();
+			return false;
+		}
 		await this.onceProviderSynced();
-		if (this.destroyed) return false;
-		this._hsm?.send({ type: "PROVIDER_SYNCED" });
+		if (this.destroyed) {
+			this.releaseRemapEnrollmentWatch();
+			return false;
+		}
+		// ProviderIntegration owns PROVIDER_SYNCED and every later REMOTE_UPDATE.
+		// Keep its idle lease through a real conflict; resolution settles the
+		// machine and releases it through the watcher above.
+		releaseIfSettled();
 		return true;
+	}
+
+	private clearRemapEnrollmentWatch(): void {
+		this._remapEnrollmentWatch?.unsub();
+		this._remapEnrollmentWatch = null;
+	}
+
+	private releaseRemapEnrollmentWatch(): void {
+		if (!this._remapEnrollmentWatch) return;
+		this.clearRemapEnrollmentWatch();
+		this.destroyIdleProviderIntegration();
 	}
 
 	public get ready(): boolean {
@@ -800,6 +837,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		const destroyedError = this.destroyedError();
 		this.destroyed = true;
 		const hsm = this._hsm;
+		this.releaseRemapEnrollmentWatch();
 		this.lifetime.end(destroyedError);
 		(this.requestSave as unknown as { cancel?: () => void }).cancel?.();
 		this.unsubscribes.forEach((unsubscribe) => {
