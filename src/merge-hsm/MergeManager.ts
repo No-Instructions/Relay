@@ -57,6 +57,7 @@ import {
 } from './snapshots';
 import { metrics, curryLog } from '../debug';
 import { trackPromise } from '../trackPromise';
+import { SyncPlanner } from './SyncPlanner';
 
 // =============================================================================
 // Types
@@ -468,6 +469,10 @@ export class MergeManager {
   // Hibernation configuration
   private _hibernateTimeoutMs: number;
   private _maxConcurrentWarm: number;
+
+  // Sync work selection for this folder's cold fleet; the background sync
+  // executor asks the planner instead of reading merge state directly.
+  readonly syncPlanner = new SyncPlanner();
 
   // Configuration
   private _getVaultId: (guid: string) => string;
@@ -1850,6 +1855,7 @@ export class MergeManager {
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.syncPlanner.destroy();
 
     // Clear all hibernate timers
     for (const [guid] of this._hibernateTimers) {

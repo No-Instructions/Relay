@@ -865,19 +865,19 @@ class RelayMetrics {
 		this.postieRecipientErrors?.inc();
 	}
 
-	observeBgSyncOp(operation: "sync" | "download", durationSeconds: number): void {
+	observeBgSyncOp(operation: string, durationSeconds: number): void {
 		this.bgSyncOpSeconds?.labels({ operation }).observe(durationSeconds);
 	}
 
-	setBgSyncActive(operation: "sync" | "download", count: number): void {
+	setBgSyncActive(operation: string, count: number): void {
 		this.bgSyncActive?.labels({ operation }).set(count);
 	}
 
-	setBgSyncQueueLength(operation: "sync" | "download", length: number): void {
+	setBgSyncQueueLength(operation: string, length: number): void {
 		this.bgSyncQueueLength?.labels({ operation }).set(length);
 	}
 
-	incBgSyncOps(operation: "sync" | "download", result: "completed" | "failed"): void {
+	incBgSyncOps(operation: string, result: "completed" | "failed"): void {
 		this.bgSyncOpsTotal?.labels({ operation, result }).inc();
 	}
 
@@ -886,7 +886,7 @@ class RelayMetrics {
 	}
 
 	observeBgSyncDrain(
-		operation: "sync" | "download",
+		operation: string,
 		durationSeconds: number,
 		itemsStarted: number,
 		budgetMs: number,
@@ -902,7 +902,7 @@ class RelayMetrics {
 	}
 
 	observeBgSyncSort(
-		operation: "sync" | "download",
+		operation: string,
 		reason: "enqueue" | "retry" | "batch" | "group",
 		items: number,
 		durationSeconds: number,
@@ -912,16 +912,16 @@ class RelayMetrics {
 	}
 
 	observeBgSyncItemAge(
-		operation: "sync" | "download",
-		intent: "sync" | "upload" | "lca-backfill" | "download",
+		operation: string,
+		intent: string,
 		ageSeconds: number,
 	): void {
 		this.bgSyncItemAgeSeconds?.labels({ operation, intent }).observe(ageSeconds);
 	}
 
 	recordBgSyncRetry(
-		operation: "sync" | "download",
-		reason: "provider" | "s3",
+		operation: string,
+		reason: string,
 		attempt: number,
 		delaySeconds: number,
 	): void {
@@ -934,8 +934,8 @@ class RelayMetrics {
 	}
 
 	observeBgSyncRetryLateness(
-		operation: "sync" | "download",
-		reason: "provider" | "s3",
+		operation: string,
+		reason: string,
 		latenessSeconds: number,
 	): void {
 		this.bgSyncRetryLatenessSeconds?.labels({ operation, reason }).observe(latenessSeconds);

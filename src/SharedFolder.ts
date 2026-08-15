@@ -30,10 +30,10 @@ import { S3Folder, S3RN, S3RemoteFolder, S3RemoteDocument } from "./S3RN";
 import type { RemoteSharedFolder } from "./Relay";
 import { RelayManager } from "./RelayManager";
 import type { Unsubscriber } from "svelte/store";
-import {
-	BackgroundSync,
-	type SyncCompletionOutcome,
-} from "./BackgroundSync";
+import type {
+	BackgroundSyncApi,
+	SyncCompletionOutcome,
+} from "./background-sync/types";
 import type { NamespacedSettings } from "./SettingsStorage";
 import { RelayInstances, metrics } from "./debug";
 import { LocalStorage } from "./LocalStorage";
@@ -64,6 +64,12 @@ import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
 import { Canvas, isCanvas } from "./Canvas";
 import { flags } from "./flagManager";
 import { MergeManager, WakePriority } from "./merge-hsm/MergeManager";
+import {
+	planAdvertisedBaselineBackfills,
+	planBaselineBackfills,
+	planFolderConvergeSweep,
+	selectAdvertisedCanvasSignals,
+} from "./merge-hsm/SyncPlanner";
 import {
 	E2ERecordingBridge,
 	type HSMLogEntry,
@@ -165,6 +171,9 @@ interface PendingPublicationRun {
 // server pushes a document.updated event (and advertises the guid in the
 // subdoc index) once content exists, so polling past this is wasted work.
 const MAX_EMPTY_SERVER_ATTEMPTS = 3;
+
+// Cadence of the folder's own disk poll for external writes.
+const FOLDER_DISK_POLL_INTERVAL_MS = 5000;
 
 // Vault-delete echo suppression tokens outlive the slowest observed
 // reconcile dispatch (seconds) by a wide margin, and expire so a stale
@@ -345,6 +354,7 @@ export class SharedFolder extends HasProvider {
 	private startupScanComplete = false;
 	private startupScanPromise: Promise<void>;
 	private resolveStartupScan?: () => void;
+	private diskPollInterval: number | null = null;
 	private connectionAttempt: Promise<boolean> | null = null;
 	private startupConnectRequested = false;
 
@@ -359,7 +369,7 @@ export class SharedFolder extends HasProvider {
 		tokenStore: LiveTokenStore,
 		relayManager: RelayManager,
 		private hashStore: ContentAddressedFileStore,
-		public backgroundSync: BackgroundSync,
+		public backgroundSync: BackgroundSyncApi,
 		private _settings: NamespacedSettings<SharedFolderSettings>,
 		private _hsmStore: HSMStore,
 		timeProvider: TimeProvider,
@@ -377,6 +387,12 @@ export class SharedFolder extends HasProvider {
 			this.resolveStartupScan = resolve;
 		});
 		this.timeProvider = timeProvider;
+		// The folder owns its disk-poll cadence: external writes (vim, git,
+		// other sync tools) surface as stat changes between vault events.
+		this.diskPollInterval = this.timeProvider.setInterval(() => {
+			if (this.destroyed) return;
+			void this.poll();
+		}, FOLDER_DISK_POLL_INTERVAL_MS);
 		this.path = path;
 		this.setLoggers(`[SharedFile](${this.path})`);
 		this.fileManager = fileManager;
@@ -794,19 +810,71 @@ export class SharedFolder extends HasProvider {
 						await this.whenMembershipSettled();
 					}
 					if (this.destroyed) return;
-					const queuedRemoteHead = this.backgroundSync.enqueueRemoteHeadSyncs(
-						this,
-						advertisedGuids,
-					);
-					const queuedLCABackfill = this.backgroundSync.enqueueAdvertisedLCABackfills(
-						this,
-						advertisedGuids,
-					);
-					if (queuedRemoteHead > 0) {
-						this.debug(`[subdoc-index] queued ${queuedRemoteHead} remote-head syncs`);
+					if (!this.connected) return;
+					// The planner selects; the executor admits. Converge
+					// requests are listed before baseline backfills so a
+					// document both predicates match settles as one converge
+					// admission.
+					const advertised = new Set(advertisedGuids);
+					if (advertised.size === 0) return;
+					const documents: Document[] = [];
+					const canvases: Canvas[] = [];
+					for (const file of this.files.values()) {
+						if (isDocument(file)) documents.push(file);
+						else if (isCanvas(file)) canvases.push(file);
 					}
-					if (queuedLCABackfill > 0) {
-						this.debug(`[subdoc-index] queued ${queuedLCABackfill} LCA backfills`);
+					// Deduplication scopes match the queue each selection
+					// feeds: session work for documents, transfer work for
+					// canvas signals. An advertisement for a document
+					// mid-download must still plan its converge — dropping
+					// it would strand the doc behind the advertised head
+					// until the next advertisement.
+					const sessionInFlight = (guid: string) =>
+						this.backgroundSync.isQueuedOrActive(guid, "session");
+					const requests =
+						this.mergeManager?.syncPlanner.planAdvertisedConvergeRequests(
+							documents,
+							advertised,
+							this.timeProvider.now(),
+							sessionInFlight,
+						) ?? [];
+					const backfills = planAdvertisedBaselineBackfills(
+						documents,
+						advertised,
+						sessionInFlight,
+					);
+					// SERVER_AHEAD is a signal, not a command — each canvas's
+					// machine decides whether a download is appropriate. An
+					// advertised head is fresh evidence the server has
+					// content; hibernated canvases wake through the shared
+					// queue and the machine remembers the signal until it
+					// settles.
+					const canvasSignals = selectAdvertisedCanvasSignals(
+						canvases,
+						advertised,
+						(guid) =>
+							this.backgroundSync.isQueuedOrActive(guid, "transfer"),
+					);
+					for (const canvas of canvasSignals) {
+						this.clearServerEmpty(canvas.guid);
+						canvas.hsm.send({ type: "SERVER_AHEAD" });
+						if (!canvas.isMaterialized) {
+							this.mergeManager?.enqueueWake({
+								guid: canvas.guid,
+								priority: WakePriority.REMOTE_UPDATE,
+							});
+						}
+					}
+					this.backgroundSync.enqueueMany([...requests, ...backfills]);
+					if (requests.length + canvasSignals.length > 0) {
+						this.debug(
+							`[subdoc-index] queued ${requests.length + canvasSignals.length} remote-head syncs`,
+						);
+					}
+					if (backfills.length > 0) {
+						this.debug(
+							`[subdoc-index] queued ${backfills.length} LCA backfills`,
+						);
 					}
 				})
 				.catch((e) => {
@@ -1198,7 +1266,9 @@ export class SharedFolder extends HasProvider {
 		pending: Uint8Array[],
 	): void {
 		this._pendingKeyframeUpdates.set(guid, pending);
-		this.backgroundSync.enqueueDownload(file, false).then((keyframe) => {
+		// Immediate lane: buffered live edits wait on this keyframe, so the
+		// fetch must not park behind queued sweep downloads.
+		this.backgroundSync.downloadNow(file).then((keyframe) => {
 			// The longest window in the folder: a network round trip, after
 			// which every branch below reaches for the merge manager that
 			// teardown released. This callback has no rejection handler, so
@@ -1688,7 +1758,20 @@ export class SharedFolder extends HasProvider {
 				await this.whenMembershipSettled();
 			}
 			if (this.destroyed) return;
-			this.backgroundSync.enqueueSharedFolderSync(this);
+			// The sweep's selection is the merge layer's; the executor owns
+			// pass accounting, ordering, and admission.
+			const documents: Document[] = [];
+			const canvases: Canvas[] = [];
+			const syncFiles: SyncFile[] = [];
+			for (const file of this.files.values()) {
+				if (isDocument(file)) documents.push(file);
+				else if (isCanvas(file)) canvases.push(file);
+				else if (isSyncFile(file)) syncFiles.push(file);
+			}
+			this.backgroundSync.enqueuePass(
+				this,
+				planFolderConvergeSweep({ documents, canvases, files: syncFiles }),
+			);
 		} catch (error) {
 			if (isDestroyedError(error)) return;
 			throw error;
@@ -1865,9 +1948,16 @@ export class SharedFolder extends HasProvider {
 
 	private enqueueLCABackfill(reason: string): void {
 		if (this.destroyed || this.localOnly || !this.connected) return;
-		const queued = this.backgroundSync.enqueueLCABackfill(this);
-		if (queued > 0) {
-			this.debug(`[lca-backfill] queued ${queued} documents (${reason})`);
+		// The planner selects; the executor admits (sync work routing).
+		const documents = [...this.files.values()].filter(isDocument);
+		const requests = planBaselineBackfills(documents, (guid) =>
+			this.backgroundSync.isQueuedOrActive(guid, "session"),
+		);
+		if (requests.length > 0) {
+			this.backgroundSync.enqueueMany(requests);
+			this.debug(
+				`[lca-backfill] queued ${requests.length} documents (${reason})`,
+			);
 		}
 	}
 
@@ -3882,7 +3972,7 @@ export class SharedFolder extends HasProvider {
 		const canvas = this.getOrCreateCanvas(guid, vpath);
 		canvas.markOrigin("remote");
 
-		this.backgroundSync.enqueueCanvasDownload(canvas, userVisible);
+		this.backgroundSync.enqueueDownload(canvas, userVisible);
 
 		this.files.set(guid, canvas);
 		this.fset.add(canvas);
@@ -3979,7 +4069,7 @@ export class SharedFolder extends HasProvider {
 			.then(async () => {
 				const synced = await canvas.getServerSynced();
 				if (canvas.stat.size === 0 && !synced) {
-					this.backgroundSync.enqueueCanvasDownload(canvas);
+					this.backgroundSync.enqueueDownload(canvas);
 				} else if (this.pendingUpload.get(canvas.path)) {
 					if (this.shouldRoutePendingPublication(canvas.path)) {
 						await this.applyPendingUpload(canvas.path).promise;
@@ -4876,6 +4966,10 @@ export class SharedFolder extends HasProvider {
 			`${this.path} (${this.guid})`,
 		);
 		this.destroyed = true;
+		if (this.diskPollInterval != null) {
+			this.timeProvider.clearInterval(this.diskPollInterval);
+			this.diskPollInterval = null;
+		}
 		this.markStartupScanComplete();
 		// Release outbound work held for membership settlement: awaiters
 		// re-check `destroyed` and bail instead of pending forever.
