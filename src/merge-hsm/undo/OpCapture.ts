@@ -800,6 +800,48 @@ export class OpCapture {
 	}
 
 	/**
+	 * Encode an unshipped entry's clock range as content-free GC structs.
+	 * The receiver advances past the clocks without integrating map items, so
+	 * abandoned provisional values cannot participate in key conflict ordering.
+	 */
+	encodeEntryAsGC(entry: CapturedOp): Uint8Array {
+		if (entry._synced) {
+			throw new Error("OpCapture.encodeEntryAsGC(): entry was synced to remote");
+		}
+		const byClient = new Map<number, Item[]>();
+		transact(this.doc, (transaction: Transaction) => {
+			iterateDeletedStructs(transaction, entry.insertions, (struct: Item | GC) => {
+				if (
+					struct instanceof Item &&
+					this.scope.some((type) => isParentOf(type, struct))
+				) {
+					const items = byClient.get(struct.id.client) ?? [];
+					items.push(struct);
+					byClient.set(struct.id.client, items);
+				}
+			});
+		});
+		const encoder = new UpdateEncoderV1();
+		encoding.writeVarUint(encoder.restEncoder, byClient.size);
+		for (const [client, items] of byClient) {
+			items.sort((a, b) => a.id.clock - b.id.clock);
+			for (let i = 1; i < items.length; i++) {
+				if (items[i - 1].id.clock + items[i - 1].length !== items[i].id.clock) {
+					throw new Error("OpCapture.encodeEntryAsGC(): non-contiguous entry");
+				}
+			}
+			encoding.writeVarUint(encoder.restEncoder, items.length);
+			encoder.writeClient(client);
+			encoding.writeVarUint(encoder.restEncoder, items[0].id.clock);
+			for (const item of items) {
+				new GC(item.id, item.length).write(encoder, 0);
+			}
+		}
+		writeDeleteSet(encoder, entry.deletions);
+		return encoder.toUint8Array();
+	}
+
+	/**
 	 * Drop entries without reversing: remove from log and release GC holds.
 	 * The CRDT state is unchanged — Y.js is free to GC the released items.
 	 */
@@ -868,6 +910,11 @@ export class OpCapture {
 		this.entries.length = 0;
 
 		this._storage?.clear();
+	}
+
+	/** Detach persistence hooks when teardown must retain the durable ledger. */
+	detachStorage(): void {
+		this._storage = null;
 	}
 
 	// -----------------------------------------------------------------------

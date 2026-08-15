@@ -2985,7 +2985,7 @@ export class SharedFolder extends HasProvider {
 	private abandonClaim(path: string): void {
 		const ledger = this.claimLedger;
 		if (!ledger) return;
-		const scrubbed = ledger.rewriteClaim(path, { id: "" } as Meta);
+		const scrubbed = ledger.scrubClaim(path);
 		if (!scrubbed) return;
 		this.captureBridge?.replaceOutboundUpdate(
 			new Set([path]),

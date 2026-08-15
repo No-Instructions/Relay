@@ -606,6 +606,7 @@ export class IndexeddbPersistence extends Observable {
       }
       // Destroy OpCapture (releases keepItem holds, no persistence needed)
       if (this.opCapture) {
+		this.opCapture.detachStorage()
         this.opCapture.destroy()
         this.opCapture = null
       }

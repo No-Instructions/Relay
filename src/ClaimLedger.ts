@@ -193,6 +193,18 @@ export class ClaimLedger {
 		return { entries, update: Y.mergeUpdates(updates) };
 	}
 
+	/** Replace an unshipped claim's clock range with content-free GC structs. */
+	scrubClaim(path: string): { entries: CapturedOp[]; update: Uint8Array } | null {
+		const entries = this.unshippedClaimEntries(path);
+		if (entries.length === 0) return null;
+		return {
+			entries,
+			update: Y.mergeUpdates(
+				entries.map((entry) => this.opCapture.encodeEntryAsGC(entry)),
+			),
+		};
+	}
+
 	/**
 	 * The claim is resolved: its entries leave the ledger without touching
 	 * the document. Used after a rewrite, when the items are no longer
