@@ -259,12 +259,13 @@ export class FolderCaptureBridge {
 	private reconcileShadowedKeys(): void {
 		const { localDoc, remoteDoc } = this.opts;
 		const held = this.opts.heldPaths();
+		const queued = this.queuedOutboundPaths();
 		const shadowed: Array<[string, string, unknown]> = [];
 		for (const name of this.opts.scope) {
 			const remoteMap = remoteDoc.getMap(name);
 			const localMap = localDoc.getMap(name);
 			remoteMap.forEach((value, key) => {
-				if (held.has(key)) return;
+				if (held.has(key) || queued.has(key)) return;
 				const localValue = localMap.get(key);
 				if (JSON.stringify(localValue) !== JSON.stringify(value)) {
 					shadowed.push([name, key, value]);

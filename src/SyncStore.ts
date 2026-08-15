@@ -667,14 +667,24 @@ export class SyncStore extends Observable<SyncStore> {
 	 * entries, or legacy ids.
 	 */
 	getCommittedMeta(vpath: string): Meta | undefined {
+		if (this.heldDeletionPaths?.().has(vpath) ?? false) {
+			return undefined;
+		}
+		return this.getCommittedMetaIncludingHeldDeletion(vpath);
+	}
+
+	/**
+	 * Read the provider realm without treating a locally held deletion as
+	 * absent. Deletion expiry decisions use this to compare the identity that
+	 * is still committed on the server; claim and rebind decisions use the
+	 * filtered accessor above.
+	 */
+	getCommittedMetaIncludingHeldDeletion(vpath: string): Meta | undefined {
 		this.assertVPath(vpath);
 		if (this.renames.has(vpath)) {
 			vpath = this.renames.get(vpath)!;
 		}
-		if (
-			this.deleteSet.has(vpath) ||
-			(this.heldDeletionPaths?.().has(vpath) ?? false)
-		) {
+		if (this.deleteSet.has(vpath)) {
 			return undefined;
 		}
 		return this.committedMeta.get(vpath);

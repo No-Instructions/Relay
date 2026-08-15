@@ -752,8 +752,8 @@ export class OpCapture {
 
 	/**
 	 * Encode an entry's inserted items as a standalone update carrying
-	 * their current content and an empty delete set. Queued wire bytes
-	 * captured at write time go stale when `replaceUnshippedContent`
+	 * their current content and the entry's original delete set. Queued wire
+	 * bytes captured at write time go stale when `replaceUnshippedContent`
 	 * rewrites the items; this re-derives them from the document. The
 	 * entry's insertions must be contiguous per client — which captured
 	 * transactions are by construction.
@@ -795,7 +795,7 @@ export class OpCapture {
 				item.write(encoder, 0);
 			}
 		}
-		writeDeleteSet(encoder, new DeleteSet());
+		writeDeleteSet(encoder, entry.deletions);
 		return encoder.toUint8Array();
 	}
 

@@ -109,7 +109,17 @@ export class FolderDeletionGate {
 	 * deletions and no quiet window is pending.
 	 */
 	rearm(): void {
-		if (this.closed || this.quietTimer !== null || this.heldBurst) return;
+		if (this.closed || this.quietTimer !== null) return;
+		if (this.heldBurst) {
+			const burst = Array.from(this.opts.heldDeletions()).sort();
+			if (burst.length === 0) {
+				this.heldBurst = null;
+				return;
+			}
+			this.heldBurst = burst;
+			this.opts.onHold(burst, (resolution) => this.resolve(resolution));
+			return;
+		}
 		if (this.opts.heldDeletions().size === 0) return;
 		this.evaluate();
 	}

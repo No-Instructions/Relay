@@ -615,6 +615,19 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		return this.lifetime.guard(() => super.onceProviderSynced());
 	}
 
+	/**
+	 * Bring a freshly remapped document to a current server snapshot before
+	 * its machine derives an ancestor or conflict from disk.
+	 */
+	async syncForRemapEnrollment(): Promise<boolean> {
+		const connected = await this.connect();
+		if (!connected || this.destroyed) return false;
+		await this.onceProviderSynced();
+		if (this.destroyed) return false;
+		this._hsm?.send({ type: "PROVIDER_SYNCED" });
+		return true;
+	}
+
 	public get ready(): boolean {
 		return this.persistenceSynced && this._awaitingUpdates === false;
 	}

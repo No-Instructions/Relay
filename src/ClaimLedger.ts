@@ -242,11 +242,11 @@ export class ClaimLedger {
 	 * the bridge's hold lifts and the next outbound flush ships them.
 	 * Returns the marked entries (the flushed batch).
 	 */
-	flush(paths: Iterable<string>): CapturedOp[] {
+	flush(paths: Iterable<string>, origin: unknown): CapturedOp[] {
 		const targets = new Set(paths);
 		const batch: CapturedOp[] = [];
 		for (const entry of this.opCapture.entries) {
-			if (entry._synced) continue;
+			if (entry._synced || entry.origin !== origin) continue;
 			for (const key of this.entryKeys(entry)) {
 				if (targets.has(key)) {
 					batch.push(entry);

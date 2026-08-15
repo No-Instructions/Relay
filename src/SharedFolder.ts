@@ -2338,6 +2338,22 @@ export class SharedFolder extends HasProvider {
 				this.log(`[${path}] ${operation} aborted after enroll: new document is stale`);
 				return;
 			}
+			// The transfer snapshot can become stale while this device is
+			// enrolling it. Join the document room and wait for its handshake
+			// before deriving an ancestor or conflict from disk; otherwise a
+			// never-synced peer can resolve against the transfer snapshot while
+			// another peer is already editing the same identity.
+			const serverSnapshotCurrent = await newDoc.syncForRemapEnrollment();
+			if (!serverSnapshotCurrent) {
+				recordOperationTerminal("deferred");
+				this.log(`[${path}] ${operation} deferred: document did not connect`);
+				return;
+			}
+			if (!isCurrentDoc()) {
+				recordOperationTerminal("deferred");
+				this.log(`[${path}] ${operation} aborted after sync: new document is stale`);
+				return;
+			}
 			if (newDoc.hsm && !newDoc.hsm.state.lca) {
 				await newDoc.hsm.awaitIdle();
 				const diskState = await newDoc.readDiskContent();
@@ -3119,7 +3135,14 @@ export class SharedFolder extends HasProvider {
 	 */
 	private publishStagedClaim(path: string): void {
 		if (!this.claimLedger) return;
-		this.claimLedger.flush([path]);
+		// Recreating a held-deleted path replaces the old membership only after
+		// the new content transfer succeeds. At that point its deletion and
+		// claim are one decided replacement, released together; unrelated
+		// deletion entries remain under the gate.
+		if (this.claimLedger.heldDeletions().has(path)) {
+			this.claimLedger.flush([path], FOLDER_LOCAL_DELETE_ORIGIN);
+		}
+		this.claimLedger.flush([path], FOLDER_CLAIM_ORIGIN);
 		this.flushCaptureOutbound();
 	}
 
@@ -3228,22 +3251,30 @@ export class SharedFolder extends HasProvider {
 			return;
 		}
 		const shippable: string[] = [];
+		const expired: string[] = [];
 		for (const path of paths) {
 			const observed = ledger.deletionIdentity(path);
-			const committed = this.syncStore.getCommittedMeta(path);
+			const committed =
+				this.syncStore.getCommittedMetaIncludingHeldDeletion(path);
 			if (!committed || !observed || committed.id !== observed) {
 				this.warn("dropping expired deletion intent", path, {
 					observed,
 					committed: committed?.id,
 				});
-				ledger.cancelDeletions([path]);
+				expired.push(path);
 				continue;
 			}
 			shippable.push(path);
 		}
+		if (expired.length > 0) {
+			this.captureBridge?.discardOutbound(expired);
+			ledger.cancelDeletions(expired);
+			this.compactFolderStore();
+			this.scheduleDeletionRestorationSync();
+		}
 		if (shippable.length > 0) {
 			this.log("replicating local deletions", shippable);
-			ledger.flush(shippable);
+			ledger.flush(shippable, FOLDER_LOCAL_DELETE_ORIGIN);
 			this.flushCaptureOutbound();
 		}
 	}
@@ -3265,6 +3296,20 @@ export class SharedFolder extends HasProvider {
 		// The un-tombstone emits no update; without the compaction the
 		// persisted deletion replays at next boot over an emptied ledger.
 		this.compactFolderStore();
+		this.scheduleDeletionRestorationSync();
+	}
+
+	/** Re-run the tree after an observer-invisible captured-op cancellation. */
+	private scheduleDeletionRestorationSync(): void {
+		const sync = Promise.resolve().then(async () => {
+			if (this.destroyed) return;
+			await this.syncFileTree();
+		}).catch((e) => {
+			if (!isDestroyedError(e)) {
+				this.warn("restored-deletion tree sync failed", e);
+			}
+		});
+		trackPromise(`folder:restore-deletions:${this.guid}`, sync);
 	}
 
 	private surfaceHeldDeletionBurst(

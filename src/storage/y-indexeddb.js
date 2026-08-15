@@ -332,6 +332,7 @@ export class IndexeddbPersistence extends Observable {
      */
     this._pendingWrites = new Set()
     this._compactionRequested = false
+    this._forceCompactionRequested = false
     /**
      * Track pending compaction operation for proper teardown.
      * @type {Promise<void>|null}
@@ -541,16 +542,24 @@ export class IndexeddbPersistence extends Observable {
   }
 
   _requestCompaction (force = false) {
-    if (this._pendingCompaction) return this._pendingCompaction
+    if (force) this._forceCompactionRequested = true
+    if (this._pendingCompaction) {
+      const pending = this._pendingCompaction
+      return force
+        ? pending.then(() => this._requestCompaction())
+        : pending
+    }
     this._pendingCompaction = Promise.resolve()
       .then(async () => {
         if (!this._compactionRequested || this._destroyed || !this.db) return
         this._compactionRequested = false
+        const forceThisRun = this._forceCompactionRequested
+        this._forceCompactionRequested = false
         while (this._pendingWrites.size > 0) {
           await Promise.all(Array.from(this._pendingWrites))
         }
-        if (!this._destroyed && this.db && (force || this._dbsize >= RUNTIME_TRIM_SIZE)) {
-          await storeState(this, force)
+        if (!this._destroyed && this.db && (forceThisRun || this._dbsize >= RUNTIME_TRIM_SIZE)) {
+          await storeState(this, forceThisRun)
         }
       })
       .finally(() => {
