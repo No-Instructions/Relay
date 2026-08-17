@@ -453,6 +453,11 @@ export function seedUpdateBoundedByHead(
 	}
 }
 
+/**
+ * Rebuild a doc at an earlier snapshot of `doc`, verifying the rebuilt head
+ * matches; null when the snapshot is not contained or cannot be restored
+ * exactly.
+ */
 export function restoreDocAtSnapshot(
 	doc: Y.Doc,
 	snapshot: YjsSnapshot,

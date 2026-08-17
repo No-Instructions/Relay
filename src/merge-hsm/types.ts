@@ -171,6 +171,8 @@ export interface SyncMachine {
 	getWorkState(): SyncWorkState;
 	send(signal: SyncMachineSignal): void;
 	compareServerHead(head: YjsSnapshot): "ahead" | "current" | "unknown";
+	/** Retain a head the machine is already current with, without acting. */
+	noteServerHead(head: YjsSnapshot): void;
 }
 
 export interface MergeState {

@@ -5278,7 +5278,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	/**
 	 * Act on a server head from a state that can: compare it against this
 	 * machine's own basis and request a background sync session unless the
-	 * two are provably converged. A head with ops this machine lacks
+	 * two are provably converged. A head strictly ahead of the basis
 	 * converges immediately; any other divergence is a local-ahead flush,
 	 * paced by the in-memory attempt clock. A head equal to the basis clears
 	 * the clock and requests nothing.

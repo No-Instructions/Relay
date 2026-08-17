@@ -568,13 +568,27 @@ export class CanvasHSM implements SyncMachine {
 			return { ...base, verdict: "remote-ahead", disk };
 		}
 
-		const mapData = this.config.exportMapData?.();
+		const lcaData = this.context.lca
+			? parseCanvasData(this.context.lca.contents)
+			: null;
+		if (lcaData && areCanvasDataEqual(diskData, lcaData)) {
+			// The disk file is untouched since the last agreement, so the
+			// localDoc's divergence is newer by construction — including a
+			// peer's Y.Text edit whose node map still carries the old stored
+			// text. Flushing preserves it; the stale-text repair below must
+			// never preempt this verdict, or the file's old text would revert
+			// the fresh edit and replicate the reversion.
+			return { ...base, verdict: "remote-ahead", disk };
+		}
+		const mapData = lcaData ? this.config.exportMapData?.() : undefined;
 		if (mapData && areCanvasDataEqual(mapData, diskData)) {
-			// Stale text bodies: the node map is current with the disk file
-			// but a Y.Text body lags its node's stored text. The file is the
-			// canonical state — repair the localDoc from it through the
-			// ingest unit. The file already holds these bytes, so the host
-			// applies without writing.
+			// The disk file moved past the baseline and the node map matches
+			// it: only Y.Text bodies lag their nodes' stored text. The file
+			// is the canonical state — repair the localDoc from it through
+			// the ingest unit. The file already holds these bytes, so the
+			// host applies without writing. Without a baseline this shape
+			// stays with the additive union below, whose localDoc side
+			// preserves what cannot be proven stale.
 			return {
 				...base,
 				verdict: "ingest",
@@ -587,13 +601,6 @@ export class CanvasHSM implements SyncMachine {
 					diskCurrent: true,
 				},
 			};
-		}
-
-		const lcaData = this.context.lca
-			? parseCanvasData(this.context.lca.contents)
-			: null;
-		if (lcaData && areCanvasDataEqual(diskData, lcaData)) {
-			return { ...base, verdict: "remote-ahead", disk };
 		}
 		if (lcaData) {
 			// Disk changed with a baseline: per-id three-way merge. Base is
@@ -699,6 +706,15 @@ export class CanvasHSM implements SyncMachine {
 	 * "unknown" means no basis exists — no basis for skipping, so callers
 	 * treat it as ahead.
 	 */
+	/**
+	 * Record the newest server head without acting on it: the consulted
+	 * routing already proved the machine current with it, so retaining it
+	 * lets later sweeps skip this file instead of re-proving.
+	 */
+	noteServerHead(head: YjsSnapshot): void {
+		this._serverHead = head;
+	}
+
 	compareServerHead(head: YjsSnapshot): "ahead" | "current" | "unknown" {
 		const basis =
 			this.config.getLocalSnapshot?.() ??

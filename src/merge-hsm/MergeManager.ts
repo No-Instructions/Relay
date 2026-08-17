@@ -1059,7 +1059,9 @@ export class MergeManager {
   unregisterManagedFile(guid: string): void {
     if (!this._managedFiles.delete(guid)) return;
     this._managedMetaCache.delete(guid);
-    this._syncMachines.delete(guid);
+    // The sync-machine registration is removed only through its
+    // identity-guarded unsubscriber (held by the registering host); a raw
+    // delete here would take out a newer file's machine for the same guid.
     this.stopTracking(guid);
   }
 
@@ -1708,6 +1710,9 @@ export class MergeManager {
 
       const warm = this.isLoaded(this.getHibernationState(guid));
       if (!warm && machine.compareServerHead(head) === "current") {
+        // Provably current: no signal and no wake, but the machine keeps
+        // the head so later sweeps skip this file instead of re-proving.
+        machine.noteServerHead(head);
         continue;
       }
 

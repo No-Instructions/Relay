@@ -112,6 +112,8 @@ export class Canvas
 	private _localOnly = false;
 	/** Manager hook: warm-slot accounting on lazy materialization. */
 	onMaterialize: (() => void) | null = null;
+	/** Identity-guarded teardown for this canvas's sync-machine registration. */
+	unregisterSyncMachine: (() => void) | null = null;
 
 	/**
 	 * The vault-facing replica: views, disk ingestion, and export all read
@@ -230,8 +232,11 @@ export class Canvas
 			exportData: () => Canvas.exportCanvasData(this.localDoc),
 			exportMapData: () => Canvas.exportCanvasMapData(this.localDoc),
 			formatData: formatCanvasData,
+			// The live doc is the basis only once its persistence has
+			// replayed — mid-replay it reads as empty and would call every
+			// head ahead (the same guard the document machine applies).
 			getLocalSnapshot: () =>
-				this._localDoc
+				this._localDoc && this._persistenceInstance?.synced
 					? snapshotFromDoc(this._localDoc).snapshot
 					: null,
 			getColdHeadBasis: () =>
@@ -997,6 +1002,8 @@ export class Canvas
 			this._docChangedTimer = null;
 		}
 		this.sharedFolder.mergeManager?.unregisterManagedFile(this.guid);
+		this.unregisterSyncMachine?.();
+		this.unregisterSyncMachine = null;
 		this.hsm?.destroy();
 		this._bridge?.destroy();
 		this._viewReconciler = null;

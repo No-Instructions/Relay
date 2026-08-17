@@ -3845,7 +3845,10 @@ export class SharedFolder extends HasProvider {
 		if (this.mergeManager) {
 			const mergeManager = this.mergeManager;
 			mergeManager.registerManagedFile(canvas);
-			mergeManager.registerSyncMachine(canvas.guid, canvas.hsm);
+			canvas.unregisterSyncMachine = mergeManager.registerSyncMachine(
+				canvas.guid,
+				canvas.hsm,
+			);
 			// Lazy materialization anywhere (a view touching localDoc, an
 			// explicit whenSynced) flows back into warm accounting.
 			canvas.onMaterialize = () =>
