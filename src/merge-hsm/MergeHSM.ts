@@ -61,6 +61,8 @@ import type {
 	EditorViewRef,
 	ResourcePresence,
 	EnrollmentCompleteEvent,
+	ServerAheadEvent,
+	YjsSnapshot,
 } from "./types";
 import type { TimeProvider } from "../TimeProvider";
 import { DefaultTimeProvider } from "../TimeProvider";
@@ -312,6 +314,24 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 	// Consecutive idle retry count — used for backoff when drain rate < queue rate
 	private idleRetryCount = 0;
+
+	// Newest server head received via SERVER_AHEAD. Plain machine memory, not
+	// resettable context: it survives hibernation with the shell, so the
+	// machine — not a fleet table cleared on reconnect — owns what the server
+	// last claimed to hold.
+	private _serverHead: YjsSnapshot | null = null;
+
+	// A SERVER_AHEAD arrived while the machine could not act on it; drained by
+	// the next state whose entry can act.
+	private _serverHeadPending = false;
+
+	// Last local-ahead flush attempt. In-memory only — hibernation resets it,
+	// so a woken document may retry immediately; the limit paces repeated warm
+	// attempts against a server that refuses our ops.
+	private _localAheadAttemptAt: number | null = null;
+
+	// Minimum spacing between local-ahead flush attempts for a warm document.
+	private static readonly LOCAL_AHEAD_RETRY_INTERVAL_MS = 5 * 60_000;
 
 	// Consecutive superseded idle reconciliations. A superseded outcome (the
 	// world moved mid-operation) re-enters idle.loading to re-classify; this
@@ -839,6 +859,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	prepareForHibernate(): void {
 		this.captureLocalHeadForPersistence();
 		this.clearSettledDiskContents();
+		// The attempt clock paces repeated warm attempts only: a woken
+		// document may retry its local-ahead flush immediately.
+		this._localAheadAttemptAt = null;
 		if (
 			this._statePath !== "idle.synced" ||
 			this._fork ||
@@ -3627,6 +3650,24 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this._providerSynced = true;
 				this._bridge.providerSynced = true;
 			},
+			rememberServerAhead: (_hsm, event) => {
+				const head = (event as ServerAheadEvent).head;
+				// A headless signal is server evidence without a comparable
+				// head; it must not erase a real head already in the pocket.
+				if (head) this._serverHead = head;
+				this._serverHeadPending = true;
+			},
+			actOnServerAhead: (_hsm, event) => {
+				const head = (event as ServerAheadEvent).head ?? null;
+				if (head) this._serverHead = head;
+				this._serverHeadPending = false;
+				this.actOnServerHead(head);
+			},
+			drainServerAhead: () => {
+				if (!this._serverHeadPending) return;
+				this._serverHeadPending = false;
+				this.actOnServerHead(this._serverHead);
+			},
 			maybeSignalPersistenceSyncedForRecovery: () => {
 				this.maybeSignalPersistenceReady("event");
 			},
@@ -5133,6 +5174,61 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		} catch {
 			return true;
 		}
+	}
+
+	/**
+	 * The basis a server head is compared against: the live localDoc's head
+	 * when the machine is warm, the persisted local head (or the LCA head for
+	 * a clean hibernated document whose own head was compacted away) when
+	 * cold. Null means no basis — nothing can prove currency.
+	 */
+	private serverCompareBasis(): YjsSnapshot | null {
+		if (this.localDoc) {
+			try {
+				return snapshotFromDoc(this.localDoc);
+			} catch {
+				return null;
+			}
+		}
+		const bytes = this._localSnapshot ?? this._lca?.snapshot ?? null;
+		return bytes ? { snapshot: bytes } : null;
+	}
+
+	/**
+	 * Act on a server head from a state that can: compare it against this
+	 * machine's own basis and request a background sync session unless the
+	 * two are provably converged. A head with ops this machine lacks
+	 * converges immediately; any other divergence is a local-ahead flush,
+	 * paced by the in-memory attempt clock. A head equal to the basis clears
+	 * the clock and requests nothing.
+	 */
+	private actOnServerHead(head: YjsSnapshot | null): void {
+		if (head) {
+			const basis = this.serverCompareBasis();
+			if (basis) {
+				try {
+					if (snapshotsEqual(head, basis)) {
+						this._localAheadAttemptAt = null;
+						return;
+					}
+					if (!snapshotIsAhead(head, basis)) {
+						const now = this.timeProvider.now();
+						if (
+							this._localAheadAttemptAt !== null &&
+							now - this._localAheadAttemptAt <
+								MergeHSM.LOCAL_AHEAD_RETRY_INTERVAL_MS
+						) {
+							return;
+						}
+						this._localAheadAttemptAt = now;
+					}
+				} catch {
+					// An unreadable head or basis cannot prove convergence;
+					// fall through and request the session.
+				}
+			}
+		}
+		this.emitEffect({ type: "ENQUEUE_SYNC", guid: this._guid });
 	}
 
 	private providerSyncedRemoteAhead(): boolean {

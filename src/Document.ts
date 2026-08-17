@@ -871,6 +871,16 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			case "PERSIST_STATE":
 				await this.handlePersistState(effect.state);
 				break;
+			case "ENQUEUE_SYNC": {
+				// The machine concluded the document and the server head are
+				// not provably converged; a background session converges both
+				// directions. The queue owns dedupe, retry, and failure rows.
+				if (this.destroyed) break;
+				this.sharedFolder.backgroundSync.enqueueSync(this).catch((e) => {
+					this.warn("[handleEffect:ENQUEUE_SYNC] sync session failed", e);
+				});
+				break;
+			}
 			// Other effects (DISPATCH_CM6, STATUS_CHANGED, etc.) are handled elsewhere
 		}
 	}

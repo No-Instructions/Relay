@@ -306,6 +306,24 @@ export interface ProviderSyncedEvent {
 	type: "PROVIDER_SYNCED";
 }
 
+/**
+ * The server holds a head for this document that the machine may not have.
+ * A core signal shared by every sync machine: states that cannot act on it
+ * pocket the newest head; acting states compare it against the machine's
+ * own basis and request convergence work when the two are not provably
+ * converged.
+ */
+export interface ServerAheadEvent {
+	type: "SERVER_AHEAD";
+	/**
+	 * The server head — the YjsSnapshot the server holds for this document.
+	 * Absent when the delivery proves the server has newer state without
+	 * carrying a comparable head (a live-event dependency gap); an absent
+	 * head is treated as ahead.
+	 */
+	head?: YjsSnapshot;
+}
+
 export interface RecoverLCAEvent {
 	type: "RECOVER_LCA";
 	disk: {
@@ -566,6 +584,7 @@ export type MergeEvent =
 	| SaveCompleteEvent
 	| CM6ChangeEvent
 	| ProviderSyncedEvent
+	| ServerAheadEvent
 	| RecoverLCAEvent
 	| ConnectedEvent
 	| DisconnectedEvent
@@ -647,6 +666,17 @@ export interface SyncToRemoteEffect {
 	update: Uint8Array;
 }
 
+/**
+ * Request a background provider sync session so the document converges
+ * with the server. Emitted when the machine learns of server-side state
+ * it cannot reach through a live provider connection; the host translates
+ * it into a background-sync session request.
+ */
+export interface EnqueueSyncEffect {
+	type: "ENQUEUE_SYNC";
+	guid: string;
+}
+
 export interface StatusChangedEffect {
 	type: "STATUS_CHANGED";
 	guid: string;
@@ -694,6 +724,7 @@ export type MergeEffect =
 	| WriteDiskEffect
 	| PersistStateEffect
 	| SyncToRemoteEffect
+	| EnqueueSyncEffect
 	| StatusChangedEffect
 	| RequestProviderSyncEffect
 	| RequestHibernateEffect
@@ -828,6 +859,9 @@ export interface PersistedStateMeta {
 // Re-export TimeProvider from existing module for consistency
 import type { TimeProvider } from "../TimeProvider";
 export type { TimeProvider };
+
+import type { YjsSnapshot } from "./snapshots";
+export type { YjsSnapshot };
 
 // Import Y.Doc type for remoteDoc
 import type * as Y from "yjs";
