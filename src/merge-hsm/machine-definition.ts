@@ -776,6 +776,17 @@ export const MACHINE: MachineDefinition = {
 	},
 };
 
+// A completed content download carries the same conclusion as a provider
+// session reaching synced: remote state is now known. Every state that
+// handles PROVIDER_SYNCED handles DOWNLOAD_COMPLETE identically — one rule,
+// not twenty hand-kept copies. DOWNLOAD_FAILED delivers no state and is
+// absorbed wherever it lands.
+for (const node of Object.values(MACHINE)) {
+	if (node?.on?.PROVIDER_SYNCED && !node.on.DOWNLOAD_COMPLETE) {
+		node.on.DOWNLOAD_COMPLETE = node.on.PROVIDER_SYNCED;
+	}
+}
+
 // =============================================================================
 // Default Lookup Tables (empty — overridden per-instance by MergeHSM)
 // =============================================================================

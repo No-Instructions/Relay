@@ -166,7 +166,7 @@ function fileHasConflict(sharedFolder: SharedFolder, guid: string): boolean {
 	const file = sharedFolder.files.get(guid) as any;
 	const hsm = file?.hsm;
 	if (hsm) {
-		const status = hsm.getSyncStatus?.() as SyncStatus | undefined;
+		const status = hsm.getSyncStatus() as SyncStatus | undefined;
 		if (syncStatusHasConflict(status)) return true;
 		if (typeof hsm.getConflictData === "function" && hsm.getConflictData()) return true;
 		return false;

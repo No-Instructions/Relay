@@ -62,6 +62,8 @@ import type {
 	ResourcePresence,
 	EnrollmentCompleteEvent,
 	ServerAheadEvent,
+	SyncMachine,
+	SyncWorkState,
 	YjsSnapshot,
 } from "./types";
 import type { TimeProvider } from "../TimeProvider";
@@ -214,7 +216,7 @@ class SimpleObservable<T> implements IObservable<T> {
 // MergeHSM Class
 // =============================================================================
 
-export class MergeHSM implements MachineHSM, SyncBridgeHost {
+export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	// Current state path
 	private _statePath: StatePath = "unloaded";
 
@@ -1963,6 +1965,15 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		}
 	}
 
+	/** Work-relevant state for the shared sync-machine contract. */
+	getWorkState(): SyncWorkState {
+		return {
+			userLock: this.isActive(),
+			workPending: this._serverHeadPending,
+			baseline: this._lca !== null,
+		};
+	}
+
 	/**
 	 * Get the current sync status for this document.
 	 */
@@ -2672,7 +2683,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				if (!this.localDoc || !this.hasEnrolledLocalCRDT()) return false;
 				return this.localDoc.getText("contents").toString() !== this.pendingDiskContents;
 			},
-			canRecoverLCAWithPendingDisk: (_hsm, event) => this.canRecoverLCAWithPendingDisk(event.type === "PROVIDER_SYNCED"),
+			canRecoverLCAWithPendingDisk: (_hsm, event) =>
+				this.canRecoverLCAWithPendingDisk(
+					event.type === "PROVIDER_SYNCED" ||
+						event.type === "DOWNLOAD_COMPLETE",
+				),
 			remoteAheadAtLoad: () => {
 				if (this.needsDiskContentAtLoad()) return false;
 				if (!this._lca) return false;

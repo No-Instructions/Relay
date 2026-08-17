@@ -135,6 +135,44 @@ export interface SyncStatus {
 	remoteSnapshot: Uint8Array;
 }
 
+/**
+ * Core signals shared by every sync machine, pocketed when the machine
+ * cannot act, never dropped. Domain events (CM6_CHANGE, canvas LOAD,
+ * DISK_CHANGED, …) remain per-machine and are not part of the shared
+ * contract: a disk observation's shape is the machine's own — the document
+ * machine's carries the observed content so it never re-reads a moved
+ * file, while the canvas machine reads disk inside its own evaluation.
+ */
+export type SyncMachineSignal =
+	| { type: "SERVER_AHEAD"; head?: YjsSnapshot }
+	| { type: "PROVIDER_SYNCED" }
+	| { type: "DOWNLOAD_COMPLETE" }
+	| { type: "DOWNLOAD_FAILED" };
+
+/** Work-relevant state read before selecting work for a file. */
+export interface SyncWorkState {
+	/** A user surface owns the file (editor lock, attached view). */
+	userLock: boolean;
+	/** A transfer or signal the machine holds is unsettled. */
+	workPending: boolean;
+	/** A merge base exists. */
+	baseline: boolean;
+}
+
+/**
+ * The one CRDT surface every synced file type's decision-owner presents.
+ * The markdown machine and the canvas machine keep their domain-specific
+ * internals but answer this contract identically; `compareServerHead` is
+ * its defining obligation — cold-answerable from persisted state, with no
+ * materialization and no persistence loads.
+ */
+export interface SyncMachine {
+	getSyncStatus(): SyncStatus;
+	getWorkState(): SyncWorkState;
+	send(signal: SyncMachineSignal): void;
+	compareServerHead(head: YjsSnapshot): "ahead" | "current" | "unknown";
+}
+
 export interface MergeState {
 	/** Document GUID */
 	guid: string;
@@ -304,6 +342,21 @@ export interface CM6ChangeEvent {
 
 export interface ProviderSyncedEvent {
 	type: "PROVIDER_SYNCED";
+}
+
+/**
+ * A requested content download settled: the fetched full state has been
+ * applied to the remote replica. Carries the same conclusion as a provider
+ * session reaching synced — remote state is now known — and every state
+ * handles it identically to PROVIDER_SYNCED.
+ */
+export interface DownloadCompleteEvent {
+	type: "DOWNLOAD_COMPLETE";
+}
+
+/** A requested content download settled without delivering state. */
+export interface DownloadFailedEvent {
+	type: "DOWNLOAD_FAILED";
 }
 
 /**
@@ -585,6 +638,8 @@ export type MergeEvent =
 	| CM6ChangeEvent
 	| ProviderSyncedEvent
 	| ServerAheadEvent
+	| DownloadCompleteEvent
+	| DownloadFailedEvent
 	| RecoverLCAEvent
 	| ConnectedEvent
 	| DisconnectedEvent

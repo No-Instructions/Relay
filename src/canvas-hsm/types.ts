@@ -14,6 +14,7 @@
 
 import type { CanvasData } from "../CanvasView";
 import type { PersistedCanvasState } from "../merge-hsm/types";
+import type { YjsSnapshot } from "../merge-hsm/snapshots";
 
 // =============================================================================
 // States
@@ -133,7 +134,19 @@ export type CanvasEvent =
 	| { type: "ACQUIRE_LOCK" }
 	| { type: "RELEASE_LOCK" }
 	| { type: "OBSIDIAN_SET_VIEW_DATA" }
-	| { type: "SERVER_AHEAD" }
+	| {
+			/**
+			 * The server holds a head this canvas may not have. Carries the
+			 * head when the delivery has one; an absent head is server
+			 * evidence without a comparable head and is treated as ahead.
+			 */
+			type: "SERVER_AHEAD";
+			head?: YjsSnapshot;
+	}
+	| {
+			/** A provider session reached synced; posture is re-derived. */
+			type: "PROVIDER_SYNCED";
+	}
 	| { type: "FLUSH_COMPLETE"; contents: string; hash: string; mtime: number }
 	| { type: "FLUSH_FAILED"; error?: unknown }
 	| { type: "DOWNLOAD_COMPLETE" }

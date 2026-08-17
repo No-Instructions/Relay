@@ -2435,6 +2435,13 @@ export class BackgroundSync extends HasLogging {
 			await this.maybeBootstrapDocumentLCA(doc, token);
 		}
 
+		// Documents hear PROVIDER_SYNCED from their provider integration
+		// during the session; the canvas machine hears it here so a session
+		// means the same thing to both machines.
+		if (isCanvas(doc)) {
+			doc.hsm.send({ type: "PROVIDER_SYNCED" });
+		}
+
 		if (shouldCleanupIdleSession()) {
 			cleanupIdleSession();
 		}
@@ -2516,6 +2523,7 @@ export class BackgroundSync extends HasLogging {
 			this.debug(
 				`[getDocument] skipped ${doc.path}: server has no content for guid; awaiting server evidence`,
 			);
+			doc.hsm?.send({ type: "DOWNLOAD_FAILED" });
 			return undefined;
 		}
 		try {
@@ -2533,6 +2541,7 @@ export class BackgroundSync extends HasLogging {
 						"[getDocument] server CRDT empty, local has content — uploading",
 					);
 					this.enqueueSync(doc);
+					doc.hsm?.send({ type: "DOWNLOAD_FAILED" });
 					return undefined;
 				}
 				// The server pushes a document.updated event once a peer
@@ -2542,6 +2551,7 @@ export class BackgroundSync extends HasLogging {
 				this.log(
 					"[getDocument] Server contains uninitialized document. Waiting for peer to upload.",
 				);
+				doc.hsm?.send({ type: "DOWNLOAD_FAILED" });
 				return undefined;
 			}
 
@@ -2549,19 +2559,13 @@ export class BackgroundSync extends HasLogging {
 			Y.applyUpdate(doc.ydoc, updateBytes);
 			doc.hsm?.setRemoteDoc(doc.ydoc);
 			await this.maybeBootstrapDocumentLCA(doc, token);
-			this.notifyDownloadedRemoteHead(doc);
+			doc.hsm?.send({ type: "DOWNLOAD_COMPLETE" });
 			return updateBytes;
 		} catch (e) {
 			this.logError("[getDocument] failed", e);
+			doc.hsm?.send({ type: "DOWNLOAD_FAILED" });
 			throw e;
 		}
-	}
-
-	private notifyDownloadedRemoteHead(doc: Document): void {
-		const hsm = doc.hsm;
-		if (!hsm) return;
-
-		hsm.send({ type: "PROVIDER_SYNCED" });
 	}
 
 	private async maybeBootstrapDocumentLCA(

@@ -23,8 +23,10 @@ import { processEvent } from "../merge-hsm/machine-interpreter";
 import type {
 	ActiveInvoke,
 	PersistedCanvasState,
+	SyncMachine,
 	SyncStatus,
 	SyncStatusType,
+	SyncWorkState,
 } from "../merge-hsm/types";
 import {
 	areCanvasDataEqual,
@@ -145,7 +147,7 @@ function freshContext(): CanvasContext {
 	};
 }
 
-export class CanvasHSM {
+export class CanvasHSM implements SyncMachine {
 	readonly context: CanvasContext;
 	private _statePath: CanvasStatePath = "loading";
 	private _activeInvoke: ActiveInvoke | null = null;
@@ -166,6 +168,12 @@ export class CanvasHSM {
 	 * compareServerHead from the head its record carries.
 	 */
 	private _headBasis: Uint8Array | null = null;
+	/**
+	 * Newest server head received via SERVER_AHEAD, retained with the shell
+	 * (not resettable context) so the pocketed head survives hibernation and
+	 * the drain compares against the freshest claim.
+	 */
+	private _serverHead: YjsSnapshot | null = null;
 	private readonly hashFn: (contents: string) => Promise<string>;
 	private readonly now: () => number;
 	private interpreterConfig: {
@@ -224,8 +232,20 @@ export class CanvasHSM {
 				markUnlocked: () => {
 					this.context.userLock = false;
 				},
-				rememberServerAhead: () => {
+				rememberServerAhead: (_hsm, event) => {
+					const head =
+						event.type === "SERVER_AHEAD" ? event.head : undefined;
+					// A headless signal is server evidence without a comparable
+					// head; it must not erase a real head already pocketed.
+					if (head) this._serverHead = head;
 					this.context.serverAheadPending = true;
+				},
+				actOnServerAhead: (_hsm, event) => {
+					const head =
+						event.type === "SERVER_AHEAD" ? event.head : undefined;
+					if (head) this._serverHead = head;
+					this.context.serverAheadPending = false;
+					this.actOnServerHead(head ?? null);
 				},
 				rememberReevaluate: () => {
 					this.context.reevaluatePending = true;
@@ -237,7 +257,7 @@ export class CanvasHSM {
 				drainPendingSignals: () => {
 					if (this.context.serverAheadPending) {
 						this.context.serverAheadPending = false;
-						this.requestDownload();
+						this.actOnServerHead(this._serverHead);
 					}
 				},
 				settleDownload: () => {
@@ -476,6 +496,17 @@ export class CanvasHSM {
 		this.emit({ type: "ENQUEUE_DOWNLOAD" });
 	}
 
+	/**
+	 * Act on a server head from a state that can: a head provably converged
+	 * with this machine's basis requests nothing; anything else — including
+	 * a headless signal, which is server evidence without a comparable
+	 * head — requests a download.
+	 */
+	private actOnServerHead(head: YjsSnapshot | null): void {
+		if (head && this.compareServerHead(head) === "current") return;
+		this.requestDownload();
+	}
+
 	// =========================================================================
 	// Evaluation
 	// =========================================================================
@@ -687,6 +718,16 @@ export class CanvasHSM {
 		} catch {
 			return "unknown";
 		}
+	}
+
+	/** Work-relevant state for the shared sync-machine contract. */
+	getWorkState(): SyncWorkState {
+		return {
+			userLock: this.context.userLock,
+			workPending:
+				this.context.downloadPending || this.context.serverAheadPending,
+			baseline: this.context.lca !== null,
+		};
 	}
 
 	/**
