@@ -50,17 +50,7 @@
 		);
 	}
 
-	function refreshLocalFileFailures() {
-		const refreshFailures = sharedFolder.backgroundSync.refreshLocalFileFailures;
-		if (typeof refreshFailures !== "function") return;
-		refreshFailures
-			.call(sharedFolder.backgroundSync, sharedFolder)
-			.then(() => refreshStatusModel())
-			.catch(() => {});
-	}
-
 	refreshStatusModel();
-	refreshLocalFileFailures();
 
 	$: snapshot = statusModel.snapshot;
 	$: conflicts = statusModel.actionableFiles.filter(

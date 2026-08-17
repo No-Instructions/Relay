@@ -228,11 +228,21 @@ export class Canvas
 				};
 			},
 			exportData: () => Canvas.exportCanvasData(this.localDoc),
+			exportMapData: () => Canvas.exportCanvasMapData(this.localDoc),
 			formatData: formatCanvasData,
 			getLocalSnapshot: () =>
 				this._localDoc
 					? snapshotFromDoc(this._localDoc).snapshot
 					: null,
+			// The provider-facing replica receives server state; its head is
+			// the warm basis a server head is compared against. A hibernated
+			// canvas's replica is ephemeral (empty every fresh session), so
+			// the comparison falls back to the persisted record's head.
+			getRemoteSnapshot: () =>
+				this._materialized ? snapshotFromDoc(this.ydoc).snapshot : null,
+			getColdHeadBasis: () =>
+				this.sharedFolder.mergeManager?.getManagedMeta(this.guid)
+					?.localSnapshot ?? null,
 			onEffect: (effect) => this.executeEffect(effect),
 			onTransition: (from, to, eventType) => {
 				this.debug(`[hsm] ${from} -> ${to} (${eventType})`);
@@ -526,7 +536,12 @@ export class Canvas
 						this.hsm.send({ type: "FLUSH_FAILED" });
 						return;
 					}
-					await this.sharedFolder.flush(this, effect.contents);
+					// A stale-text repair applies the file's own content; the
+					// bytes are already on disk, so writing them again would
+					// only churn the mtime.
+					if (!effect.diskCurrent) {
+						await this.sharedFolder.flush(this, effect.contents);
+					}
 					this.hsm.send({
 						type: "FLUSH_COMPLETE",
 						contents: effect.contents,

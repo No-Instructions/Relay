@@ -31,6 +31,7 @@ import {
 	mergeCanvasThreeWay,
 	mergeCanvasViewData,
 } from "../CanvasData";
+import { snapshotsEqual, type YjsSnapshot } from "../merge-hsm/snapshots";
 import type { CanvasData } from "../CanvasView";
 import { generateHash } from "../hashing";
 import { curryLog } from "../debug";
@@ -159,6 +160,12 @@ export class CanvasHSM {
 	private _recentTransitions: CanvasStateTransition[] = [];
 	/** Result of the most recent completed evaluation (flush payload). */
 	private _lastEvaluation: EvaluationResult | null = null;
+	/**
+	 * The persisted record's local head, retained outside the resettable
+	 * context so a hibernated machine (context reset by LOAD) still answers
+	 * compareServerHead from the head its record carries.
+	 */
+	private _headBasis: Uint8Array | null = null;
 	private readonly hashFn: (contents: string) => Promise<string>;
 	private readonly now: () => number;
 	private interpreterConfig: {
@@ -206,6 +213,9 @@ export class CanvasHSM {
 					this.context.disk = event.state?.disk
 						? { ...event.state.disk }
 						: null;
+					if (event.state?.localSnapshot) {
+						this._headBasis = event.state.localSnapshot;
+					}
 					this.context.persistenceLoaded = true;
 				},
 				markLocked: () => {
@@ -306,6 +316,7 @@ export class CanvasHSM {
 						contents: merged.contents,
 						hash: merged.hash,
 						ours: merged.ours,
+						diskCurrent: merged.diskCurrent,
 					});
 				},
 				emitReconcileView: () => {
@@ -531,6 +542,27 @@ export class CanvasHSM {
 			return { ...base, verdict: "remote-ahead", disk };
 		}
 
+		const mapData = this.config.exportMapData?.();
+		if (mapData && areCanvasDataEqual(mapData, diskData)) {
+			// Stale text bodies: the node map is current with the disk file
+			// but a Y.Text body lags its node's stored text. The file is the
+			// canonical state — repair the localDoc from it through the
+			// ingest unit. The file already holds these bytes, so the host
+			// applies without writing.
+			return {
+				...base,
+				verdict: "ingest",
+				disk,
+				merged: {
+					data: diskData,
+					contents: raw,
+					hash: disk!.hash,
+					ours: data,
+					diskCurrent: true,
+				},
+			};
+		}
+
 		const lcaData = this.context.lca
 			? parseCanvasData(this.context.lca.contents)
 			: null;
@@ -600,6 +632,10 @@ export class CanvasHSM {
 	}
 
 	private buildPersistedState(): PersistedCanvasState {
+		const localSnapshot = this.config.getLocalSnapshot?.() ?? null;
+		if (localSnapshot) {
+			this._headBasis = localSnapshot;
+		}
 		return {
 			kind: "canvas",
 			guid: this.config.guid,
@@ -607,7 +643,7 @@ export class CanvasHSM {
 			folder: this.config.folderGuid,
 			lca: this.context.lca ? { ...this.context.lca } : null,
 			disk: this.context.disk ? { ...this.context.disk } : null,
-			localSnapshot: this.config.getLocalSnapshot?.() ?? null,
+			localSnapshot,
 			lastStatePath: this._statePath,
 			persistedAt: this.now(),
 		};
@@ -625,6 +661,32 @@ export class CanvasHSM {
 		return this.context.lca
 			? parseCanvasData(this.context.lca.contents)
 			: null;
+	}
+
+	/**
+	 * Cold-answerable server-head comparison. Answers from the machine's own
+	 * basis — the provider-facing replica's head when the working form is
+	 * warm, the persisted record's local head when cold (retained across
+	 * hibernation, or read from the bulk meta cache before the first
+	 * materialization) — with no materialization and no persistence loads.
+	 * "current" proves convergence with the head; "ahead" proves divergence;
+	 * "unknown" means no basis exists — no basis for skipping, so callers
+	 * treat it as ahead.
+	 */
+	compareServerHead(head: YjsSnapshot): "ahead" | "current" | "unknown" {
+		const basis =
+			this.config.getRemoteSnapshot?.() ??
+			this._headBasis ??
+			this.config.getColdHeadBasis?.() ??
+			null;
+		if (!basis) return "unknown";
+		try {
+			return snapshotsEqual(head, { snapshot: basis })
+				? "current"
+				: "ahead";
+		} catch {
+			return "unknown";
+		}
 	}
 
 	/**

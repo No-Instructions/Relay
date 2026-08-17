@@ -88,9 +88,9 @@ export interface EvaluationResult {
 	/** The disk JSON failed to parse. */
 	parseError: boolean;
 	/**
-	 * Merge result — three-way against the LCA, or the additive union by
-	 * identity when no baseline exists; present only with the ingest
-	 * verdict.
+	 * Merge result — three-way against the LCA, the additive union by
+	 * identity when no baseline exists, or the disk file itself when only
+	 * stale text bodies lag it; present only with the ingest verdict.
 	 */
 	merged?: {
 		data: CanvasData;
@@ -105,6 +105,12 @@ export interface EvaluationResult {
 		 * concurrent content (and replicate the deletion).
 		 */
 		ours: CanvasData;
+		/**
+		 * The disk file already holds exactly `contents` (the stale-text
+		 * repair: the node map matches the file, only Y.Text bodies lag).
+		 * The host applies the data into the localDoc but skips the write.
+		 */
+		diskCurrent?: boolean;
 	};
 }
 
@@ -156,6 +162,8 @@ export type CanvasEffect =
 			contents: string;
 			hash: string;
 			ours: CanvasData;
+			/** The disk file already holds `contents`; apply without writing. */
+			diskCurrent?: boolean;
 	}
 	| { type: "RECONCILE_VIEW" }
 	| { type: "ENQUEUE_DOWNLOAD" }
@@ -178,16 +186,34 @@ export interface CanvasHSMConfig {
 	readDisk: () => Promise<{ contents: string; mtime: number } | null>;
 	/** Export the localDoc's canvas data. */
 	exportData: () => CanvasData;
+	/**
+	 * Export the localDoc's node/edge records as stored in the maps, without
+	 * substituting Y.Text bodies. When this matches the disk file while the
+	 * full export does not, only text bodies lag and the machine repairs the
+	 * localDoc from the file instead of merging.
+	 */
+	exportMapData?: () => CanvasData;
 	/** Format canvas data as the on-disk JSON representation. */
 	formatData: (data: CanvasData) => string;
 	/** Content hash (defaults to the vault-wide SHA-256 helper). */
 	hashFn?: (contents: string) => Promise<string>;
 	/**
-	 * The localDoc's current head, persisted so the advertised-head sweep
-	 * can classify this canvas while hibernated. Absent on hosts that do
-	 * not track snapshots (tests).
+	 * The localDoc's current head, persisted so a server head can be
+	 * classified against this canvas while it is hibernated. Absent on
+	 * hosts that do not track snapshots (tests).
 	 */
 	getLocalSnapshot?: () => Uint8Array | null;
+	/**
+	 * The provider-facing replica's head while the working form is warm —
+	 * the basis a server head is compared against. Null when hibernated.
+	 */
+	getRemoteSnapshot?: () => Uint8Array | null;
+	/**
+	 * The persisted record's local head for a machine that has not loaded
+	 * persistence this session (the manager's bulk meta cache). Lets
+	 * compareServerHead answer cold at startup, before any materialization.
+	 */
+	getColdHeadBasis?: () => Uint8Array | null;
 	/** Clock for persistedAt stamps (injectable for tests). */
 	now?: () => number;
 	onEffect: (effect: CanvasEffect) => void;
