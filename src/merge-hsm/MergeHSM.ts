@@ -5426,6 +5426,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				? `${id.client}:${id.clock}`
 				: null;
 		};
+		// Y.Map does not expose the causal predecessor of a winning value.
+		// Pin this narrow use of Yjs's Item shape so concurrent map seeds can be
+		// distinguished from value writes based on our current winner.
 		const currentItem = (key: string): any => (ymap as any)._map.get(key);
 		this.frontmatterMapItemIds.clear();
 		for (const key of ymap.keys()) {
@@ -5436,10 +5439,13 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			const updates = [...event.changes.keys].filter(([, change]) =>
 				change.action === "update",
 			);
-			if (tr.origin === this.remoteDoc && updates.length > 0) {
+			if (
+				tr.origin === this.remoteDoc &&
+				!tr.changed.has(ytext as any) &&
+				updates.length > 0
+			) {
 				const parsed = this.parseFrontmatter(ytext.toString())?.parsed;
-				this._remoteFrontmatterMapUpdated = parsed !== undefined &&
-					updates.some(([key, change]) => {
+				const shouldArm = parsed !== undefined && updates.some(([key, change]) => {
 						const item = currentItem(key);
 						const priorId = this.frontmatterMapItemIds.get(key);
 						const causalPredecessor = itemId(item?.origin);
@@ -5449,12 +5455,16 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 							JSON.stringify(parsed[key]) === change.oldValue &&
 							ymap.get(key) !== change.oldValue;
 					});
+				if (shouldArm) this._remoteFrontmatterMapUpdated = true;
 			}
 
-			for (const key of event.keysChanged) {
+			for (const [key, change] of event.changes.keys) {
+				if (change.action === "delete") {
+					this.frontmatterMapItemIds.delete(key);
+					continue;
+				}
 				const id = itemId(currentItem(key));
-				if (id === null) this.frontmatterMapItemIds.delete(key);
-				else this.frontmatterMapItemIds.set(key, id);
+				if (id !== null) this.frontmatterMapItemIds.set(key, id);
 			}
 		};
 		ymap.observe(this.localFrontmatterObserver);
