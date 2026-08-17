@@ -5420,6 +5420,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		const ytext = this.localDoc.getText("contents");
 		const ymap = this.localDoc.getMap("frontmatter");
 		this.localFrontmatterObserver = (event, tr) => {
+			if (tr.origin !== this.remoteDoc) return;
+
 			const parsed = this.parseFrontmatter(ytext.toString())?.parsed;
 			const hasRemoteValueWrite = parsed !== undefined &&
 				[...event.changes.keys].some(([key, change]) =>
@@ -5427,7 +5429,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					key in parsed &&
 					JSON.stringify(parsed[key]) === change.oldValue,
 				);
-			if (tr.origin === this.remoteDoc && hasRemoteValueWrite) {
+			if (hasRemoteValueWrite) {
 				this._remoteFrontmatterMapUpdated = true;
 			}
 		};
@@ -6823,7 +6825,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 		this.applyContentToLocalDoc(newText, FRONTMATTER_MIRROR_ORIGIN);
 
-		if (editorText !== null) {
+		if (editorText !== null && this._statePath === "active.tracking") {
 			const changes = computePositionedChanges(editorText, newText);
 			if (changes.length > 0) {
 				this.emitEffect({
