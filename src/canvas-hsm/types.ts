@@ -134,19 +134,8 @@ export type CanvasEvent =
 	| { type: "ACQUIRE_LOCK" }
 	| { type: "RELEASE_LOCK" }
 	| { type: "OBSIDIAN_SET_VIEW_DATA" }
-	| {
-			/**
-			 * The server holds a head this canvas may not have. Carries the
-			 * head when the delivery has one; an absent head is server
-			 * evidence without a comparable head and is treated as ahead.
-			 */
-			type: "SERVER_AHEAD";
-			head?: YjsSnapshot;
-	}
-	| {
-			/** A provider session reached synced; posture is re-derived. */
-			type: "PROVIDER_SYNCED";
-	}
+	| { type: "SERVER_AHEAD"; head: YjsSnapshot }
+	| { type: "PROVIDER_SYNCED" }
 	| { type: "FLUSH_COMPLETE"; contents: string; hash: string; mtime: number }
 	| { type: "FLUSH_FAILED"; error?: unknown }
 	| { type: "DOWNLOAD_COMPLETE" }
@@ -216,11 +205,6 @@ export interface CanvasHSMConfig {
 	 * hosts that do not track snapshots (tests).
 	 */
 	getLocalSnapshot?: () => Uint8Array | null;
-	/**
-	 * The provider-facing replica's head while the working form is warm —
-	 * the basis a server head is compared against. Null when hibernated.
-	 */
-	getRemoteSnapshot?: () => Uint8Array | null;
 	/**
 	 * The persisted record's local head for a machine that has not loaded
 	 * persistence this session (the manager's bulk meta cache). Lets

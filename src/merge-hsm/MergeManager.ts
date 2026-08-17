@@ -1690,30 +1690,28 @@ export class MergeManager {
    * substrate to act on it.
    */
   serverHeadsReceived(
-    heads: Iterable<{ guid: string; snapshot?: Uint8Array }>,
+    heads: Iterable<{ guid: string; snapshot: Uint8Array }>,
   ): void {
     if (this.destroyed) return;
     for (const { guid, snapshot } of heads) {
       const machine = this._syncMachines.get(guid);
       if (!machine) continue;
 
-      let head: YjsSnapshot | null = null;
-      if (snapshot) {
-        try {
-          // Re-encoding gives map entries the same stable order as local
-          // snapshots, so exact matches take the byte-equality fast path.
-          head = { snapshot: Y.encodeSnapshot(Y.decodeSnapshot(snapshot)) };
-        } catch {
-          head = null;
-        }
-      }
-
-      const warm = this.isLoaded(this.getHibernationState(guid));
-      if (!warm && head && machine.compareServerHead(head) === "current") {
+      let head: YjsSnapshot;
+      try {
+        // Re-encoding gives map entries the same stable order as local
+        // snapshots, so exact matches take the byte-equality fast path.
+        head = { snapshot: Y.encodeSnapshot(Y.decodeSnapshot(snapshot)) };
+      } catch {
         continue;
       }
 
-      machine.send(head ? { type: "SERVER_AHEAD", head } : { type: "SERVER_AHEAD" });
+      const warm = this.isLoaded(this.getHibernationState(guid));
+      if (!warm && machine.compareServerHead(head) === "current") {
+        continue;
+      }
+
+      machine.send({ type: "SERVER_AHEAD", head });
 
       // A machine that could not act pocketed the head; wake it so the
       // pocket drains. One that acted from its shell needs no wake.

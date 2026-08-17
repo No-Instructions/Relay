@@ -2192,14 +2192,6 @@ export class BackgroundSync extends HasLogging {
 		if (doc.destroyed) return false;
 		this.log(`[syncDocWS] start: ${doc.path} guid=${doc.guid} intent=${doc.intent} connected=${doc.connected}`);
 		if (this.isSyncCancelledForDoc(doc)) return false;
-		if (isCanvas(doc)) {
-			// The session's provider updates land on the provider-facing
-			// replica; the canvas must be warm so the bridge carries them
-			// into the persisted localDoc rather than stranding them on an
-			// ephemeral doc. Disk verification and stale-text repair are the
-			// canvas machine's own disk evaluation, not the session's.
-			await doc.whenSynced();
-		}
 		const sharedFolder = doc.sharedFolder;
 		const refreshQueueKey = S3RN.encode(doc.s3rn);
 		// Manager activeness only exists for documents; canvas activeness
@@ -2306,12 +2298,10 @@ export class BackgroundSync extends HasLogging {
 			await this.maybeBootstrapDocumentLCA(doc, token);
 		}
 
-		// Documents hear PROVIDER_SYNCED from their provider integration
-		// during the session; the canvas machine hears it here so a session
-		// means the same thing to both machines.
-		if (isCanvas(doc)) {
-			doc.hsm.send({ type: "PROVIDER_SYNCED" });
-		}
+		// A session reaching synced means the same thing to every machine;
+		// the send is idempotent for documents, whose provider integration
+		// already delivered it mid-session.
+		doc.hsm?.send({ type: "PROVIDER_SYNCED" });
 
 		if (shouldCleanupIdleSession()) {
 			cleanupIdleSession();

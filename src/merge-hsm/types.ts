@@ -144,7 +144,7 @@ export interface SyncStatus {
  * file, while the canvas machine reads disk inside its own evaluation.
  */
 export type SyncMachineSignal =
-	| { type: "SERVER_AHEAD"; head?: YjsSnapshot }
+	| { type: "SERVER_AHEAD"; head: YjsSnapshot }
 	| { type: "PROVIDER_SYNCED" }
 	| { type: "DOWNLOAD_COMPLETE" }
 	| { type: "DOWNLOAD_FAILED" };
@@ -368,13 +368,8 @@ export interface DownloadFailedEvent {
  */
 export interface ServerAheadEvent {
 	type: "SERVER_AHEAD";
-	/**
-	 * The server head — the YjsSnapshot the server holds for this document.
-	 * Absent when the delivery proves the server has newer state without
-	 * carrying a comparable head (a live-event dependency gap); an absent
-	 * head is treated as ahead.
-	 */
-	head?: YjsSnapshot;
+	/** The server head — the YjsSnapshot the server holds for this document. */
+	head: YjsSnapshot;
 }
 
 export interface RecoverLCAEvent {

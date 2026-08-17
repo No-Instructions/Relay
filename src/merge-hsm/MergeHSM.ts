@@ -3717,15 +3717,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				this._bridge.providerSynced = true;
 			},
 			rememberServerAhead: (_hsm, event) => {
-				const head = (event as ServerAheadEvent).head;
-				// A headless signal is server evidence without a comparable
-				// head; it must not erase a real head already in the pocket.
-				if (head) this._serverHead = head;
+				this._serverHead = (event as ServerAheadEvent).head;
 				this._serverHeadPending = true;
 			},
 			actOnServerAhead: (_hsm, event) => {
-				const head = (event as ServerAheadEvent).head ?? null;
-				if (head) this._serverHead = head;
+				const head = (event as ServerAheadEvent).head;
+				this._serverHead = head;
 				this._serverHeadPending = false;
 				this.actOnServerHead(head);
 			},
@@ -3734,13 +3731,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			// there — resolution needs the remote replica's content — so the
 			// signal always requests the session that delivers it.
 			actOnServerAheadEvidence: (_hsm, event) => {
-				const head = (event as ServerAheadEvent).head ?? null;
-				if (head) this._serverHead = head;
+				this._serverHead = (event as ServerAheadEvent).head;
 				this._serverHeadPending = false;
 				this.emitEffect({ type: "ENQUEUE_SYNC", guid: this._guid });
 			},
 			drainServerAhead: () => {
-				if (!this._serverHeadPending) return;
+				if (!this._serverHeadPending || !this._serverHead) return;
 				this._serverHeadPending = false;
 				this.actOnServerHead(this._serverHead);
 			},
@@ -5287,30 +5283,28 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	 * paced by the in-memory attempt clock. A head equal to the basis clears
 	 * the clock and requests nothing.
 	 */
-	private actOnServerHead(head: YjsSnapshot | null): void {
-		if (head) {
-			const basis = this.serverCompareBasis();
-			if (basis) {
-				try {
-					if (snapshotsEqual(head, basis)) {
-						this._localAheadAttemptAt = null;
+	private actOnServerHead(head: YjsSnapshot): void {
+		const basis = this.serverCompareBasis();
+		if (basis) {
+			try {
+				if (snapshotsEqual(head, basis)) {
+					this._localAheadAttemptAt = null;
+					return;
+				}
+				if (!snapshotIsAhead(head, basis)) {
+					const now = this.timeProvider.now();
+					if (
+						this._localAheadAttemptAt !== null &&
+						now - this._localAheadAttemptAt <
+							MergeHSM.LOCAL_AHEAD_RETRY_INTERVAL_MS
+					) {
 						return;
 					}
-					if (!snapshotIsAhead(head, basis)) {
-						const now = this.timeProvider.now();
-						if (
-							this._localAheadAttemptAt !== null &&
-							now - this._localAheadAttemptAt <
-								MergeHSM.LOCAL_AHEAD_RETRY_INTERVAL_MS
-						) {
-							return;
-						}
-						this._localAheadAttemptAt = now;
-					}
-				} catch {
-					// An unreadable head or basis cannot prove convergence;
-					// fall through and request the session.
+					this._localAheadAttemptAt = now;
 				}
+			} catch {
+				// An unreadable head or basis cannot prove convergence;
+				// fall through and request the session.
 			}
 		}
 		this.emitEffect({ type: "ENQUEUE_SYNC", guid: this._guid });

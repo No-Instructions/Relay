@@ -234,12 +234,6 @@ export class Canvas
 				this._localDoc
 					? snapshotFromDoc(this._localDoc).snapshot
 					: null,
-			// The provider-facing replica receives server state; its head is
-			// the warm basis a server head is compared against. A hibernated
-			// canvas's replica is ephemeral (empty every fresh session), so
-			// the comparison falls back to the persisted record's head.
-			getRemoteSnapshot: () =>
-				this._materialized ? snapshotFromDoc(this.ydoc).snapshot : null,
 			getColdHeadBasis: () =>
 				this.sharedFolder.mergeManager?.getManagedMeta(this.guid)
 					?.localSnapshot ?? null,
@@ -645,6 +639,10 @@ export class Canvas
 	}
 
 	async connect(): Promise<boolean> {
+		// Warm before connecting: provider updates land on the provider-facing
+		// replica, and only a materialized canvas has the bridge that carries
+		// them into the persisted localDoc.
+		await this.whenSynced();
 		if (this.sharedFolder.s3rn instanceof S3Folder) {
 			// Local only
 			return false;

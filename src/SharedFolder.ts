@@ -71,6 +71,7 @@ import {
 import { recordHSMEntry } from "./debug";
 import { trackAsyncCleanup } from "./reloadUtils";
 import { DestroyedError, isDestroyedError } from "./DestroyedError";
+import { snapshotMetaFromUpdate } from "./merge-hsm/snapshots";
 import { readNoteText } from "./diskText";
 import {
 	HSMStore,
@@ -759,7 +760,7 @@ export class SharedFolder extends HasProvider {
 		};
 		provider.onSubdocIndex = (serverIndex) => {
 			const remoteActivity: RemoteActivityEntry[] = [];
-			const heads: { guid: string; snapshot?: Uint8Array }[] = [];
+			const heads: { guid: string; snapshot: Uint8Array }[] = [];
 			const now = this.currentTime();
 			for (const [docId, entry] of Object.entries(serverIndex)) {
 				const guid = this.guidFromServerDocId(docId) ?? docId;
@@ -881,10 +882,16 @@ export class SharedFolder extends HasProvider {
 					break;
 				case "gap":
 					metrics.recordDocumentUpdateEvent("catchup", this.guid);
-					// A dependency gap is server evidence without a comparable
-					// head; the routing signals the machine and wakes it if it
+					// A dependency gap names the state the server minimally
+					// holds — the update's own snapshot meta. The routing
+					// compares it, signals the machine, and wakes it if it
 					// could only pocket the signal.
-					this.mergeManager.serverHeadsReceived([{ guid }]);
+					this.mergeManager.serverHeadsReceived([
+						{
+							guid,
+							snapshot: snapshotMetaFromUpdate(update).snapshot,
+						},
+					]);
 					break;
 			}
 			return;

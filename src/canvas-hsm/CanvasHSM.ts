@@ -233,19 +233,15 @@ export class CanvasHSM implements SyncMachine {
 					this.context.userLock = false;
 				},
 				rememberServerAhead: (_hsm, event) => {
-					const head =
-						event.type === "SERVER_AHEAD" ? event.head : undefined;
-					// A headless signal is server evidence without a comparable
-					// head; it must not erase a real head already pocketed.
-					if (head) this._serverHead = head;
+					if (event.type !== "SERVER_AHEAD") return;
+					this._serverHead = event.head;
 					this.context.serverAheadPending = true;
 				},
 				actOnServerAhead: (_hsm, event) => {
-					const head =
-						event.type === "SERVER_AHEAD" ? event.head : undefined;
-					if (head) this._serverHead = head;
+					if (event.type !== "SERVER_AHEAD") return;
+					this._serverHead = event.head;
 					this.context.serverAheadPending = false;
-					this.actOnServerHead(head ?? null);
+					this.actOnServerHead(event.head);
 				},
 				rememberReevaluate: () => {
 					this.context.reevaluatePending = true;
@@ -255,7 +251,7 @@ export class CanvasHSM implements SyncMachine {
 				},
 				requestDownload: () => this.requestDownload(),
 				drainPendingSignals: () => {
-					if (this.context.serverAheadPending) {
+					if (this.context.serverAheadPending && this._serverHead) {
 						this.context.serverAheadPending = false;
 						this.actOnServerHead(this._serverHead);
 					}
@@ -498,12 +494,11 @@ export class CanvasHSM implements SyncMachine {
 
 	/**
 	 * Act on a server head from a state that can: a head provably converged
-	 * with this machine's basis requests nothing; anything else — including
-	 * a headless signal, which is server evidence without a comparable
-	 * head — requests a download.
+	 * with this machine's basis requests nothing; anything else requests a
+	 * download.
 	 */
-	private actOnServerHead(head: YjsSnapshot | null): void {
-		if (head && this.compareServerHead(head) === "current") return;
+	private actOnServerHead(head: YjsSnapshot): void {
+		if (this.compareServerHead(head) === "current") return;
 		this.requestDownload();
 	}
 
@@ -696,17 +691,17 @@ export class CanvasHSM implements SyncMachine {
 
 	/**
 	 * Cold-answerable server-head comparison. Answers from the machine's own
-	 * basis — the provider-facing replica's head when the working form is
-	 * warm, the persisted record's local head when cold (retained across
-	 * hibernation, or read from the bulk meta cache before the first
-	 * materialization) — with no materialization and no persistence loads.
+	 * basis — the localDoc's head when the working form is warm, the
+	 * persisted record's head when cold (retained across hibernation, or
+	 * read from the bulk meta cache before the first materialization) —
+	 * with no materialization and no persistence loads.
 	 * "current" proves convergence with the head; "ahead" proves divergence;
 	 * "unknown" means no basis exists — no basis for skipping, so callers
 	 * treat it as ahead.
 	 */
 	compareServerHead(head: YjsSnapshot): "ahead" | "current" | "unknown" {
 		const basis =
-			this.config.getRemoteSnapshot?.() ??
+			this.config.getLocalSnapshot?.() ??
 			this._headBasis ??
 			this.config.getColdHeadBasis?.() ??
 			null;
