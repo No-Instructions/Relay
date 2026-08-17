@@ -370,6 +370,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	private localTextObserver:
 		| ((event: Y.YTextEvent, tr: Y.Transaction) => void)
 		| null = null;
+	private localFrontmatterObserver:
+		| ((event: Y.YMapEvent<unknown>, tr: Y.Transaction) => void)
+		| null = null;
+	private readonly frontmatterMapItemIds = new Map<string, string>();
 
 	// Y.Map("frontmatter") observer: tracks whether a remote update touched the map.
 	// Repair is only valid when the remote client also populates the Y.Map.
@@ -5416,6 +5420,54 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 		const ytext = this.localDoc.getText("contents");
 		const ymap = this.localDoc.getMap("frontmatter");
+		const itemId = (value: any): string | null => {
+			const id = value?.id ?? value;
+			return typeof id?.client === "number" && typeof id?.clock === "number"
+				? `${id.client}:${id.clock}`
+				: null;
+		};
+		// Y.Map does not expose the causal predecessor of a winning value.
+		// Pin this narrow use of Yjs's Item shape so concurrent map seeds can be
+		// distinguished from value writes based on our current winner.
+		const currentItem = (key: string): any => (ymap as any)._map.get(key);
+		this.frontmatterMapItemIds.clear();
+		for (const key of ymap.keys()) {
+			const id = itemId(currentItem(key));
+			if (id !== null) this.frontmatterMapItemIds.set(key, id);
+		}
+		this.localFrontmatterObserver = (event, tr) => {
+			const updates = [...event.changes.keys].filter(([, change]) =>
+				change.action === "update",
+			);
+			if (
+				tr.origin === this.remoteDoc &&
+				!tr.changed.has(ytext as any) &&
+				updates.length > 0
+			) {
+				const parsed = this.parseFrontmatter(ytext.toString())?.parsed;
+				const shouldArm = parsed !== undefined && updates.some(([key, change]) => {
+						const item = currentItem(key);
+						const priorId = this.frontmatterMapItemIds.get(key);
+						const causalPredecessor = itemId(item?.origin);
+						return priorId !== undefined &&
+							causalPredecessor === priorId &&
+							key in parsed &&
+							JSON.stringify(parsed[key]) === change.oldValue &&
+							ymap.get(key) !== change.oldValue;
+					});
+				if (shouldArm) this._remoteFrontmatterMapUpdated = true;
+			}
+
+			for (const [key, change] of event.changes.keys) {
+				if (change.action === "delete") {
+					this.frontmatterMapItemIds.delete(key);
+					continue;
+				}
+				const id = itemId(currentItem(key));
+				if (id !== null) this.frontmatterMapItemIds.set(key, id);
+			}
+		};
+		ymap.observe(this.localFrontmatterObserver);
 		this.localTextObserver = (event: Y.YTextEvent, tr: Y.Transaction) => {
 			// Skip when suppressed (during machine edit rewind)
 			if (this._suppressLocalObserver) return;
@@ -5438,8 +5490,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			// This avoids interleaved character-level ops corrupting frontmatter in CM6.
 			const ymapChangedInTx = tr.changed.has(ymap as any);
 			if (ymapChangedInTx && this._yaml && !this._frontmatterMapWriteDeferred) {
-				// Flag for deferred repairFrontmatterFromMap action
-				this._remoteFrontmatterMapUpdated = true;
+				if (tr.origin === this.remoteDoc) {
+					this._remoteFrontmatterMapUpdated = true;
+				}
 				const correctDoc = this.buildDocFromYMap();
 				const cachedEditorText = this.lastKnownEditorText;
 				const editorText = this.readCurrentEditorText();
@@ -5613,8 +5666,14 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			ytext.unobserve(this.localTextObserver);
 			this.localTextObserver = null;
 		}
+		if (this.localDoc && this.localFrontmatterObserver) {
+			const ymap = this.localDoc.getMap("frontmatter");
+			ymap.unobserve(this.localFrontmatterObserver);
+			this.localFrontmatterObserver = null;
+		}
 
 		this._remoteFrontmatterMapUpdated = false;
+		this.frontmatterMapItemIds.clear();
 
 		// Clean up update queue listeners (editor-specific)
 		this._bridge.teardownUpdateQueues();
@@ -5640,6 +5699,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		const doc = this.localDoc;
 		const persistence = this.localPersistence;
 		const observer = this.localTextObserver;
+		const frontmatterObserver = this.localFrontmatterObserver;
 		// Capture and null handler references from the bridge
 		const { localUpdateHandler, remoteUpdateHandler } = this._bridge.detachHandlers();
 
@@ -5648,14 +5708,20 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		this.localDoc = null;
 		this.localPersistence = null;
 		this.localTextObserver = null;
+		this.localFrontmatterObserver = null;
 		this._localDocSnapshotSafe = false;
 		this._remoteFrontmatterMapUpdated = false;
+		this.frontmatterMapItemIds.clear();
 		this.assertMachineResources("after destroyLocalDoc");
 
 		// Clean up captured references
 		if (doc && observer) {
 			const ytext = doc.getText("contents");
 			ytext.unobserve(observer);
+		}
+		if (doc && frontmatterObserver) {
+			const ymap = doc.getMap("frontmatter");
+			ymap.unobserve(frontmatterObserver);
 		}
 		if (doc && localUpdateHandler) {
 			doc.off('update', localUpdateHandler);
@@ -6724,6 +6790,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (ymap.size === 0) return;
 
 		const text = this.localDoc.getText("contents").toString();
+		const editorText = this._statePath === "active.tracking"
+			? this.readCurrentEditorText()
+			: null;
 		const fm = this.parseFrontmatter(text);
 
 		if (!fm) return; // No parseable frontmatter to repair against
@@ -6793,6 +6862,18 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		const newText = canonicalFrontmatter + text.slice(fm.end);
 
 		this.applyContentToLocalDoc(newText, FRONTMATTER_MIRROR_ORIGIN);
+
+		if (editorText !== null && this._statePath === "active.tracking") {
+			const changes = computePositionedChanges(editorText, newText);
+			if (changes.length > 0) {
+				this.emitEffect({
+					type: "DISPATCH_CM6",
+					changes,
+					originView: this._localDocDispatchOriginView,
+				});
+				this.lastKnownEditorText = newText;
+			}
+		}
 	}
 }
 
