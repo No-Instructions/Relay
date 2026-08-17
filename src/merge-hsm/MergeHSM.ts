@@ -373,6 +373,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	private localFrontmatterObserver:
 		| ((event: Y.YMapEvent<unknown>, tr: Y.Transaction) => void)
 		| null = null;
+	private readonly frontmatterMapItemIds = new Map<string, string>();
 
 	// Y.Map("frontmatter") observer: tracks whether a remote update touched the map.
 	// Repair is only valid when the remote client also populates the Y.Map.
@@ -5419,18 +5420,41 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 		const ytext = this.localDoc.getText("contents");
 		const ymap = this.localDoc.getMap("frontmatter");
+		const itemId = (value: any): string | null => {
+			const id = value?.id ?? value;
+			return typeof id?.client === "number" && typeof id?.clock === "number"
+				? `${id.client}:${id.clock}`
+				: null;
+		};
+		const currentItem = (key: string): any => (ymap as any)._map.get(key);
+		this.frontmatterMapItemIds.clear();
+		for (const key of ymap.keys()) {
+			const id = itemId(currentItem(key));
+			if (id !== null) this.frontmatterMapItemIds.set(key, id);
+		}
 		this.localFrontmatterObserver = (event, tr) => {
-			if (tr.origin !== this.remoteDoc) return;
+			const updates = [...event.changes.keys].filter(([, change]) =>
+				change.action === "update",
+			);
+			if (tr.origin === this.remoteDoc && updates.length > 0) {
+				const parsed = this.parseFrontmatter(ytext.toString())?.parsed;
+				this._remoteFrontmatterMapUpdated = parsed !== undefined &&
+					updates.some(([key, change]) => {
+						const item = currentItem(key);
+						const priorId = this.frontmatterMapItemIds.get(key);
+						const causalPredecessor = itemId(item?.origin);
+						return priorId !== undefined &&
+							causalPredecessor === priorId &&
+							key in parsed &&
+							JSON.stringify(parsed[key]) === change.oldValue &&
+							ymap.get(key) !== change.oldValue;
+					});
+			}
 
-			const parsed = this.parseFrontmatter(ytext.toString())?.parsed;
-			const hasRemoteValueWrite = parsed !== undefined &&
-				[...event.changes.keys].some(([key, change]) =>
-					change.action === "update" &&
-					key in parsed &&
-					JSON.stringify(parsed[key]) === change.oldValue,
-				);
-			if (hasRemoteValueWrite) {
-				this._remoteFrontmatterMapUpdated = true;
+			for (const key of event.keysChanged) {
+				const id = itemId(currentItem(key));
+				if (id === null) this.frontmatterMapItemIds.delete(key);
+				else this.frontmatterMapItemIds.set(key, id);
 			}
 		};
 		ymap.observe(this.localFrontmatterObserver);
@@ -5639,6 +5663,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		}
 
 		this._remoteFrontmatterMapUpdated = false;
+		this.frontmatterMapItemIds.clear();
 
 		// Clean up update queue listeners (editor-specific)
 		this._bridge.teardownUpdateQueues();
@@ -5676,6 +5701,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		this.localFrontmatterObserver = null;
 		this._localDocSnapshotSafe = false;
 		this._remoteFrontmatterMapUpdated = false;
+		this.frontmatterMapItemIds.clear();
 		this.assertMachineResources("after destroyLocalDoc");
 
 		// Clean up captured references
