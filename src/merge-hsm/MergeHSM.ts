@@ -3729,10 +3729,25 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				this._serverHeadPending = false;
 				this.actOnServerHead(head);
 			},
+			// The evidence variant for states parked on unresolved work
+			// (diverged disk, retryable error): head equality proves nothing
+			// there — resolution needs the remote replica's content — so the
+			// signal always requests the session that delivers it.
+			actOnServerAheadEvidence: (_hsm, event) => {
+				const head = (event as ServerAheadEvent).head ?? null;
+				if (head) this._serverHead = head;
+				this._serverHeadPending = false;
+				this.emitEffect({ type: "ENQUEUE_SYNC", guid: this._guid });
+			},
 			drainServerAhead: () => {
 				if (!this._serverHeadPending) return;
 				this._serverHeadPending = false;
 				this.actOnServerHead(this._serverHead);
+			},
+			drainServerAheadEvidence: () => {
+				if (!this._serverHeadPending) return;
+				this._serverHeadPending = false;
+				this.emitEffect({ type: "ENQUEUE_SYNC", guid: this._guid });
 			},
 			maybeSignalPersistenceSyncedForRecovery: () => {
 				this.maybeSignalPersistenceReady("event");
@@ -5251,7 +5266,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	 * toward skipping needed work.
 	 */
 	private serverCompareBasis(): YjsSnapshot | null {
-		if (this.localDoc) {
+		// The live doc is the basis only once its persistence has replayed —
+		// a doc mid-replay reads as empty and would call every head ahead.
+		if (this.localDoc && this.localPersistence?.synced === true) {
 			try {
 				return snapshotFromDoc(this.localDoc);
 			} catch {

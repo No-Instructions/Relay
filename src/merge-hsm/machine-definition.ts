@@ -158,12 +158,15 @@ export const MACHINE: MachineDefinition = {
 	// =========================================================================
 
 	'idle.loading': {
-		entry: ['ensureLocalDocForIdle', 'processAccumulatedForIdle'],
+		// A load that reaches no verdict waits here for remote evidence, so a
+		// server head acts (compare-gated) instead of pocketing: the session
+		// it requests delivers the PROVIDER_SYNCED that re-classifies.
+		entry: ['ensureLocalDocForIdle', 'processAccumulatedForIdle', 'drainServerAhead'],
 		on: {
 			DISK_CHANGED: { target: 'idle.loading', actions: ['storeDiskMetadata'], reenter: true },
 			REMOTE_UPDATE: { target: 'idle.loading', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'], reenter: true },
 			PROVIDER_SYNCED: { target: 'idle.loading', actions: ['markProviderSynced'], reenter: true },
-			SERVER_AHEAD: POCKET_SERVER_AHEAD('idle.loading'),
+			SERVER_AHEAD: { target: 'idle.loading', actions: ['actOnServerAhead'] },
 			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,
 		},
@@ -207,7 +210,7 @@ export const MACHINE: MachineDefinition = {
 			DISK_METADATA_CHANGED: { target: 'idle.loadingDiskContents', actions: ['storeDiskMetadataForLoad'] },
 			REMOTE_UPDATE: { target: 'idle.loadingDiskContents', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.loadingDiskContents', actions: ['accumulateCM6Change'] },
-			SERVER_AHEAD: POCKET_SERVER_AHEAD('idle.loadingDiskContents'),
+			SERVER_AHEAD: { target: 'idle.loadingDiskContents', actions: ['actOnServerAhead'] },
 			...IDLE_LIFECYCLE,
 		},
 	},
@@ -346,7 +349,7 @@ export const MACHINE: MachineDefinition = {
 			],
 			REMOTE_UPDATE: { target: 'idle.remoteAhead', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.remoteAhead', actions: ['accumulateCM6Change'] },
-			SERVER_AHEAD: POCKET_SERVER_AHEAD('idle.remoteAhead'),
+			SERVER_AHEAD: { target: 'idle.remoteAhead', actions: ['actOnServerAhead'] },
 			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,
 		},
@@ -388,7 +391,7 @@ export const MACHINE: MachineDefinition = {
 			],
 			DISK_CHANGED: { target: 'idle.diskAhead', actions: ['storeDiskMetadata'], reenter: true },
 			CM6_CHANGE: { target: 'idle.diskAhead', actions: ['accumulateCM6Change'] },
-			SERVER_AHEAD: POCKET_SERVER_AHEAD('idle.diskAhead'),
+			SERVER_AHEAD: { target: 'idle.diskAhead', actions: ['actOnServerAhead'] },
 			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,
 		},
@@ -413,7 +416,7 @@ export const MACHINE: MachineDefinition = {
 			canUseRemoteDoc: true,
 			canUsePendingDiskContents: true,
 		},
-		entry: ['ensureLocalDocForIdle', 'drainServerAhead'],
+		entry: ['ensureLocalDocForIdle', 'drainServerAheadEvidence'],
 		invoke: {
 			src: 'idle-merge',
 			onDone: [
@@ -438,7 +441,10 @@ export const MACHINE: MachineDefinition = {
 			],
 			REMOTE_UPDATE: { target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.diverged', actions: ['accumulateCM6Change'] },
-			SERVER_AHEAD: { target: 'idle.diverged', actions: ['actOnServerAhead'] },
+			// Divergence cannot be resolved from head equality: the parked
+			// merge needs the remote replica's content, so the signal always
+			// requests the session that delivers it.
+			SERVER_AHEAD: { target: 'idle.diverged', actions: ['actOnServerAheadEvidence'] },
 			PROVIDER_SYNCED: [
 				{ target: 'idle.recoverLCA', guard: 'canRecoverLCAWithPendingDisk', actions: ['markProviderSynced', 'prepareRecoverLCAFromPendingDisk'] },
 				{ target: 'idle.diverged', actions: ['markProviderSynced'], reenter: true },
@@ -512,7 +518,7 @@ export const MACHINE: MachineDefinition = {
 			DISK_CHANGED: { target: 'idle.recoverLCA', actions: ['storeDiskMetadata', 'storeRecoverLCADisk'] },
 			REMOTE_UPDATE: { target: 'idle.recoverLCA', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.recoverLCA', actions: ['accumulateCM6Change'] },
-			SERVER_AHEAD: POCKET_SERVER_AHEAD('idle.recoverLCA'),
+			SERVER_AHEAD: { target: 'idle.recoverLCA', actions: ['actOnServerAhead'] },
 			...IDLE_LIFECYCLE,
 		},
 	},
@@ -545,7 +551,7 @@ export const MACHINE: MachineDefinition = {
 			// A retryable error acts: the requested session delivers the
 			// PROVIDER_SYNCED that re-arms recovery. A permanent error pockets.
 			SERVER_AHEAD: [
-				{ target: 'idle.error', guard: 'errorIsRetryable', actions: ['actOnServerAhead'] },
+				{ target: 'idle.error', guard: 'errorIsRetryable', actions: ['actOnServerAheadEvidence'] },
 				{ target: 'idle.error', actions: ['rememberServerAhead'] },
 			],
 			ACQUIRE_LOCK: IDLE_LIFECYCLE.ACQUIRE_LOCK,
