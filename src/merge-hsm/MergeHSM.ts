@@ -370,6 +370,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	private localTextObserver:
 		| ((event: Y.YTextEvent, tr: Y.Transaction) => void)
 		| null = null;
+	private localFrontmatterObserver:
+		| ((event: Y.YMapEvent<unknown>, tr: Y.Transaction) => void)
+		| null = null;
 
 	// Y.Map("frontmatter") observer: tracks whether a remote update touched the map.
 	// Repair is only valid when the remote client also populates the Y.Map.
@@ -5416,6 +5419,19 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 		const ytext = this.localDoc.getText("contents");
 		const ymap = this.localDoc.getMap("frontmatter");
+		this.localFrontmatterObserver = (event, tr) => {
+			const parsed = this.parseFrontmatter(ytext.toString())?.parsed;
+			const hasRemoteValueWrite = parsed !== undefined &&
+				[...event.changes.keys].some(([key, change]) =>
+					change.action === "update" &&
+					key in parsed &&
+					JSON.stringify(parsed[key]) === change.oldValue,
+				);
+			if (tr.origin === this.remoteDoc && hasRemoteValueWrite) {
+				this._remoteFrontmatterMapUpdated = true;
+			}
+		};
+		ymap.observe(this.localFrontmatterObserver);
 		this.localTextObserver = (event: Y.YTextEvent, tr: Y.Transaction) => {
 			// Skip when suppressed (during machine edit rewind)
 			if (this._suppressLocalObserver) return;
@@ -5438,8 +5454,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			// This avoids interleaved character-level ops corrupting frontmatter in CM6.
 			const ymapChangedInTx = tr.changed.has(ymap as any);
 			if (ymapChangedInTx && this._yaml && !this._frontmatterMapWriteDeferred) {
-				// Flag for deferred repairFrontmatterFromMap action
-				this._remoteFrontmatterMapUpdated = true;
+				if (tr.origin === this.remoteDoc) {
+					this._remoteFrontmatterMapUpdated = true;
+				}
 				const correctDoc = this.buildDocFromYMap();
 				const cachedEditorText = this.lastKnownEditorText;
 				const editorText = this.readCurrentEditorText();
@@ -5613,6 +5630,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			ytext.unobserve(this.localTextObserver);
 			this.localTextObserver = null;
 		}
+		if (this.localDoc && this.localFrontmatterObserver) {
+			const ymap = this.localDoc.getMap("frontmatter");
+			ymap.unobserve(this.localFrontmatterObserver);
+			this.localFrontmatterObserver = null;
+		}
 
 		this._remoteFrontmatterMapUpdated = false;
 
@@ -5640,6 +5662,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		const doc = this.localDoc;
 		const persistence = this.localPersistence;
 		const observer = this.localTextObserver;
+		const frontmatterObserver = this.localFrontmatterObserver;
 		// Capture and null handler references from the bridge
 		const { localUpdateHandler, remoteUpdateHandler } = this._bridge.detachHandlers();
 
@@ -5648,6 +5671,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		this.localDoc = null;
 		this.localPersistence = null;
 		this.localTextObserver = null;
+		this.localFrontmatterObserver = null;
 		this._localDocSnapshotSafe = false;
 		this._remoteFrontmatterMapUpdated = false;
 		this.assertMachineResources("after destroyLocalDoc");
@@ -5656,6 +5680,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (doc && observer) {
 			const ytext = doc.getText("contents");
 			ytext.unobserve(observer);
+		}
+		if (doc && frontmatterObserver) {
+			const ymap = doc.getMap("frontmatter");
+			ymap.unobserve(frontmatterObserver);
 		}
 		if (doc && localUpdateHandler) {
 			doc.off('update', localUpdateHandler);
@@ -6724,6 +6752,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (ymap.size === 0) return;
 
 		const text = this.localDoc.getText("contents").toString();
+		const editorText = this.readCurrentEditorText();
 		const fm = this.parseFrontmatter(text);
 
 		if (!fm) return; // No parseable frontmatter to repair against
@@ -6793,6 +6822,18 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		const newText = canonicalFrontmatter + text.slice(fm.end);
 
 		this.applyContentToLocalDoc(newText, FRONTMATTER_MIRROR_ORIGIN);
+
+		if (editorText !== null) {
+			const changes = computePositionedChanges(editorText, newText);
+			if (changes.length > 0) {
+				this.emitEffect({
+					type: "DISPATCH_CM6",
+					changes,
+					originView: this._localDocDispatchOriginView,
+				});
+				this.lastKnownEditorText = newText;
+			}
+		}
 	}
 }
 
