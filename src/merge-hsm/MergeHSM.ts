@@ -6754,7 +6754,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (ymap.size === 0) return;
 
 		const text = this.localDoc.getText("contents").toString();
-		const editorText = this.readCurrentEditorText();
+		const editorText = this._statePath === "active.tracking"
+			? this.readCurrentEditorText()
+			: null;
 		const fm = this.parseFrontmatter(text);
 
 		if (!fm) return; // No parseable frontmatter to repair against
