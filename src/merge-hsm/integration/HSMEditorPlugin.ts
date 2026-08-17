@@ -22,6 +22,7 @@ import { getLiveViews } from "../../editorContext";
 import { isDocument, type Document } from "../../Document";
 import type { MergeHSM } from "../MergeHSM";
 import { CM6Integration } from "./CM6Integration";
+import { subEditorKind } from "./subEditors";
 import { ySyncAnnotation } from "./annotations";
 import { curryLog } from "../../debug";
 import { formatUserFacingError } from "../../UserFacingError";
@@ -85,17 +86,16 @@ export class HSMEditorPluginValue implements PluginValue {
   private bornAttachedRenderPending = false;
   /**
    * Whether this EditorView has been identified as an embedded sub-editor:
-   * an editor another editor spawns inside itself over the same file, like
-   * the per-cell editor Obsidian's Live Preview table widget creates when a
-   * table cell is edited. A sub-editor inherits the host view's
-   * editorInfoField, so file identity, document resolution, and
-   * source-view DOM ancestry all match the host — but its buffer holds only
-   * a fragment of the note, and the spawning machinery persists whatever is
-   * dispatched into it back into the note as a user edit. Binding one to
-   * the merge machinery would render the full document into a fragment
-   * buffer (and the widget would then write that full document into one
-   * cell of the real note) and would feed fragment text back as document
-   * content. Sticky: once detected, this instance is permanently inert.
+   * an editor opened over a fragment of a file another view already owns —
+   * a Live Preview table cell, or a subpath-scoped editable embed such as
+   * the footnotes pane's per-footnote embed. A sub-editor's info field
+   * names the same file as its host, so file identity, document resolution,
+   * and source-view DOM ancestry all match — but its buffer holds only the
+   * fragment, and the spawner writes that buffer back into the fragment's
+   * span of the note. Binding one would render the full document into the
+   * fragment buffer, which the spawner then persists into that span, and
+   * would feed fragment text back as document content. Sticky: once
+   * detected, this instance is permanently inert.
    */
   private subEditor = false;
   private bindingEpoch = 0;
@@ -243,21 +243,28 @@ export class HSMEditorPluginValue implements PluginValue {
   }
 
   /**
-   * Detect an embedded sub-editor by its container: the Live Preview table
-   * widget mounts the per-cell editor it spawns inside a
-   * `.table-cell-wrapper` element. Detection is sticky and fully inerts
-   * this instance — the widget forwards every transaction it does not
-   * recognize into the host note, so nothing may ever be dispatched into
-   * such an editor. The wrapper is only observable once the editor's DOM is
-   * attached, so a negative answer means "not detected", never "proven to
-   * be a view's own editor"; the owner-identity check in probeBornAttached
-   * covers the window before the DOM is attached.
+   * A sub-editor's buffer holds a fragment of the note, so binding one
+   * would render the whole document into it, and the spawner persists that
+   * buffer back into the fragment's span of the note. Detection is sticky
+   * and fully inerts this instance — the spawner forwards or persists every
+   * transaction it does not recognize, so nothing may ever be dispatched
+   * into such an editor. A negative answer from the DOM arm is only "not
+   * detected"; the owner-identity check in probeBornAttached covers the
+   * window before the DOM is attached.
    */
   private probeSubEditor(): boolean {
     if (this.subEditor) return true;
-    if (!this.editor.dom.closest(".table-cell-wrapper")) return false;
+    // `subpath` is set on editable embeds but absent from MarkdownFileInfo's
+    // public typing.
+    const kind = subEditorKind(
+      this.editor.state.field(editorInfoField, false) as
+        | { subpath?: string }
+        | undefined,
+      this.editor.dom,
+    );
+    if (!kind) return false;
     this.subEditor = true;
-    this.log("Refusing to bind an embedded table-cell editor");
+    this.log(`Refusing to bind ${kind}`);
     if (this.cm6Integration) {
       this.cm6Integration.destroy();
       this.cm6Integration = null;
