@@ -275,10 +275,22 @@ export function snapshotContains(superset: YjsSnapshot, subset: YjsSnapshot): bo
 	return svContains(sup.sv, sub.sv) && deleteSetContains(sup.ds.clients, sub.ds.clients);
 }
 
+function snapshotBytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+	if (a === b) return true;
+	if (a.byteLength !== b.byteLength) return false;
+	for (let index = 0; index < a.byteLength; index++) {
+		if (a[index] !== b[index]) return false;
+	}
+	return true;
+}
+
 /**
- * Check if two snapshots are exactly equal.
+ * Check if two snapshots are exactly equal. Canonically encoded snapshots
+ * (Y.encodeSnapshot output) take the byte-equality fast path without
+ * semantic decoding.
  */
 export function snapshotsEqual(a: YjsSnapshot, b: YjsSnapshot): boolean {
+	if (snapshotBytesEqual(a.snapshot, b.snapshot)) return true;
 	return Y.equalSnapshots(
 		Y.decodeSnapshot(a.snapshot),
 		Y.decodeSnapshot(b.snapshot),
@@ -403,6 +415,44 @@ export function mergeDecodedDeleteSets(
  * head mismatch, so an inexact restoration returns null rather than
  * wrong content. The caller owns the returned doc and must destroy it.
  */
+/**
+ * A seed update for a fresh replica of `doc`, bounded by a server head.
+ * Accepted only when the head proves the seed cannot introduce local-only
+ * CRDT state: a head containing local state seeds everything; local state
+ * containing the head seeds the verified restoration at the head; anything
+ * else seeds nothing and the provider handshake carries the difference.
+ */
+export function seedUpdateBoundedByHead(
+	doc: Y.Doc,
+	head: YjsSnapshot,
+): Uint8Array | null {
+	let local: YjsSnapshot;
+	try {
+		local = snapshotFromDoc(doc);
+	} catch {
+		return null;
+	}
+
+	try {
+		if (snapshotContains(head, local)) {
+			return Y.encodeStateAsUpdate(doc);
+		}
+		if (!snapshotContains(local, head)) {
+			return null;
+		}
+	} catch {
+		return null;
+	}
+
+	const restoredDoc = restoreDocAtSnapshot(doc, head);
+	if (!restoredDoc) return null;
+	try {
+		return Y.encodeStateAsUpdate(restoredDoc);
+	} finally {
+		restoredDoc.destroy();
+	}
+}
+
 export function restoreDocAtSnapshot(
 	doc: Y.Doc,
 	snapshot: YjsSnapshot,

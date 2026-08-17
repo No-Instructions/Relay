@@ -81,6 +81,7 @@ import {
 	isEmptyDoc,
 	mergeSnapshotHeads,
 	restoreTextAtSnapshot,
+	seedUpdateBoundedByHead,
 	snapshotContains,
 	snapshotFromDoc,
 	snapshotHasOpsMissingFrom,
@@ -1972,6 +1973,36 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			workPending: this._serverHeadPending,
 			baseline: this._lca !== null,
 		};
+	}
+
+	/**
+	 * Record the newest server head without acting on it. The live provider
+	 * session that observed the head performs its own convergence; this only
+	 * keeps the machine's retained head fresh for later comparisons.
+	 */
+	noteServerHead(head: YjsSnapshot): void {
+		this._serverHead = head;
+	}
+
+	/**
+	 * Compare the newest server head this machine has heard against its own
+	 * basis. "unknown" when no head has been received; sweeps treat it as
+	 * work.
+	 */
+	compareRetainedServerHead(): "ahead" | "current" | "unknown" {
+		return this._serverHead
+			? this.compareServerHead(this._serverHead)
+			: "unknown";
+	}
+
+	/**
+	 * A seed update for a freshly created remote replica: the localDoc
+	 * bounded by the retained server head, so the seed cannot introduce
+	 * local-only CRDT state.
+	 */
+	getRemoteDocSeedUpdate(): Uint8Array | null {
+		if (!this._serverHead || !this.localDoc) return null;
+		return seedUpdateBoundedByHead(this.localDoc, this._serverHead);
 	}
 
 	/**

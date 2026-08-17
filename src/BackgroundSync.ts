@@ -18,8 +18,7 @@ import { compareFilePaths } from "./FolderSort";
 import type { ClientToken } from "./client/types";
 import { Canvas } from "./Canvas";
 import { SyncFile, isSyncFile } from "./SyncFile";
-import { isEmptyDoc, snapshotFromDoc } from "./merge-hsm/snapshots";
-import { WakePriority } from "./merge-hsm/MergeManager";
+import { isEmptyDoc } from "./merge-hsm/snapshots";
 import {
 	buildFolderSyncSnapshot,
 	FolderSyncSnapshotSmoother,
@@ -132,7 +131,6 @@ const MAX_PROVIDER_SYNC_RETRIES = 5;
 const BACKGROUND_SYNC_QUEUE_PUMP_INTERVAL_MS = 1000;
 const BACKGROUND_SYNC_FOLDER_POLL_INTERVAL_MS = 5000;
 const BACKGROUND_SYNC_DRAIN_BUDGET_MS = 8;
-const LOCAL_AHEAD_RETRY_INTERVAL_MS = 5 * 60_000;
 // How long a terminally-failed file transfer rests before the periodic pass
 // re-enqueues it. Short-lived blips are already absorbed by the queue's own
 // backoff retries; this interval is the long-tail self-heal for outages that
@@ -208,10 +206,6 @@ export class BackgroundSync extends HasLogging {
 
 	private syncQueue: QueueItem[] = [];
 	private downloadQueue: QueueItem[] = [];
-	// Local-ahead docs whose sync session did not converge (e.g. the server
-	// refuses the ops) stay advertised-out-of-sync forever; without a marker
-	// every subdoc index sync would re-enqueue a full session for them.
-	private localAheadAttempts = new Map<string, number>();
 	private isProcessingSync = false;
 	private isProcessingDownloads = false;
 	private isPaused = true;
@@ -1959,90 +1953,6 @@ export class BackgroundSync extends HasLogging {
 		return syncPromise;
 	}
 
-	enqueueRemoteHeadSyncs(
-		sharedFolder: SharedFolder,
-		guids: Iterable<string>,
-	): number {
-		if (!sharedFolder.connected) return 0;
-
-		const advertisedGuids = new Set(guids);
-		if (advertisedGuids.size === 0) return 0;
-
-		const docs = [...sharedFolder.files.values()]
-			.filter(isDocument)
-			.filter((doc) => advertisedGuids.has(doc.guid))
-			.filter((doc) => !this.inProgressSyncs.has(doc.guid))
-			.filter((doc) => this.shouldEnqueueForRemoteHeadSync(doc));
-
-		const queueLengthBefore = this.syncQueue.length;
-		for (const doc of docs) {
-			void this.enqueueSync(doc, true);
-		}
-		if (this.syncQueue.length > queueLengthBefore) {
-			this.flushSyncQueue("batch");
-		}
-
-		// Canvases: SERVER_AHEAD is a signal, not a command — each canvas's
-		// machine decides whether a download is appropriate (never while
-		// the lock is held, deduped against its own pending download). The
-		// advertised-head comparison stays host-side because it reads the
-		// MergeManager's advertised-head table; hibernated canvases compare
-		// against their persisted local head and wake through the shared
-		// queue (the machine remembers the signal until it settles).
-		const canvases = [...sharedFolder.files.values()]
-			.filter(isCanvas)
-			.filter((canvas) => advertisedGuids.has(canvas.guid))
-			.filter((canvas) => !this.downloadPromises.has(canvas.guid))
-			.filter((canvas) => {
-				const mergeManager = sharedFolder.mergeManager;
-				if (!mergeManager) return true;
-				return !mergeManager.isServerAdvertisedInSync(
-					canvas.guid,
-					canvas.isMaterialized
-						? snapshotFromDoc(canvas.ydoc).snapshot
-						: undefined,
-				);
-			});
-		for (const canvas of canvases) {
-			// An advertised head is fresh evidence the server has content.
-			sharedFolder.clearServerEmpty(canvas.guid);
-			canvas.hsm.send({ type: "SERVER_AHEAD" });
-			if (!canvas.isMaterialized) {
-				sharedFolder.mergeManager?.enqueueWake({
-					guid: canvas.guid,
-					priority: WakePriority.REMOTE_UPDATE,
-				});
-			}
-		}
-
-		return docs.length + canvases.length;
-	}
-
-	enqueueAdvertisedLCABackfills(
-		sharedFolder: SharedFolder,
-		guids: Iterable<string>,
-	): number {
-		if (!sharedFolder.connected) return 0;
-
-		const advertisedGuids = new Set(guids);
-		if (advertisedGuids.size === 0) return 0;
-
-		const docs = [...sharedFolder.files.values()]
-			.filter(isDocument)
-			.filter((doc) => advertisedGuids.has(doc.guid))
-			.filter((doc) => !this.inProgressSyncs.has(doc.guid))
-			.filter((doc) => this.shouldEnqueueForLCABackfill(doc));
-
-		const queueLengthBefore = this.syncQueue.length;
-		for (const doc of docs) {
-			void this.enqueueLCABackfillDoc(doc, true);
-		}
-		if (this.syncQueue.length > queueLengthBefore) {
-			this.flushSyncQueue("batch");
-		}
-		return docs.length;
-	}
-
 	private shouldEnqueueForSharedFolderSync(
 		item: Document | Canvas | SyncFile,
 	): boolean {
@@ -2053,15 +1963,9 @@ export class BackgroundSync extends HasLogging {
 			return false;
 		}
 		if (isCanvas(item)) {
-			const mergeManager = item.sharedFolder.mergeManager;
-			if (!mergeManager) return true;
-			// A hibernated canvas compares against its persisted local head;
-			// snapshotting the ephemeral remoteDoc (empty every fresh
-			// session) would enqueue every canvas on every folder sync.
-			return !mergeManager.isServerAdvertisedInSync(
-				item.guid,
-				item.isMaterialized ? snapshotFromDoc(item.ydoc).snapshot : undefined,
-			);
+			// The machine compares its retained server head against its own
+			// basis, warm or cold; a canvas provably current needs no session.
+			return item.hsm.compareRetainedServerHead() !== "current";
 		}
 		if (!isDocument(item)) return true;
 
@@ -2071,39 +1975,7 @@ export class BackgroundSync extends HasLogging {
 		if (!hsm.state.lca) return true;
 		if (hsm.getSyncStatus().status !== "synced") return true;
 
-		const mergeManager = item.sharedFolder.mergeManager;
-		if (!mergeManager) return true;
-
-		return !mergeManager.isServerAdvertisedInSync(item.guid);
-	}
-
-	private shouldEnqueueForRemoteHeadSync(doc: Document): boolean {
-		if (this.shouldSkipDocumentSync(doc)) return false;
-		if (doc.hsm?.hasFork()) return false;
-		const mergeManager = doc.sharedFolder.mergeManager;
-		if (!mergeManager) return false;
-		if (mergeManager.isServerAdvertisedRemoteAhead(doc.guid)) return true;
-		// A document edited in the editor while offline and closed before
-		// reconnect holds local ops the server lacks. It has no fork and no
-		// open editor, so no other path pushes those ops — run a sync
-		// session to flush them. Skip docs with an open editor or a live
-		// provider: their own connection already carries local ops.
-		if (doc.userLock || mergeManager.isActive(doc.guid)) return false;
-		if (doc.intent === "connected") return false;
-		if (!mergeManager.isServerAdvertisedOutOfSync(doc.guid)) {
-			this.localAheadAttempts.delete(doc.guid);
-			return false;
-		}
-		const lastAttempt = this.localAheadAttempts.get(doc.guid);
-		const now = this.timeProvider.now();
-		if (
-			lastAttempt !== undefined &&
-			now - lastAttempt < LOCAL_AHEAD_RETRY_INTERVAL_MS
-		) {
-			return false;
-		}
-		this.localAheadAttempts.set(doc.guid, now);
-		return true;
+		return hsm.compareRetainedServerHead() !== "current";
 	}
 
 	private shouldEnqueueForLCABackfill(doc: Document): boolean {
@@ -2114,8 +1986,7 @@ export class BackgroundSync extends HasLogging {
 		if (hsm.state.lca) return false;
 		if (hsm.hasFork()) return false;
 		if (hsm.getSyncStatus().status === "pending") return true;
-		return doc.sharedFolder.mergeManager?.isServerAdvertisedOutOfSync(doc.guid)
-			?? false;
+		return hsm.compareRetainedServerHead() === "ahead";
 	}
 
 	/**

@@ -834,9 +834,8 @@ export interface PersistedCanvasState {
 	} | null;
 	disk: MergeMetadata | null;
 	/**
-	 * The canvas localDoc's head at persist time. Lets the advertised-head
-	 * sweep decide whether a hibernated canvas trails the server without
-	 * waking it.
+	 * The canvas localDoc's head at persist time. Lets a server head be
+	 * classified against a hibernated canvas without waking it.
 	 */
 	localSnapshot?: Uint8Array | null;
 	lastStatePath: string;

@@ -731,6 +731,17 @@ export class CanvasHSM implements SyncMachine {
 	}
 
 	/**
+	 * Compare the newest server head this machine has heard against its own
+	 * basis. "unknown" when no head has been received; sweeps treat it as
+	 * work.
+	 */
+	compareRetainedServerHead(): "ahead" | "current" | "unknown" {
+		return this._serverHead
+			? this.compareServerHead(this._serverHead)
+			: "unknown";
+	}
+
+	/**
 	 * Per-file status for the shared sync surfaces. The canvas machine has
 	 * no conflict-resolution states; the parked divergence is the
 	 * actionable posture. Parseable divergence resolves machine-side
