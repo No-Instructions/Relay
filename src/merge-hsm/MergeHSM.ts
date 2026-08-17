@@ -1944,6 +1944,26 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	/**
+	 * Cold-answerable server-head comparison. Answers from the machine's own
+	 * basis — the live localDoc head when warm, persisted meta (the local
+	 * head, or the LCA head for a clean hibernated document whose own head
+	 * was compacted away) when cold — with no materialization and no
+	 * persistence loads. "current" proves convergence with the head; "ahead"
+	 * proves divergence in either direction (the machine resolves direction
+	 * when it acts); "unknown" means no basis exists — no basis for
+	 * skipping, so callers treat it as ahead.
+	 */
+	compareServerHead(head: YjsSnapshot): "ahead" | "current" | "unknown" {
+		const basis = this.serverCompareBasis();
+		if (!basis) return "unknown";
+		try {
+			return snapshotsEqual(head, basis) ? "current" : "ahead";
+		} catch {
+			return "unknown";
+		}
+	}
+
+	/**
 	 * Get the current sync status for this document.
 	 */
 	getSyncStatus(): SyncStatus {
@@ -5178,9 +5198,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 	/**
 	 * The basis a server head is compared against: the live localDoc's head
-	 * when the machine is warm, the persisted local head (or the LCA head for
-	 * a clean hibernated document whose own head was compacted away) when
-	 * cold. Null means no basis — nothing can prove currency.
+	 * when the machine is warm; when cold, the enrolled local head (the head
+	 * the persisted record carries) or the LCA head for a clean hibernated
+	 * document whose own head was compacted away. Null means no basis —
+	 * nothing can prove currency. A stale basis errs toward "ahead", never
+	 * toward skipping needed work.
 	 */
 	private serverCompareBasis(): YjsSnapshot | null {
 		if (this.localDoc) {
@@ -5190,7 +5212,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				return null;
 			}
 		}
-		const bytes = this._localSnapshot ?? this._lca?.snapshot ?? null;
+		const bytes = this._enrolledLocalSnapshot ?? this._lca?.snapshot ?? null;
 		return bytes ? { snapshot: bytes } : null;
 	}
 
