@@ -158,7 +158,7 @@ export class CanvasHSM implements SyncMachine {
 	private _stateWaiters = new Set<(statePath: CanvasStatePath) => void>();
 	private _waiterAborts = new Set<() => void>();
 	private _transitionSeq = 0;
-	/** Ring buffer of recent transitions for diagnostics and harness dumps. */
+	/** Ring buffer of recent transitions for diagnostic snapshots. */
 	private _recentTransitions: CanvasStateTransition[] = [];
 	/** Result of the most recent completed evaluation (flush payload). */
 	private _lastEvaluation: EvaluationResult | null = null;

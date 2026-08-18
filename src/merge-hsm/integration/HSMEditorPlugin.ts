@@ -2,8 +2,7 @@
  * HSMEditorPlugin - CodeMirror 6 ViewPlugin for HSM Editor Integration
  *
  * This plugin captures editor changes and forwards them to the MergeHSM,
- * enabling real-time CRDT synchronization. It replaces the editor→CRDT
- * sync functionality that was previously in LiveEditPlugin.
+ * enabling real-time CRDT synchronization.
  *
  * Flow:
  *   Editor Change → HSMEditorPlugin.update()
@@ -355,9 +354,8 @@ export class HSMEditorPluginValue implements PluginValue {
     if (!hsm) return false;
 
     // Verify the HSM's Document matches the editor's file.
-    // When multiple SharedFolders have files with the same relative path
-    // (e.g., multiple e2e-fixture-* folders each with /test-1.md),
-    // we must ensure we're connecting to the correct HSM.
+    // When multiple SharedFolders have the same relative path, ensure the
+    // editor connects to the HSM for its actual file.
     const fileInfo = this.editor.state.field(editorInfoField, false);
     const editorFile = fileInfo?.file;
 

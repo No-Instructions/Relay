@@ -115,7 +115,7 @@ export interface HSMRecording {
  * Metadata about the recording context.
  */
 export interface RecordingMetadata {
-  /** Source of recording (e.g., 'e2e-test', 'manual', 'shadow-mode') */
+  /** Source of recording (e.g., 'manual' or 'shadow-mode') */
   source: 'e2e-test' | 'integration-test' | 'unit-test' | 'manual' | 'shadow-mode';
 
   /** Test name if from a test */

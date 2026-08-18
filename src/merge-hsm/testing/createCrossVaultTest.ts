@@ -1,5 +1,5 @@
 /**
- * Cross-Vault Test Fixture
+ * In-memory cross-vault environment
  *
  * Simulates two vaults syncing through a shared Y.Doc "server" without
  * live Obsidian instances. Each vault has its own MergeHSM, localDoc,

@@ -5,7 +5,7 @@
  * constant is the single source of truth for all CanvasHSM state
  * transitions; it is interpreted by the merge-hsm machine interpreter.
  *
- * Structural invariants encoded here (verified by __tests__/canvas-hsm):
+ * Structural invariants encoded here:
  * - WRITE_DISK only from `flushing`: only that node grants canWriteDisk,
  *   and CanvasHSM refuses to emit without the capability. A view-attached
  *   canvas can never reach `flushing` — every state routes ACQUIRE_LOCK

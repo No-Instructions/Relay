@@ -1099,7 +1099,7 @@ export async function stopHSMRecording(): Promise<void> {
 }
 
 /**
- * Record an HSM entry. Called by the E2ERecordingBridge onEntry callback.
+ * Record a diagnostic HSM entry.
  * Adds boot ID to each entry for session grouping.
  */
 export function recordHSMEntry(entry: object): void {

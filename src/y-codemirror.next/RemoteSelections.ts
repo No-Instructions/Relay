@@ -197,7 +197,7 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 	}
 
 	/**
-	 * Check for live editing markers (same allowlist as LiveEditPlugin): either
+	 * Check for either supported live-editing marker:
 	 * the editor is inside a `.relay-live-editor` wrapper, or it's an embedded
 	 * canvas editor (identified by `mod-inside-iframe` on its source view --
 	 * we can't always find those via the connection manager).

@@ -2,7 +2,7 @@
  * ProviderLifecycle - Extracted provider reconnection logic
  *
  * Encapsulates the destroy-old → create-fresh → reconnect lifecycle that both
- * Document (production) and test fixtures share. Obsidian-specific parts
+ * Document and in-memory callers share. Obsidian-specific parts
  * (provider creation, auth) are injected via the ProviderLifecycleHost interface.
  */
 

@@ -421,8 +421,8 @@ export async function loadAndActivate(
 
 	// Seed the mock IndexedDB with the content BEFORE any transitions.
 	// This simulates content that was persisted in a previous session.
-	// Per docs/how-we-bootstrap-collaboration.md, content should only be inserted
-	// into the CRDT once during enrollment, and loaded from persistence thereafter.
+	// Content should only be inserted into the CRDT once during enrollment, then
+	// loaded from persistence thereafter.
 	// Always seed — even for empty content — so persistence reports hasContent=true.
 	// Without this, the HSM stays in awaitingPersistence waiting for enrollment.
 	if (hsm.seedIndexedDB) {
@@ -686,8 +686,8 @@ export async function loadToConflict(
 ): Promise<void> {
 	const guid = opts.guid ?? "test-guid";
 
-	// INVARIANT: Per docs/how-we-bootstrap-collaboration.md, content is inserted
-	// into the CRDT exactly ONCE during initial enrollment. We NEVER do:
+	// Content is inserted into the CRDT exactly once during initial enrollment.
+	// We never do:
 	//   - delete(0, length) + insert(0, newContent) — destroys CRDT history
 	//   - Create fresh Y.Doc and merge with existing — creates parallel histories
 	//

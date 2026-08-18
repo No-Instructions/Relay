@@ -106,7 +106,7 @@ function mergeText(base: string, ours: string, theirs: string): string {
 		// not be replayed onto ours. The ours substrate survives —
 		// but never silently: this function's contract is that edits to
 		// different regions both survive, so a dropped patch must be
-		// visible in the logs (and to the harness) when it happens.
+		// visible in diagnostic logs when it happens.
 		warnMerge(
 			`character merge dropped ${failed}/${applied.length} patch(es); ` +
 				"keeping the peer-side text for the overlapping region",

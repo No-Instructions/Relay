@@ -2,7 +2,7 @@
  * RelayDebugAPI — Plugin-level debug surface exposed as `window.__relayDebug`.
  *
  * Aggregates per-folder recording bridges and provides CDP-accessible
- * utilities for E2E tests, live debugging, and diagnostics.
+ * utilities for automated clients, live debugging, and diagnostics.
  *
  * Lifecycle: created in plugin onload(), destroyed in onunload().
  */
@@ -189,12 +189,10 @@ export interface SyncPanelStatus {
 }
 
 /**
- * Rich snapshot of an HSM's state, covering every layer the test harness
- * routinely inspects: state path + sync gate (from the machine), LCA meta
- * and content (from the HSM), localDoc length/content/frontmatter (from
- * the in-memory Y.Doc), disk content + mtime (via the vault adapter), and
- * recent HSM transitions (via the disk log). Replaces the ad-hoc 120-line
- * eval blob that used to live in the Python CLI.
+ * Rich snapshot of an HSM's state, covering state path and sync gate
+ * (from the machine), LCA metadata and content (from the HSM), localDoc
+ * content and frontmatter (from the in-memory Y.Doc), disk content and
+ * mtime (via the vault adapter), and recent transitions (via the disk log).
  */
 export interface HsmStateSnapshot {
   path: string;
@@ -326,7 +324,7 @@ export interface RelayDebugGlobal {
   listAllConflicts: () => { folderGuid: string; folderPath: string; guid: string; path: string }[];
   getSyncPanelStatus: (folderGuid: string) => SyncPanelStatus;
   listSyncPanelStatus: () => SyncPanelStatus[];
-  /** Get a rich HSM state snapshot for the test harness — state path, LCA, disk, IDB, SV, frontmatter, recent transitions. */
+  /** Get a rich HSM state snapshot: state path, LCA, disk, IDB, SV, frontmatter, and recent transitions. */
   getHsmStateSnapshot: (path: string) => Promise<HsmStateSnapshot>;
   /** Snapshot the per-doc IndexedDB: updates count, custom metadata, IDB content, disk content, match flag. */
   getIdbContent: (path: string) => Promise<IdbContentSnapshot>;
@@ -1298,9 +1296,8 @@ export class RelayDebugAPI {
   }
 
   /**
-   * Build the HsmStateSnapshot for a document. Factored here so the CLI,
-   * the Python RelayClient, and in-plugin debug UI can all reach the same
-   * shape — the CDP callers via `__relayDebug.getHsmStateSnapshot(path)`.
+   * Build the HsmStateSnapshot for a document so every debug-API caller
+   * receives the same shape.
    */
   async getHsmStateSnapshot(path: string): Promise<HsmStateSnapshot> {
     const lookup = this.lookupDocument(path);
@@ -1346,7 +1343,7 @@ export class RelayDebugAPI {
     // and _remoteSnapshot fields only refresh at lifecycle points and go
     // stale during active editing, reporting mismatch on converged docs.
     // Hibernated docs fall back to the cached/persisted heads, which is
-    // the persistence-level check the idle fixtures assert.
+    // the persistence-level check needed while the document is idle.
     let headSnapshotsEqual: boolean | null = null;
     try {
       if (hsmAny.localDoc && hsmAny.remoteDoc) {
@@ -1478,15 +1475,13 @@ export class RelayDebugAPI {
    * Wait for an HSM to reach a state path that starts with `statePrefix`,
    * racing against a timeout. Thin bridge over `MergeHSM.awaitState`,
    * which is event-driven (subscribes to `stateChanges` and resolves
-   * as soon as the predicate matches) — no polling, no per-tick
-   * Python↔JS round-trips.
+   * as soon as the predicate matches) — no polling or per-tick calls.
    *
    * Resolves with the final state path on success. Rejects with a
    * timeout error that includes the current state path for debugging.
    *
-   * Use from the Python library to compose "open file and wait for
-   * active" or "close and wait for idle" flows without baking the
-   * wait into the action primitives themselves.
+   * Callers can compose "open file and wait for active" or "close and
+   * wait for idle" flows without baking the wait into action primitives.
    */
   private async awaitHsmState(
     path: string,
@@ -1594,8 +1589,7 @@ export class RelayDebugAPI {
   /**
    * Canonical vault-path form: leading-slash, includes the shared-folder
    * prefix (e.g. `/private/foo.md`). All debug-API outputs emit paths in
-   * this shape so CLI output can round-trip through any path-accepting
-   * command.
+   * this shape so output can round-trip through any path-accepting call.
    */
   private toVaultPath(folder: any, vpath: string): string {
     return '/' + folder.getPath(vpath);
@@ -1793,8 +1787,7 @@ export class RelayDebugAPI {
   }
 
   /**
-   * Snapshot the per-doc IndexedDB + compare against disk. Replaces the
-   * ~100-line inline JS blob that used to live in cmd_relay_idb_content.
+   * Snapshot the per-document IndexedDB state and compare it against disk.
    */
   private async getIdbContent(path: string): Promise<IdbContentSnapshot> {
     const { hsm, guid, folder, filePath, dbName } = this.resolveIdbTarget(path);
@@ -1860,8 +1853,7 @@ export class RelayDebugAPI {
   }
 
   /**
-   * Snapshot the OpCapture history store for a document. Replaces the
-   * ~90-line inline JS blob that used to live in cmd_relay_idb_history.
+   * Snapshot the OpCapture history store for a document.
    */
   private async getIdbHistory(path: string): Promise<IdbHistorySnapshot> {
     const { hsm, guid, folder, filePath, dbName } = this.resolveIdbTarget(path);
@@ -1916,8 +1908,7 @@ export class RelayDebugAPI {
   }
 
   /**
-   * Snapshot in-memory + persisted fork state for a document. Replaces
-   * the ~90-line inline JS blob that used to live in cmd_relay_idb_fork.
+   * Snapshot in-memory and persisted fork state for a document.
    */
   private async getIdbFork(path: string): Promise<IdbForkSnapshot> {
     const { hsm, guid, folder, filePath, hsmDbName } = this.resolveIdbTarget(path);

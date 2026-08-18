@@ -5,14 +5,14 @@
  * Pure state machine: events in → state transitions → effects out.
  *
  * Architecture:
- * - Two-YDoc architecture: localDoc (persisted) + remoteDoc (ephemeral)
+ * - While awake: localDoc (persisted) + remoteDoc (ephemeral)
  * - In active mode: editor ↔ localDoc ↔ remoteDoc ↔ server
- * - In idle mode: localDoc stays alive, persistence writes to IDB automatically
+ * - In idle mode: the residency pool may hibernate localDoc after persistence settles
  *
  * CRITICAL INVARIANTS (DO NOT VIOLATE):
  *
  * 1. ONE-TIME CONTENT INSERTION: Disk content must only be inserted into the
- *    CRDT exactly ONCE during initial enrollment. See docs/how-we-bootstrap-collaboration.md.
+ *    CRDT exactly ONCE during initial enrollment.
  *    After enrollment, content flows through CRDT operations, never by reinsertion.
  *
  * 2. NO FULL CRDT REPLACE: Never use the pattern `delete(0, length) + insert(0, newContent)`
@@ -410,7 +410,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	private _onTransition?: (info: { from: StatePath; to: StatePath; event: MergeEvent; effects: MergeEffect[] }) => void;
 	private _pendingEffects: MergeEffect[] | null = null;
 
-	// Listeners for detailed transition info (used by test harness)
+	// Listeners for detailed transition diagnostics.
 	private stateChangeListeners: Array<
 		(from: StatePath, to: StatePath, event: MergeEvent) => void
 	> = [];
@@ -2490,7 +2490,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	}
 
 	/**
-	 * Subscribe to state changes with detailed transition info (for test harness).
+	 * Subscribe to state changes with detailed transition information.
 	 */
 	onStateChange(
 		listener: (from: StatePath, to: StatePath, event: MergeEvent) => void,
@@ -3596,7 +3596,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 						// and preview-mode edits go through vault.process →
 						// registerMachineEdit → setViewData, which requires
 						// the machine-edit capture to prevent peer-side
-						// duplication (the live2 butter.md concat shape).
+						// duplication that concatenates independently inserted copies.
 						this._bridge.currentMachineEditMark =
 							this._pendingMachineEdits[machineEditIdx].captureMark;
 						this._localDocDispatchOriginView = e.viewId;
@@ -5931,9 +5931,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	 * Invariant: when localDoc exists, the captured LCA.contents must equal
 	 * localDoc.getText("contents"). LCA is the Last Common Ancestor — a
 	 * snapshot of content both sides agreed on. Capturing a value that
-	 * disagrees with the current CRDT creates a ghost baseline (the live1
-	 * falssssse pathology: disk/LCA frozen at one value while localDoc
-	 * evolved to another).
+	 * disagrees with the current CRDT creates a ghost baseline: disk/LCA
+	 * freezes at one value while localDoc evolves to another.
 	 *
 	 * Bypass: loading an LCA from persisted state (storePersistenceData)
 	 * is a trusted restoration — localDoc hasn't been built yet, there's
@@ -6628,7 +6627,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		// Emit on Observable (per spec)
 		this._stateChanges.emit(this.state);
 
-		// Notify detailed transition listeners (for test harness)
+		// Notify detailed transition listeners.
 		for (const listener of this.stateChangeListeners) {
 			listener(from, to, event);
 		}
@@ -6726,7 +6725,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		// blank-line `\n`) preserves the `\n\n` frontmatter-to-body
 		// separator. Omitting it drops the blank line on every Y.Map
 		// dispatch — the shape producing `---\nhello` on disk for
-		// live1/live2 butter.md after Properties toggles.
+		// competing clients after Properties toggles.
 		const frontmatter = `---\n${yamlBody}---\n`;
 		// The body is everything after the frontmatter REGION, located by
 		// the frontmatter-info helper — which finds the block whether or

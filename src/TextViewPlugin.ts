@@ -197,7 +197,7 @@ export class TextFileViewPlugin extends HasLogging {
 				this.warn("Document has HSM conflict - showing merge banner");
 				this.view.checkStale(); // This will show the merge banner via HSM
 			} else {
-				// Document is authoritative, force view to match CRDT state (like getKeyFrame in LiveEditPlugin)
+				// The document is authoritative, so force the view to match its CRDT state.
 				this.warn("Document is authoritative - syncing view to CRDT state");
 				await this.syncViewToCRDT();
 			}
@@ -205,7 +205,7 @@ export class TextFileViewPlugin extends HasLogging {
 	}
 
 	async syncViewToCRDT() {
-		// Force view to match CRDT state (equivalent to getKeyFrame in LiveEditPlugin)
+		// Force the view to match the authoritative CRDT state.
 		if (
 			isLive(this.view) &&
 			!this.destroyed &&

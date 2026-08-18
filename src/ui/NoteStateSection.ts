@@ -828,7 +828,7 @@ export class NoteStateSection {
 	}
 
 	/**
-	 * The store convergence chain the e2e fixtures assert before calling a
+	 * The store convergence chain callers await before calling a
 	 * note "synced and persisted across all stores", reduced to the first
 	 * failing pair. Null when there is not enough data to judge.
 	 */

@@ -60,7 +60,7 @@
 	};
 
 	const handleLayersClick = async () => {
-		// Disk buffer feature removed - this button is now a no-op
+		// The layers button is informational; tracking state is shown by its label.
 	};
 
 	const handleLayersKeyPress = (event: KeyboardEvent) => {

@@ -35,7 +35,7 @@ export interface ConflictHunkInfo {
 	theirsContent: string;
 }
 
-/** Focused snapshot of an HSM's conflict state for API and harness callers. */
+/** Focused snapshot of an HSM's conflict state for API and diagnostic callers. */
 export interface ConflictInfoSnapshot {
 	path: string;
 	guid: string;

@@ -278,10 +278,9 @@ export async function createTestHSM(
 	// which needs to selectively remove disk-origin update rows from IDB.
 	// Compaction only happens on destroy() (like real y-indexeddb periodic compaction).
 	//
-	// IMPORTANT: Per docs/how-we-bootstrap-collaboration.md, disk content should only
-	// be inserted into the CRDT exactly ONCE during initial enrollment. This stateful
-	// mock ensures that reopening a file loads persisted content rather than relying
-	// on any LCA fallback mechanisms.
+	// Disk content should only be inserted into the CRDT exactly once during
+	// initial enrollment. This stateful mock ensures that reopening a file loads
+	// persisted content rather than relying on any LCA fallback mechanisms.
 	const updateRows: Array<{ key: number; update: Uint8Array; origin: any }> =
 		[];
 	let updateRowKeyCounter = 0;

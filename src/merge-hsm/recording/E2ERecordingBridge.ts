@@ -1,9 +1,9 @@
 /**
- * E2E Recording Bridge
+ * Recording Bridge
  *
  * Per-folder passive sink for HSM transition events pushed by MergeHSM
  * via the `onTransition` callback. Streams entries to disk (via onEntry)
- * and captures in-memory timelines on demand for E2E tests.
+ * and captures in-memory timelines on demand for diagnostic clients.
  *
  * Lifecycle: 1:1 with SharedFolder. Created during folder init,
  * disposed during folder destroy.
@@ -55,7 +55,7 @@ export interface E2ERecordingState {
 }
 
 // =============================================================================
-// E2ERecordingBridge
+// Recording bridge
 // =============================================================================
 
 export class E2ERecordingBridge {

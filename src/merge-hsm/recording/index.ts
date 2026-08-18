@@ -48,7 +48,7 @@ export {
 } from './replay';
 export type { LogReplayOptions } from './replay';
 
-// E2E test integration
+// Recording bridge integration
 export {
   E2ERecordingBridge,
 } from './E2ERecordingBridge';

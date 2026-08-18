@@ -1,5 +1,5 @@
 /**
- * Canvas world harness for unit tests.
+ * In-memory canvas world.
  *
  * One vault is the full canvas stack over simulated I/O: a bare Canvas
  * (real applyData/enrollLocal/export methods over a real localDoc), a real
@@ -10,10 +10,9 @@
  * convergence: disk == localDoc == remoteDoc per vault, localDocs equal
  * across vaults, and the server's own copy equal to both.
  *
- * Test files must mock the modules Canvas pulls in ("obsidian",
- * "../src/SharedFolder", "../src/storage/y-indexeddb", "../src/LoginManager",
- * "../src/LiveTokenStore", "../src/client/provider") before importing this
- * harness — see __tests__/canvas-hsm/cross-vault.test.ts.
+ * Before importing this module, callers must provide mocks for Obsidian and
+ * the folder, persistence, login, token-store, and provider dependencies
+ * pulled in by Canvas.
  */
 
 import * as Y from "yjs";
