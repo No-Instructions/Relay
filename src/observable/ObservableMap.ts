@@ -4,6 +4,12 @@ import type { Unsubscriber } from "svelte/store";
 import { Observable } from "./Observable";
 import type { Subscriber } from "./Observable";
 
+/** Delta subscriber: called with the map and the keys changed since its last delivery. */
+export type MapChangeSubscriber<K, V> = (
+	map: ObservableMap<K, V>,
+	changed: ReadonlySet<K>,
+) => void;
+
 export class ObservableMap<K, V> extends Observable<ObservableMap<K, V>> {
 	protected _map: Map<K, V>;
 	protected _derivedMaps: WeakMap<
@@ -12,6 +18,13 @@ export class ObservableMap<K, V> extends Observable<ObservableMap<K, V>> {
 	>;
 	private derivedMapRefCounts = new WeakMap<DerivedMap<K, V>, number>();
 	private activeDerivedMaps = new Set<DerivedMap<K, V>>();
+	// One changed-key buffer per delta subscriber, drained at delivery. The
+	// PostOffice coalesces notifications within its window, so a burst of
+	// sets reaches each subscriber as one delivery carrying the union.
+	private changeBuffers = new Map<
+		Subscriber<ObservableMap<K, V>>,
+		Set<K>
+	>();
 
 	constructor(public observableName?: string) {
 		super();
@@ -19,8 +32,15 @@ export class ObservableMap<K, V> extends Observable<ObservableMap<K, V>> {
 		this._derivedMaps = new WeakMap();
 	}
 
+	private recordChange(key: K): void {
+		for (const buffer of this.changeBuffers.values()) {
+			buffer.add(key);
+		}
+	}
+
 	set(key: K, value: V): ObservableMap<K, V> {
 		this._map.set(key, value);
+		this.recordChange(key);
 		this.notifyListeners();
 		return this;
 	}
@@ -28,14 +48,50 @@ export class ObservableMap<K, V> extends Observable<ObservableMap<K, V>> {
 	delete(key: K): boolean {
 		const result = this._map.delete(key);
 		if (result) {
+			this.recordChange(key);
 			this.notifyListeners();
 		}
 		return result;
 	}
 
 	clear(): void {
+		if (this.changeBuffers.size > 0) {
+			for (const key of this._map.keys()) {
+				this.recordChange(key);
+			}
+		}
 		this._map.clear();
 		this.notifyListeners();
+	}
+
+	/**
+	 * Subscribe to change deltas: each delivery carries the set of keys
+	 * whose entries were set or deleted since this subscriber's previous
+	 * delivery. The initial delivery carries every current key, so a fresh
+	 * subscriber paints from scratch; an empty delta is not delivered.
+	 *
+	 * Deltas track the mutating methods (`set`, `delete`, `clear`) only: a
+	 * notification published through a raw `notifyListeners()` — including
+	 * a derived map's wholesale replacement — carries no keys and is
+	 * suppressed, so delta subscriptions are for maps mutated exclusively
+	 * through those methods. A callback must not mutate the map it
+	 * subscribes to: the PostOffice collapses same-sender re-entrant mail
+	 * into the in-flight delivery, so a key recorded during the callback
+	 * would wait for the next unrelated mutation to be delivered.
+	 */
+	subscribeChanges(run: MapChangeSubscriber<K, V>): Unsubscriber {
+		const wrapper: Subscriber<ObservableMap<K, V>> = (map) => {
+			const buffer = this.changeBuffers.get(wrapper);
+			if (!buffer || buffer.size === 0) return;
+			this.changeBuffers.set(wrapper, new Set());
+			run(map, buffer);
+		};
+		this.changeBuffers.set(wrapper, new Set(this._map.keys()));
+		const unsubscribe = this.subscribe(wrapper);
+		return () => {
+			this.changeBuffers.delete(wrapper);
+			unsubscribe();
+		};
 	}
 
 	has(key: K): boolean {

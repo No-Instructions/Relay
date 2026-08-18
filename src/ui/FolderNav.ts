@@ -16,14 +16,12 @@ import { flags, withAnyOf, withFlag } from "src/flagManager";
 import { flag } from "src/flags";
 import type { BackgroundSync, QueueItem } from "src/BackgroundSync";
 import type { Unsubscriber } from "src/observable/Observable";
-import type { ObservableMap } from "src/observable/ObservableMap";
 import type { ObservableSet } from "src/observable/ObservableSet";
 import type { SyncStatus } from "src/merge-hsm/types";
 import { SyncFile, isSyncFile } from "src/SyncFile";
 import { Canvas } from "src/Canvas";
 import { curryLog, metrics } from "src/debug";
 import { isDestroyedError } from "src/DestroyedError";
-import { changedSyncStatusGuids } from "src/ui/FolderNavRefresh";
 
 class SiblingWatcher {
 	mutationObserver: MutationObserver | null;
@@ -885,15 +883,12 @@ export class FolderNavigationDecorations {
 	private pendingQuickRefreshFolders = new Set<SharedFolder>();
 
 	/**
-	 * Sync-status notifications carry the complete map rather than the changed
-	 * key. Snapshots identify changed GUIDs by object identity: MergeManager
-	 * replaces a status object only after its semantic equality check fails.
+	 * Changed GUIDs accumulated from sync-status change deliveries, drained
+	 * by the next quick-refresh flush. MergeManager replaces a status object
+	 * only after its semantic equality check fails, so every delivered key
+	 * is a meaningful change.
 	 */
-	private syncStatusSnapshots = new WeakMap<
-		SharedFolder,
-		Map<string, SyncStatus>
-	>();
-	private pendingSyncStatusFolders = new Set<SharedFolder>();
+	private pendingSyncStatusGuids = new Map<SharedFolder, Set<string>>();
 	private destroyed = false;
 
 	constructor(
@@ -978,8 +973,9 @@ export class FolderNavigationDecorations {
 					folder.syncStore.subscribe(() => this.quickRefresh(folder)),
 				);
 				folder.onDestroy(
-					folder.mergeManager.syncStatus.subscribe((statuses) =>
-						this.syncStatusChanged(folder, statuses),
+					folder.mergeManager.syncStatus.subscribeChanges(
+						(_statuses, changed) =>
+							this.syncStatusChanged(folder, changed),
 					),
 				);
 			});
@@ -1029,25 +1025,20 @@ export class FolderNavigationDecorations {
 		return fileExplorers;
 	}
 
-	private snapshotSyncStatuses(
-		statuses: ObservableMap<string, SyncStatus>,
-	): Map<string, SyncStatus> {
-		return new Map(statuses.entries());
-	}
-
 	private syncStatusChanged(
 		folder: SharedFolder,
-		statuses: ObservableMap<string, SyncStatus>,
+		changed: ReadonlySet<string>,
 	): void {
-		const previous = this.syncStatusSnapshots.get(folder);
-		if (!previous || !this.layoutReady) {
-			this.syncStatusSnapshots.set(
-				folder,
-				this.snapshotSyncStatuses(statuses),
-			);
-			return;
+		// Before layout-ready the full refresh() paints everything anyway.
+		if (!this.layoutReady || changed.size === 0) return;
+		let pending = this.pendingSyncStatusGuids.get(folder);
+		if (!pending) {
+			pending = new Set();
+			this.pendingSyncStatusGuids.set(folder, pending);
 		}
-		this.pendingSyncStatusFolders.add(folder);
+		for (const guid of changed) {
+			pending.add(guid);
+		}
 		this.scheduleQuickRefresh();
 	}
 
@@ -1079,24 +1070,16 @@ export class FolderNavigationDecorations {
 		const t0 = performance.now();
 		const refreshAll = this.pendingQuickRefreshAll;
 		const refreshFolders = new Set(this.pendingQuickRefreshFolders);
-		const statusFolders = new Set(this.pendingSyncStatusFolders);
 		this.pendingQuickRefreshAll = false;
 		this.pendingQuickRefreshFolders.clear();
-		this.pendingSyncStatusFolders.clear();
 
 		const changedStatuses = new Map<SharedFolder, Set<string>>();
-		for (const folder of statusFolders) {
-			if (folder.destroyed) continue;
-			const current = this.snapshotSyncStatuses(
-				folder.mergeManager.syncStatus,
-			);
-			const previous = this.syncStatusSnapshots.get(folder) ?? new Map();
-			const changed = changedSyncStatusGuids(previous, current);
-			this.syncStatusSnapshots.set(folder, current);
-			if (changed.size > 0) {
-				changedStatuses.set(folder, changed);
+		for (const [folder, guids] of this.pendingSyncStatusGuids) {
+			if (!folder.destroyed && guids.size > 0) {
+				changedStatuses.set(folder, guids);
 			}
 		}
+		this.pendingSyncStatusGuids = new Map();
 
 		if (
 			!refreshAll &&
@@ -1140,15 +1123,7 @@ export class FolderNavigationDecorations {
 		const t0 = performance.now();
 		this.pendingQuickRefreshAll = false;
 		this.pendingQuickRefreshFolders.clear();
-		this.pendingSyncStatusFolders.clear();
-		this.sharedFolders.forEach((folder) => {
-			if (!folder.destroyed) {
-				this.syncStatusSnapshots.set(
-					folder,
-					this.snapshotSyncStatuses(folder.mergeManager.syncStatus),
-				);
-			}
-		});
+		this.pendingSyncStatusGuids.clear();
 		const fileExplorers = this.getFileExplorers();
 		for (const fileExplorer of fileExplorers) {
 			const walker =
@@ -1171,7 +1146,7 @@ export class FolderNavigationDecorations {
 		this.destroyed = true;
 		this.pendingQuickRefreshAll = false;
 		this.pendingQuickRefreshFolders.clear();
-		this.pendingSyncStatusFolders.clear();
+		this.pendingSyncStatusGuids.clear();
 
 		// Release the root SharedFolders subscription first so no further
 		// folder-add notifications can arrive while we're tearing down.
