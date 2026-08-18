@@ -35,6 +35,7 @@ import {
 	type IPolicyManager,
 	ObservablePermission,
 } from "./PolicyManager";
+import { preferredProfileField } from "./User";
 
 interface Identified {
 	id: string;
@@ -55,6 +56,9 @@ function hasName(obj: any): obj is Named {
 interface UserDAO extends RecordModel {
 	id: string;
 	name: string;
+	displayName?: string;
+	picture: string;
+	avatar?: string;
 }
 
 interface RoleDAO extends RecordModel {
@@ -338,7 +342,7 @@ class RelayUserAuto extends Auto implements RelayUser {
 	}
 
 	public get name() {
-		return this.user.name;
+		return preferredProfileField(this.user.displayName, this.user.name);
 	}
 
 	public get email() {
@@ -346,7 +350,7 @@ class RelayUserAuto extends Auto implements RelayUser {
 	}
 
 	public get picture() {
-		return this.user.picture;
+		return preferredProfileField(this.user.avatar, this.user.picture);
 	}
 
 	public update(update: UserDAO): RelayUser {

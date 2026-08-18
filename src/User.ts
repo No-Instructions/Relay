@@ -17,16 +17,29 @@ export const usercolors: UserColor[] = [
 	{ color: "#1be7ff", light: "#1be7ff33" },
 ];
 
+export function preferredProfileField(
+	preferred: string | undefined,
+	fallback: string,
+): string {
+	return preferred || fallback;
+}
+
 export class User {
 	color: UserColor;
+	name: string;
+	picture: string;
 
 	constructor(
 		public id: string,
-		public name: string,
+		name: string,
 		public email: string,
-		public picture: string,
+		picture: string,
 		public token: string,
+		displayName?: string,
+		avatar?: string,
 	) {
+		this.name = preferredProfileField(displayName, name);
+		this.picture = preferredProfileField(avatar, picture);
 		this.color = usercolors[random.uint32() % usercolors.length];
 	}
 }

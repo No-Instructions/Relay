@@ -142,6 +142,8 @@ export function createUserFromOAuth(
 		authStoreModel?.email || normalizedOAuth?.email || "",
 		authStoreModel?.picture || normalizedOAuth?.picture || "",
 		token,
+		authStoreModel?.displayName,
+		authStoreModel?.avatar,
 	);
 }
 

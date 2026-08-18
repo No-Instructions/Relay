@@ -113,7 +113,7 @@
 					const relayUser = $relayUsers.get(user.id);
 
 					users.push({
-						name: user.name,
+						name: relayUser?.name || user.name,
 						id: user.id,
 						color: user.color || "#30bced",
 						colorLight: user.colorLight || user.color + "33" || "#30bced33",
