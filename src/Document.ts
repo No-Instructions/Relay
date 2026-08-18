@@ -90,10 +90,9 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	private _forkReconcileWatchRegistered = false;
 
 	private recordProviderSyncedRemoteHead = (snapshot: Uint8Array): void => {
-		this.sharedFolder.mergeManager?.seedServerAdvertisedSnapshotFromBytes(
-			this.guid,
-			snapshot,
-		);
+		// The session that observed this head performs its own convergence;
+		// the machine only retains it as the freshest server head.
+		this._hsm?.noteServerHead({ snapshot });
 	};
 
 	/**
@@ -298,32 +297,19 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 
 	/**
 	 * Create the remote YDoc/provider if needed.
-	 * Seed updates are accepted only when server-advertised snapshot metadata
+	 * Seed updates are accepted only when the machine's retained server head
 	 * proves they cannot introduce local-only CRDT state.
 	 */
 	ensureRemoteDoc(): Y.Doc {
 		const isNew = !this.isRemoteDocLoaded;
 		const doc = super.ensureRemoteDoc();
 		if (isNew) {
-			this.seedRemoteDocFromServerAdvertisedSnapshot(doc);
+			const seedUpdate = this._hsm?.getRemoteDocSeedUpdate() ?? null;
+			if (seedUpdate) {
+				Y.applyUpdate(doc, seedUpdate, this._provider);
+			}
 		}
 		return doc;
-	}
-
-	private seedRemoteDocFromServerAdvertisedSnapshot(remoteDoc: Y.Doc): void {
-		const localDoc = this._hsm?.getLocalDoc();
-		if (!localDoc) return;
-
-		const seedUpdate =
-			this.sharedFolder.mergeManager?.getRemoteDocSeedUpdateFromLocalDoc(
-				this.guid,
-				localDoc,
-			) ?? null;
-		if (!seedUpdate) {
-			return;
-		}
-
-		Y.applyUpdate(remoteDoc, seedUpdate, this._provider);
 	}
 
 	/**
@@ -871,6 +857,16 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			case "PERSIST_STATE":
 				await this.handlePersistState(effect.state);
 				break;
+			case "ENQUEUE_SYNC": {
+				// The machine concluded the document and the server head are
+				// not provably converged; a background session converges both
+				// directions. The queue owns dedupe, retry, and failure rows.
+				if (this.destroyed) break;
+				this.sharedFolder.backgroundSync.enqueueSync(this).catch((e) => {
+					this.warn("[handleEffect:ENQUEUE_SYNC] sync session failed", e);
+				});
+				break;
+			}
 			// Other effects (DISPATCH_CM6, STATUS_CHANGED, etc.) are handled elsewhere
 		}
 	}

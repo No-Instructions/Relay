@@ -135,6 +135,46 @@ export interface SyncStatus {
 	remoteSnapshot: Uint8Array;
 }
 
+/**
+ * Core signals shared by every sync machine, pocketed when the machine
+ * cannot act, never dropped. Domain events (CM6_CHANGE, canvas LOAD,
+ * DISK_CHANGED, …) remain per-machine and are not part of the shared
+ * contract: a disk observation's shape is the machine's own — the document
+ * machine's carries the observed content so it never re-reads a moved
+ * file, while the canvas machine reads disk inside its own evaluation.
+ */
+export type SyncMachineSignal =
+	| { type: "SERVER_AHEAD"; head: YjsSnapshot }
+	| { type: "PROVIDER_SYNCED" }
+	| { type: "DOWNLOAD_COMPLETE" }
+	| { type: "DOWNLOAD_FAILED" };
+
+/** Work-relevant state read before selecting work for a file. */
+export interface SyncWorkState {
+	/** A user surface owns the file (editor lock, attached view). */
+	userLock: boolean;
+	/** A transfer or signal the machine holds is unsettled. */
+	workPending: boolean;
+	/** A merge base exists. */
+	baseline: boolean;
+}
+
+/**
+ * The one CRDT surface every synced file type's decision-owner presents.
+ * The markdown machine and the canvas machine keep their domain-specific
+ * internals but answer this contract identically; `compareServerHead` is
+ * its defining obligation — cold-answerable from persisted state, with no
+ * materialization and no persistence loads.
+ */
+export interface SyncMachine {
+	getSyncStatus(): SyncStatus;
+	getWorkState(): SyncWorkState;
+	send(signal: SyncMachineSignal): void;
+	compareServerHead(head: YjsSnapshot): "ahead" | "current" | "unknown";
+	/** Retain a head the machine is already current with, without acting. */
+	noteServerHead(head: YjsSnapshot): void;
+}
+
 export interface MergeState {
 	/** Document GUID */
 	guid: string;
@@ -304,6 +344,34 @@ export interface CM6ChangeEvent {
 
 export interface ProviderSyncedEvent {
 	type: "PROVIDER_SYNCED";
+}
+
+/**
+ * A requested content download settled: the fetched full state has been
+ * applied to the remote replica. Carries the same conclusion as a provider
+ * session reaching synced — remote state is now known — and every state
+ * handles it identically to PROVIDER_SYNCED.
+ */
+export interface DownloadCompleteEvent {
+	type: "DOWNLOAD_COMPLETE";
+}
+
+/** A requested content download settled without delivering state. */
+export interface DownloadFailedEvent {
+	type: "DOWNLOAD_FAILED";
+}
+
+/**
+ * The server holds a head for this document that the machine may not have.
+ * A core signal shared by every sync machine: states that cannot act on it
+ * pocket the newest head; acting states compare it against the machine's
+ * own basis and request convergence work when the two are not provably
+ * converged.
+ */
+export interface ServerAheadEvent {
+	type: "SERVER_AHEAD";
+	/** The server head — the YjsSnapshot the server holds for this document. */
+	head: YjsSnapshot;
 }
 
 export interface RecoverLCAEvent {
@@ -566,6 +634,9 @@ export type MergeEvent =
 	| SaveCompleteEvent
 	| CM6ChangeEvent
 	| ProviderSyncedEvent
+	| ServerAheadEvent
+	| DownloadCompleteEvent
+	| DownloadFailedEvent
 	| RecoverLCAEvent
 	| ConnectedEvent
 	| DisconnectedEvent
@@ -647,6 +718,17 @@ export interface SyncToRemoteEffect {
 	update: Uint8Array;
 }
 
+/**
+ * Request a background provider sync session so the document converges
+ * with the server. Emitted when the machine learns of server-side state
+ * it cannot reach through a live provider connection; the host translates
+ * it into a background-sync session request.
+ */
+export interface EnqueueSyncEffect {
+	type: "ENQUEUE_SYNC";
+	guid: string;
+}
+
 export interface StatusChangedEffect {
 	type: "STATUS_CHANGED";
 	guid: string;
@@ -694,6 +776,7 @@ export type MergeEffect =
 	| WriteDiskEffect
 	| PersistStateEffect
 	| SyncToRemoteEffect
+	| EnqueueSyncEffect
 	| StatusChangedEffect
 	| RequestProviderSyncEffect
 	| RequestHibernateEffect
@@ -748,9 +831,8 @@ export interface PersistedCanvasState {
 	} | null;
 	disk: MergeMetadata | null;
 	/**
-	 * The canvas localDoc's head at persist time. Lets the advertised-head
-	 * sweep decide whether a hibernated canvas trails the server without
-	 * waking it.
+	 * The canvas localDoc's head at persist time. Lets a server head be
+	 * classified against a hibernated canvas without waking it.
 	 */
 	localSnapshot?: Uint8Array | null;
 	lastStatePath: string;
@@ -828,6 +910,9 @@ export interface PersistedStateMeta {
 // Re-export TimeProvider from existing module for consistency
 import type { TimeProvider } from "../TimeProvider";
 export type { TimeProvider };
+
+import type { YjsSnapshot } from "./snapshots";
+export type { YjsSnapshot };
 
 // Import Y.Doc type for remoteDoc
 import type * as Y from "yjs";

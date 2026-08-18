@@ -165,7 +165,7 @@ export function buildFolderSyncStatusModel(
 		const doc = file as any;
 		const hsm = doc.hsm;
 		const statePath = hsm?.statePath as StatePath | undefined;
-		const syncStatus = hsm?.getSyncStatus?.() as SyncStatus | undefined;
+		const syncStatus = hsm?.getSyncStatus() as SyncStatus | undefined;
 		const derived = deriveFileSyncStatus({
 			statePath,
 			syncStatus,

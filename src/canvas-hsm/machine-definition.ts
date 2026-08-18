@@ -34,6 +34,8 @@ const REMEMBER_SIGNALS = (
 	SERVER_AHEAD: { target, actions: ["rememberServerAhead"] },
 	DOWNLOAD_COMPLETE: { target, actions: ["settleDownload"] },
 	DOWNLOAD_FAILED: { target, actions: ["settleDownload"] },
+	// A session converged remote state mid-flight; re-evaluate on settle.
+	PROVIDER_SYNCED: { target, actions: ["rememberReevaluate"] },
 });
 
 export const CANVAS_MACHINE: CanvasMachineDefinition = {
@@ -132,7 +134,9 @@ export const CANVAS_MACHINE: CanvasMachineDefinition = {
 				target: "idle.loading",
 				actions: ["restorePersistedState"],
 			},
-			SERVER_AHEAD: { target: "idle.synced", actions: ["requestDownload"] },
+			SERVER_AHEAD: { target: "idle.synced", actions: ["actOnServerAhead"] },
+			// A provider session reached synced; posture is re-derived.
+			PROVIDER_SYNCED: { target: "idle.loading" },
 			DOWNLOAD_COMPLETE: {
 				target: "idle.loading",
 				actions: ["settleDownload"],
@@ -246,7 +250,9 @@ export const CANVAS_MACHINE: CanvasMachineDefinition = {
 				target: "idle.loading",
 				actions: ["restorePersistedState"],
 			},
-			SERVER_AHEAD: { target: "idle.diverged", actions: ["requestDownload"] },
+			SERVER_AHEAD: { target: "idle.diverged", actions: ["actOnServerAhead"] },
+			// A provider session reached synced; posture is re-derived.
+			PROVIDER_SYNCED: { target: "idle.loading" },
 			DOWNLOAD_COMPLETE: {
 				target: "idle.loading",
 				actions: ["settleDownload"],
@@ -289,7 +295,9 @@ export const CANVAS_MACHINE: CanvasMachineDefinition = {
 				actions: ["advanceLCAFromFlush"],
 			},
 			FLUSH_FAILED: { target: "active", actions: [] },
-			SERVER_AHEAD: { target: "active", actions: [] },
+			// The view session converges live; the pocketed head is compared
+			// at release, where a still-current head drains to nothing.
+			SERVER_AHEAD: { target: "active", actions: ["rememberServerAhead"] },
 			DOWNLOAD_COMPLETE: { target: "active", actions: ["settleDownload"] },
 			DOWNLOAD_FAILED: { target: "active", actions: ["settleDownload"] },
 		},

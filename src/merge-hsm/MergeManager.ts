@@ -17,6 +17,7 @@ import * as Y from 'yjs';
 import { trackAsyncCleanup } from '../reloadUtils';
 import { MergeHSM } from './MergeHSM';
 import type {
+  SyncMachine,
   SyncStatus,
   MergeEffect,
   PersistedMergeState,
@@ -44,13 +45,7 @@ import {
   type DecodedDeleteSet,
   decodeUpdateDeleteSet,
   deleteSetContains,
-  docMatchesSnapshot,
   mergeDecodedDeleteSets,
-  restoreDocAtSnapshot,
-  snapshotContains,
-  snapshotFromDoc,
-  snapshotIsAhead,
-  snapshotIsEmpty,
   snapshotsEqual,
   updateHasDeleteSet,
   type YjsSnapshot,
@@ -77,15 +72,6 @@ export interface MergeManagerDocument {
   hasProviderIntegration(): boolean;
   /** Create/return the remote YDoc. */
   ensureRemoteDoc(): import('yjs').Doc;
-}
-
-function uint8ArraysEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a === b) return true;
-  if (a.byteLength !== b.byteLength) return false;
-  for (let index = 0; index < a.byteLength; index++) {
-    if (a[index] !== b[index]) return false;
-  }
-  return true;
 }
 
 export interface MergeManagerConfig {
@@ -440,10 +426,13 @@ export class MergeManager {
   private _appliedRemoteDS = new Map<string, DecodedDeleteSet>();
 
   /**
-   * Server-advertised head snapshots from the folder subdoc index. This is
-   * metadata about what the server has, not proof of what we have applied.
+   * The sync machine per guid — documents register their MergeHSM at
+   * createHSM, canvases their CanvasHSM at managed-file registration.
+   * Server-head routing addresses machines through this map without
+   * knowing kinds; the machines' own bases answer every comparison, so
+   * the merge layer holds no fleet head table.
    */
-  private _serverAdvertisedHeads = new Map<string, YjsSnapshot>();
+  private _syncMachines = new Map<string, SyncMachine>();
 
   /** Per-HSM manager subscription unsubscribers, keyed by guid. */
   private _hsmUnsubs = new Map<string, () => void>();
@@ -864,10 +853,12 @@ export class MergeManager {
       guid,
       this.createDocumentConflictProvider(guid),
     );
+    const unsubscribeMachine = this.registerSyncMachine(guid, hsm);
     const unsubs = () => {
       unsubscribeEffects();
       unsubscribeDestroyed();
       unsubscribeConflicts();
+      unsubscribeMachine();
     };
     this._hsmUnsubs.set(guid, unsubs);
 
@@ -963,7 +954,6 @@ export class MergeManager {
     this._hibernationBuffer.delete(guid);
     this._appliedRemoteSV.delete(guid);
     this._appliedRemoteDS.delete(guid);
-    this._serverAdvertisedHeads.delete(guid);
     this.clearHibernateTimer(guid);
     this.removeFromWarmLRU(guid);
     this._syncStatus.delete(guid);
@@ -972,9 +962,9 @@ export class MergeManager {
     this._lcaCache.delete(guid);
     this._localSnapshotCache.delete(guid);
     this._managedMetaCache.delete(guid);
-    // Conflict providers are removed only through their identity-guarded
-    // unsubscribe: a raw delete here would take out the provider a newer
-    // HSM registered for the same guid.
+    // Conflict providers and sync machines are removed only through their
+    // identity-guarded unsubscribes: a raw delete here would take out what
+    // a newer HSM registered for the same guid.
     this._updateWakeQueueMetrics();
   }
 
@@ -1000,7 +990,6 @@ export class MergeManager {
     this._hibernationBuffer.delete(guid);
     this._appliedRemoteSV.delete(guid);
     this._appliedRemoteDS.delete(guid);
-    this._serverAdvertisedHeads.delete(guid);
     this.clearHibernateTimer(guid);
     this.removeFromWarmLRU(guid);
     this._syncStatus.delete(guid);
@@ -1070,6 +1059,9 @@ export class MergeManager {
   unregisterManagedFile(guid: string): void {
     if (!this._managedFiles.delete(guid)) return;
     this._managedMetaCache.delete(guid);
+    // The sync-machine registration is removed only through its
+    // identity-guarded unsubscriber (held by the registering host); a raw
+    // delete here would take out a newer file's machine for the same guid.
     this.stopTracking(guid);
   }
 
@@ -1134,7 +1126,7 @@ export class MergeManager {
   /**
    * Refresh the managed-file caches from a freshly persisted record,
    * projected into the same lightweight meta shape the cold-start bulk
-   * load produces. Without this, advertised-head comparisons for a
+   * load produces. Without this, server-head comparisons for a
    * re-hibernated file run against its startup-era snapshot forever.
    */
   refreshManagedRecord(state: PersistedCanvasState): void {
@@ -1367,8 +1359,8 @@ export class MergeManager {
       }
       for (const state of allMeta) {
         // Managed-file records (kind-discriminated) feed the managed meta
-        // cache and the local-head cache — advertised-head comparisons
-        // work for hibernated files — but never the document caches.
+        // cache and the local-head cache — server-head comparisons work
+        // for hibernated files — but never the document caches.
         if (state.kind === 'canvas') {
           this._managedMetaCache.set(state.guid, state);
           this._localSnapshotCache.set(state.guid, state.localSnapshot ?? null);
@@ -1677,160 +1669,61 @@ export class MergeManager {
   }
 
   /**
-   * Record the server-advertised head directly from raw Yjs snapshot bytes.
-   * Snapshot advertisements retain delete-set information, so queueing hints
-   * can detect delete-only remote changes when a local snapshot is available.
-   * Re-encoding gives map entries the same stable order as local snapshots,
-   * allowing exact matches to skip semantic decoding during queue checks.
+   * Register a guid's sync machine for server-head routing. Returns the
+   * identity-guarded unsubscriber: a newer machine registered for the same
+   * guid is never removed by a retiring one's teardown.
    */
-  seedServerAdvertisedSnapshotFromBytes(guid: string, snapshotBytes: Uint8Array): void {
-    try {
-      const snapshot = Y.encodeSnapshot(Y.decodeSnapshot(snapshotBytes));
-      this._serverAdvertisedHeads.set(guid, { snapshot });
-    } catch {
-      this._serverAdvertisedHeads.delete(guid);
-    }
+  registerSyncMachine(guid: string, machine: SyncMachine): () => void {
+    this._syncMachines.set(guid, machine);
+    return () => {
+      if (this._syncMachines.get(guid) === machine) {
+        this._syncMachines.delete(guid);
+      }
+    };
   }
 
-  seedServerAdvertisedHeadFromBytes(
-    guid: string,
-    head: { snapshot?: Uint8Array },
+  /**
+   * Route a batch of server heads to their machines. A warm machine gets
+   * the signal directly and compares against its own basis; a cold machine
+   * is consulted through compareServerHead first — a head it is already
+   * current with causes no signal and no wake. Otherwise the signal is
+   * delivered (the machine acts from its shell or pockets the head), and a
+   * machine left holding pocketed work is woken through the hibernation
+   * substrate to act on it.
+   */
+  serverHeadsReceived(
+    heads: Iterable<{ guid: string; snapshot: Uint8Array }>,
   ): void {
-    if (head.snapshot) {
-      this.seedServerAdvertisedSnapshotFromBytes(guid, head.snapshot);
-      return;
-    }
-    this._serverAdvertisedHeads.delete(guid);
-  }
+    if (this.destroyed) return;
+    for (const { guid, snapshot } of heads) {
+      const machine = this._syncMachines.get(guid);
+      if (!machine) continue;
 
-  /**
-   * Return true when the folder subdoc index says the server has operations
-   * newer than the local state we know about. This is a transport hint:
-   * callers should use it to decide whether to connect a provider, not to
-   * declare convergence.
-   */
-  isServerAdvertisedRemoteAhead(guid: string): boolean {
-    const advertised = this._serverAdvertisedHeads.get(guid);
-    if (!advertised) return false;
-
-    const localSnapshot = this.getKnownLocalSnapshot(guid);
-    if (!localSnapshot) {
+      let head: YjsSnapshot;
       try {
-        return !snapshotIsEmpty(advertised);
+        // Re-encoding gives map entries the same stable order as local
+        // snapshots, so exact matches take the byte-equality fast path.
+        head = { snapshot: Y.encodeSnapshot(Y.decodeSnapshot(snapshot)) };
       } catch {
-        return true;
+        continue;
+      }
+
+      const warm = this.isLoaded(this.getHibernationState(guid));
+      if (!warm && machine.compareServerHead(head) === "current") {
+        // Provably current: no signal and no wake, but the machine keeps
+        // the head so later sweeps skip this file instead of re-proving.
+        machine.noteServerHead(head);
+        continue;
+      }
+
+      machine.send({ type: "SERVER_AHEAD", head });
+
+      // A machine that could not act pocketed the head; wake it so the
+      // pocket drains. One that acted from its shell needs no wake.
+      if (!warm && machine.getWorkState().workPending) {
+        this.enqueueWake({ guid, priority: WakePriority.REMOTE_UPDATE });
       }
     }
-
-    try {
-      return snapshotIsAhead(advertised, localSnapshot);
-    } catch {
-      return true;
-    }
-  }
-
-  /**
-   * Return true when the folder subdoc index has advertised a server head and
-   * it matches known local state. This is a queueing hint for folder-wide
-   * sync; heads are compared as full snapshots, delete sets included.
-   */
-  isServerAdvertisedInSync(guid: string, localSnapshotBytes?: Uint8Array): boolean {
-    const advertised = this._serverAdvertisedHeads.get(guid);
-    if (!advertised) return false;
-
-    if (!localSnapshotBytes) {
-      const loadedMatch = this.knownLocalDocMatchesSnapshot(guid, advertised);
-      if (loadedMatch !== null) return loadedMatch;
-    }
-
-    const localSnapshot = localSnapshotBytes
-      ? { snapshot: localSnapshotBytes }
-      : this.getKnownLocalSnapshot(guid);
-    if (!localSnapshot) return false;
-
-    try {
-      if (uint8ArraysEqual(advertised.snapshot, localSnapshot.snapshot)) return true;
-      return snapshotsEqual(advertised, localSnapshot);
-    } catch {
-      return false;
-    }
-  }
-
-  isServerAdvertisedOutOfSync(guid: string, localSnapshotBytes?: Uint8Array): boolean {
-    if (!this._serverAdvertisedHeads.has(guid)) return false;
-    return !this.isServerAdvertisedInSync(guid, localSnapshotBytes);
-  }
-
-  getRemoteDocSeedUpdateFromLocalDoc(guid: string, localDoc: Y.Doc): Uint8Array | null {
-    const advertised = this._serverAdvertisedHeads.get(guid);
-    if (!advertised) return null;
-
-    let localSnapshot: YjsSnapshot;
-    try {
-      localSnapshot = snapshotFromDoc(localDoc);
-    } catch {
-      return null;
-    }
-
-    try {
-      if (snapshotContains(advertised, localSnapshot)) {
-        return Y.encodeStateAsUpdate(localDoc);
-      }
-      if (!snapshotContains(localSnapshot, advertised)) {
-        return null;
-      }
-    } catch {
-      return null;
-    }
-
-    return this.createUpdateForAdvertisedSnapshot(localDoc, advertised);
-  }
-
-  private createUpdateForAdvertisedSnapshot(
-    sourceDoc: Y.Doc,
-    advertisedSnapshot: YjsSnapshot,
-  ): Uint8Array | null {
-    const restoredDoc = restoreDocAtSnapshot(sourceDoc, advertisedSnapshot);
-    if (!restoredDoc) return null;
-    try {
-      return Y.encodeStateAsUpdate(restoredDoc);
-    } finally {
-      restoredDoc.destroy();
-    }
-  }
-
-  private getKnownLocalSnapshot(guid: string): YjsSnapshot | null {
-    const localDoc = this._getDocument(guid)?.hsm?.getLocalDoc();
-    if (!localDoc) {
-      const cachedSnapshot = this._localSnapshotCache.get(guid) ??
-        this._lcaCache.get(guid)?.snapshot;
-      return cachedSnapshot ? { snapshot: cachedSnapshot } : null;
-    }
-
-    try {
-      return snapshotFromDoc(localDoc);
-    } catch {
-      return null;
-    }
-  }
-
-  private knownLocalDocMatchesSnapshot(guid: string, snapshot: YjsSnapshot): boolean | null {
-    const localDoc = this._getDocument(guid)?.hsm?.getLocalDoc();
-    if (!localDoc) return null;
-    try {
-      return docMatchesSnapshot(localDoc, snapshot);
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Clear the server-advertised reconnect metadata for all documents. The
-   * applied remote baseline is preserved across reconnects because it reflects
-   * what this vault has already incorporated locally.
-   */
-  clearServerAdvertisedHeads(): void {
-    this._serverAdvertisedHeads.clear();
   }
 
   /**
@@ -1871,7 +1764,7 @@ export class MergeManager {
     this._localSnapshotCache.clear();
     this._appliedRemoteSV.clear();
     this._appliedRemoteDS.clear();
-    this._serverAdvertisedHeads.clear();
+    this._syncMachines.clear();
     this._wakeQueue.length = 0;
     this._wakingDocs.clear();
     this._activeStateLoads.clear();

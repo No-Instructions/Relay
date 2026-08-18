@@ -63,7 +63,7 @@ import { SyncSettingsManager, type SyncFlags } from "./SyncSettings";
 import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
 import { Canvas, isCanvas } from "./Canvas";
 import { flags } from "./flagManager";
-import { MergeManager, WakePriority } from "./merge-hsm/MergeManager";
+import { MergeManager } from "./merge-hsm/MergeManager";
 import {
 	E2ERecordingBridge,
 	type HSMLogEntry,
@@ -71,6 +71,7 @@ import {
 import { recordHSMEntry } from "./debug";
 import { trackAsyncCleanup } from "./reloadUtils";
 import { DestroyedError, isDestroyedError } from "./DestroyedError";
+import { snapshotMetaFromUpdate } from "./merge-hsm/snapshots";
 import { readNoteText } from "./diskText";
 import {
 	HSMStore,
@@ -162,7 +163,7 @@ interface PendingPublicationRun {
 }
 
 // Empty downloads for a guid become terminal after this many attempts; the
-// server pushes a document.updated event (and advertises the guid in the
+// server pushes a document.updated event (and lists the guid in the
 // subdoc index) once content exists, so polling past this is wasted work.
 const MAX_EMPTY_SERVER_ATTEMPTS = 3;
 
@@ -759,18 +760,14 @@ export class SharedFolder extends HasProvider {
 		};
 		provider.onSubdocIndex = (serverIndex) => {
 			const remoteActivity: RemoteActivityEntry[] = [];
-			const advertisedGuids: string[] = [];
+			const heads: { guid: string; snapshot: Uint8Array }[] = [];
 			const now = this.currentTime();
 			for (const [docId, entry] of Object.entries(serverIndex)) {
 				const guid = this.guidFromServerDocId(docId) ?? docId;
-				advertisedGuids.push(guid);
-				// An advertised index entry is server evidence of content;
-				// re-allow downloads for guids parked as empty.
+				// An index entry is server evidence of content; re-allow
+				// downloads for guids parked as empty.
 				this.clearServerEmpty(guid);
-				this.mergeManager?.seedServerAdvertisedHeadFromBytes(
-					guid,
-					entry,
-				);
+				heads.push({ guid, snapshot: entry.snapshot });
 				if (entry.lastSeen !== undefined) {
 					const timestamp = normalizeRemoteActivityTimestamp(
 						entry.lastSeen,
@@ -784,30 +781,15 @@ export class SharedFolder extends HasProvider {
 			this.recordRemoteActivities(remoteActivity);
 			this.syncFileTree()
 				.then(async () => {
-					// Membership before content: the sweep's remote-head
-					// syncs open sessions that push local-ahead ops, so the
-					// sweep waits for the session's first confirmed
-					// membership settlement. The backfill selection below is
-					// download-side and needs no gate of its own; it shares
-					// this one because it shares the callback.
+					// Membership before content: acting on a server head can
+					// open sessions that push local-ahead ops, so delivery
+					// waits for the session's first confirmed membership
+					// settlement.
 					if (!this._membershipSettled) {
 						await this.whenMembershipSettled();
 					}
 					if (this.destroyed) return;
-					const queuedRemoteHead = this.backgroundSync.enqueueRemoteHeadSyncs(
-						this,
-						advertisedGuids,
-					);
-					const queuedLCABackfill = this.backgroundSync.enqueueAdvertisedLCABackfills(
-						this,
-						advertisedGuids,
-					);
-					if (queuedRemoteHead > 0) {
-						this.debug(`[subdoc-index] queued ${queuedRemoteHead} remote-head syncs`);
-					}
-					if (queuedLCABackfill > 0) {
-						this.debug(`[subdoc-index] queued ${queuedLCABackfill} LCA backfills`);
-					}
+					this.mergeManager?.serverHeadsReceived(heads);
 				})
 				.catch((e) => {
 					// Teardown reaches this sweep two ways. If the tree sync
@@ -900,13 +882,16 @@ export class SharedFolder extends HasProvider {
 					break;
 				case "gap":
 					metrics.recordDocumentUpdateEvent("catchup", this.guid);
-					file.hsm.send({ type: "SERVER_AHEAD" });
-					if (!file.isMaterialized) {
-						this.mergeManager.enqueueWake({
+					// A dependency gap names the state the server minimally
+					// holds — the update's own snapshot meta. The routing
+					// compares it, signals the machine, and wakes it if it
+					// could only pocket the signal.
+					this.mergeManager.serverHeadsReceived([
+						{
 							guid,
-							priority: WakePriority.REMOTE_UPDATE,
-						});
-					}
+							snapshot: snapshotMetaFromUpdate(update).snapshot,
+						},
+					]);
 					break;
 			}
 			return;
@@ -1839,15 +1824,14 @@ export class SharedFolder extends HasProvider {
 			if (this.shouldConnect) {
 				const result = await super.connect();
 				if (result && this.mergeManager) {
-					// Clear server-advertised reconnect metadata so the next
-					// subdoc-index response reflects the current connection's
-					// server view. The applied remote baseline stays intact
-					// because it reflects state already incorporated locally.
+					// The machines retain their server heads across the
+					// reconnect: the next subdoc-index delivery routes through
+					// them, so a push missed while resubscribing converges on
+					// that delivery instead of vanishing with a cleared table.
 					// The provider preserves eventCallbacks across reconnects
 					// and re-sends the server subscribe frame itself, so the
 					// callbacks registered by the constructor's
 					// setupEventSubscriptions() call stay live.
-					this.mergeManager.clearServerAdvertisedHeads();
 					this.enqueueLCABackfill("connect");
 					this.connectForkedIdleDocuments();
 				}
@@ -3838,8 +3822,9 @@ export class SharedFolder extends HasProvider {
 
 	/** Persist a canvas machine record; background write, failures logged. */
 	public saveCanvasState(guid: string, state: PersistedCanvasState): void {
-		// Advertised-head comparisons for a re-hibernated canvas read the
-		// manager's caches; every persisted record refreshes them.
+		// Server-head comparisons for a canvas that has never materialized
+		// this session read the manager's caches; every persisted record
+		// refreshes them.
 		this.mergeManager?.refreshManagedRecord(state);
 		const p = this._hsmStore.saveState(guid, state).catch((err) => {
 			this.error(`[CanvasHSM] saveState failed for ${guid}:`, err);
@@ -3860,6 +3845,10 @@ export class SharedFolder extends HasProvider {
 		if (this.mergeManager) {
 			const mergeManager = this.mergeManager;
 			mergeManager.registerManagedFile(canvas);
+			canvas.unregisterSyncMachine = mergeManager.registerSyncMachine(
+				canvas.guid,
+				canvas.hsm,
+			);
 			// Lazy materialization anywhere (a view touching localDoc, an
 			// explicit whenSynced) flows back into warm accounting.
 			canvas.onMaterialize = () =>

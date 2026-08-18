@@ -61,6 +61,10 @@ import type {
 	EditorViewRef,
 	ResourcePresence,
 	EnrollmentCompleteEvent,
+	ServerAheadEvent,
+	SyncMachine,
+	SyncWorkState,
+	YjsSnapshot,
 } from "./types";
 import type { TimeProvider } from "../TimeProvider";
 import { DefaultTimeProvider } from "../TimeProvider";
@@ -77,6 +81,7 @@ import {
 	isEmptyDoc,
 	mergeSnapshotHeads,
 	restoreTextAtSnapshot,
+	seedUpdateBoundedByHead,
 	snapshotContains,
 	snapshotFromDoc,
 	snapshotHasOpsMissingFrom,
@@ -212,7 +217,7 @@ class SimpleObservable<T> implements IObservable<T> {
 // MergeHSM Class
 // =============================================================================
 
-export class MergeHSM implements MachineHSM, SyncBridgeHost {
+export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	// Current state path
 	private _statePath: StatePath = "unloaded";
 
@@ -312,6 +317,24 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 	// Consecutive idle retry count — used for backoff when drain rate < queue rate
 	private idleRetryCount = 0;
+
+	// Newest server head received via SERVER_AHEAD. Plain machine memory, not
+	// resettable context: it survives hibernation with the shell, so the
+	// machine — not a fleet table cleared on reconnect — owns what the server
+	// last claimed to hold.
+	private _serverHead: YjsSnapshot | null = null;
+
+	// A SERVER_AHEAD arrived while the machine could not act on it; drained by
+	// the next state whose entry can act.
+	private _serverHeadPending = false;
+
+	// Last local-ahead flush attempt. In-memory only — hibernation resets it,
+	// so a woken document may retry immediately; the limit paces repeated warm
+	// attempts against a server that refuses our ops.
+	private _localAheadAttemptAt: number | null = null;
+
+	// Minimum spacing between local-ahead flush attempts for a warm document.
+	private static readonly LOCAL_AHEAD_RETRY_INTERVAL_MS = 5 * 60_000;
 
 	// Consecutive superseded idle reconciliations. A superseded outcome (the
 	// world moved mid-operation) re-enters idle.loading to re-classify; this
@@ -839,6 +862,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	prepareForHibernate(): void {
 		this.captureLocalHeadForPersistence();
 		this.clearSettledDiskContents();
+		// The attempt clock paces repeated warm attempts only: a woken
+		// document may retry its local-ahead flush immediately.
+		this._localAheadAttemptAt = null;
 		if (
 			this._statePath !== "idle.synced" ||
 			this._fork ||
@@ -1921,6 +1947,65 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	/**
+	 * Cold-answerable server-head comparison. Answers from the machine's own
+	 * basis — the live localDoc head when warm, persisted meta (the local
+	 * head, or the LCA head for a clean hibernated document whose own head
+	 * was compacted away) when cold — with no materialization and no
+	 * persistence loads. "current" proves convergence with the head; "ahead"
+	 * proves divergence in either direction (the machine resolves direction
+	 * when it acts); "unknown" means no basis exists — no basis for
+	 * skipping, so callers treat it as ahead.
+	 */
+	compareServerHead(head: YjsSnapshot): "ahead" | "current" | "unknown" {
+		const basis = this.serverCompareBasis();
+		if (!basis) return "unknown";
+		try {
+			return snapshotsEqual(head, basis) ? "current" : "ahead";
+		} catch {
+			return "unknown";
+		}
+	}
+
+	/** Work-relevant state for the shared sync-machine contract. */
+	getWorkState(): SyncWorkState {
+		return {
+			userLock: this.isActive(),
+			workPending: this._serverHeadPending,
+			baseline: this._lca !== null,
+		};
+	}
+
+	/**
+	 * Record the newest server head without acting on it. The live provider
+	 * session that observed the head performs its own convergence; this only
+	 * keeps the machine's retained head fresh for later comparisons.
+	 */
+	noteServerHead(head: YjsSnapshot): void {
+		this._serverHead = head;
+	}
+
+	/**
+	 * Compare the newest server head this machine has heard against its own
+	 * basis. "unknown" when no head has been received; sweeps treat it as
+	 * work.
+	 */
+	compareRetainedServerHead(): "ahead" | "current" | "unknown" {
+		return this._serverHead
+			? this.compareServerHead(this._serverHead)
+			: "unknown";
+	}
+
+	/**
+	 * A seed update for a freshly created remote replica: the localDoc
+	 * bounded by the retained server head, so the seed cannot introduce
+	 * local-only CRDT state.
+	 */
+	getRemoteDocSeedUpdate(): Uint8Array | null {
+		if (!this._serverHead || !this.localDoc) return null;
+		return seedUpdateBoundedByHead(this.localDoc, this._serverHead);
+	}
+
+	/**
 	 * Get the current sync status for this document.
 	 */
 	getSyncStatus(): SyncStatus {
@@ -2629,7 +2714,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				if (!this.localDoc || !this.hasEnrolledLocalCRDT()) return false;
 				return this.localDoc.getText("contents").toString() !== this.pendingDiskContents;
 			},
-			canRecoverLCAWithPendingDisk: (_hsm, event) => this.canRecoverLCAWithPendingDisk(event.type === "PROVIDER_SYNCED"),
+			canRecoverLCAWithPendingDisk: (_hsm, event) =>
+				this.canRecoverLCAWithPendingDisk(
+					event.type === "PROVIDER_SYNCED" ||
+						event.type === "DOWNLOAD_COMPLETE",
+				),
 			remoteAheadAtLoad: () => {
 				if (this.needsDiskContentAtLoad()) return false;
 				if (!this._lca) return false;
@@ -3626,6 +3715,35 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			markProviderSynced: () => {
 				this._providerSynced = true;
 				this._bridge.providerSynced = true;
+			},
+			rememberServerAhead: (_hsm, event) => {
+				this._serverHead = (event as ServerAheadEvent).head;
+				this._serverHeadPending = true;
+			},
+			actOnServerAhead: (_hsm, event) => {
+				const head = (event as ServerAheadEvent).head;
+				this._serverHead = head;
+				this._serverHeadPending = false;
+				this.actOnServerHead(head);
+			},
+			// The evidence variant for states parked on unresolved work
+			// (diverged disk, retryable error): head equality proves nothing
+			// there — resolution needs the remote replica's content — so the
+			// signal always requests the session that delivers it.
+			actOnServerAheadEvidence: (_hsm, event) => {
+				this._serverHead = (event as ServerAheadEvent).head;
+				this._serverHeadPending = false;
+				this.emitEffect({ type: "ENQUEUE_SYNC", guid: this._guid });
+			},
+			drainServerAhead: () => {
+				if (!this._serverHeadPending || !this._serverHead) return;
+				this._serverHeadPending = false;
+				this.actOnServerHead(this._serverHead);
+			},
+			drainServerAheadEvidence: () => {
+				if (!this._serverHeadPending) return;
+				this._serverHeadPending = false;
+				this.emitEffect({ type: "ENQUEUE_SYNC", guid: this._guid });
 			},
 			maybeSignalPersistenceSyncedForRecovery: () => {
 				this.maybeSignalPersistenceReady("event");
@@ -5133,6 +5251,63 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		} catch {
 			return true;
 		}
+	}
+
+	/**
+	 * The basis a server head is compared against: the live localDoc's head
+	 * when the machine is warm; when cold, the enrolled local head (the head
+	 * the persisted record carries) or the LCA head for a clean hibernated
+	 * document whose own head was compacted away. Null means no basis —
+	 * nothing can prove currency. A stale basis errs toward "ahead", never
+	 * toward skipping needed work.
+	 */
+	private serverCompareBasis(): YjsSnapshot | null {
+		// The live doc is the basis only once its persistence has replayed —
+		// a doc mid-replay reads as empty and would call every head ahead.
+		if (this.localDoc && this.localPersistence?.synced === true) {
+			try {
+				return snapshotFromDoc(this.localDoc);
+			} catch {
+				return null;
+			}
+		}
+		const bytes = this._enrolledLocalSnapshot ?? this._lca?.snapshot ?? null;
+		return bytes ? { snapshot: bytes } : null;
+	}
+
+	/**
+	 * Act on a server head from a state that can: compare it against this
+	 * machine's own basis and request a background sync session unless the
+	 * two are provably converged. A head strictly ahead of the basis
+	 * converges immediately; any other divergence is a local-ahead flush,
+	 * paced by the in-memory attempt clock. A head equal to the basis clears
+	 * the clock and requests nothing.
+	 */
+	private actOnServerHead(head: YjsSnapshot): void {
+		const basis = this.serverCompareBasis();
+		if (basis) {
+			try {
+				if (snapshotsEqual(head, basis)) {
+					this._localAheadAttemptAt = null;
+					return;
+				}
+				if (!snapshotIsAhead(head, basis)) {
+					const now = this.timeProvider.now();
+					if (
+						this._localAheadAttemptAt !== null &&
+						now - this._localAheadAttemptAt <
+							MergeHSM.LOCAL_AHEAD_RETRY_INTERVAL_MS
+					) {
+						return;
+					}
+					this._localAheadAttemptAt = now;
+				}
+			} catch {
+				// An unreadable head or basis cannot prove convergence;
+				// fall through and request the session.
+			}
+		}
+		this.emitEffect({ type: "ENQUEUE_SYNC", guid: this._guid });
 	}
 
 	private providerSyncedRemoteAhead(): boolean {

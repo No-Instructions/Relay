@@ -48,6 +48,16 @@ const RECOVER_LCA_HANDLER: EventHandler = {
 	actions: ['storeRecoverLCADisk'],
 };
 
+/**
+ * SERVER_AHEAD in a state that cannot act on it: pocket the newest head
+ * (never dropped) until the machine reaches a state that drains it.
+ * Internal self-transition — no exit/entry, no invoke restart.
+ */
+const POCKET_SERVER_AHEAD = (target: StatePath): EventHandler => ({
+	target,
+	actions: ['rememberServerAhead'],
+});
+
 
 // =============================================================================
 // Machine Definition
@@ -69,6 +79,7 @@ export const MACHINE: MachineDefinition = {
 			// Allows destroy() to drive an already-unloaded HSM to the terminal
 			// "destroyed" state via the cleanup invoke.
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
+			SERVER_AHEAD: POCKET_SERVER_AHEAD('unloaded'),
 		},
 	},
 
@@ -84,6 +95,7 @@ export const MACHINE: MachineDefinition = {
 			DISK_METADATA_CHANGED: { target: 'loading', actions: ['storeDiskMetadataForLoad'] },
 			ENROLLMENT_COMPLETE: { target: 'loading', actions: ['storeEnrollmentComplete'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
+			SERVER_AHEAD: POCKET_SERVER_AHEAD('loading'),
 		},
 	},
 
@@ -112,6 +124,7 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'unloading' },
 			],
 			DISCONNECTED: { target: 'unloading', actions: ['setOffline'] },
+			SERVER_AHEAD: POCKET_SERVER_AHEAD('unloading'),
 		},
 		invoke: {
 			src: 'cleanup',
@@ -145,11 +158,15 @@ export const MACHINE: MachineDefinition = {
 	// =========================================================================
 
 	'idle.loading': {
-		entry: ['ensureLocalDocForIdle', 'processAccumulatedForIdle'],
+		// A load that reaches no verdict waits here for remote evidence, so a
+		// server head acts (compare-gated) instead of pocketing: the session
+		// it requests delivers the PROVIDER_SYNCED that re-classifies.
+		entry: ['ensureLocalDocForIdle', 'processAccumulatedForIdle', 'drainServerAhead'],
 		on: {
 			DISK_CHANGED: { target: 'idle.loading', actions: ['storeDiskMetadata'], reenter: true },
 			REMOTE_UPDATE: { target: 'idle.loading', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'], reenter: true },
 			PROVIDER_SYNCED: { target: 'idle.loading', actions: ['markProviderSynced'], reenter: true },
+			SERVER_AHEAD: { target: 'idle.loading', actions: ['actOnServerAhead'] },
 			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,
 		},
@@ -193,6 +210,7 @@ export const MACHINE: MachineDefinition = {
 			DISK_METADATA_CHANGED: { target: 'idle.loadingDiskContents', actions: ['storeDiskMetadataForLoad'] },
 			REMOTE_UPDATE: { target: 'idle.loadingDiskContents', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.loadingDiskContents', actions: ['accumulateCM6Change'] },
+			SERVER_AHEAD: { target: 'idle.loadingDiskContents', actions: ['actOnServerAhead'] },
 			...IDLE_LIFECYCLE,
 		},
 	},
@@ -213,7 +231,7 @@ export const MACHINE: MachineDefinition = {
 			canWake: true,
 			canPersistFullLca: true,
 		},
-		entry: ['resetIdleRetryCount', 'clearSettledDiskContents', 'persistSettledState'],
+		entry: ['resetIdleRetryCount', 'clearSettledDiskContents', 'persistSettledState', 'drainServerAhead'],
 		on: {
 			REMOTE_UPDATE: [
 				{ target: 'idle.localAhead', guard: 'hasFork', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
@@ -233,6 +251,7 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.synced', actions: ['markProviderSynced'] },
 			],
 			CM6_CHANGE: { target: 'idle.synced', actions: ['accumulateCM6Change'] },
+			SERVER_AHEAD: { target: 'idle.synced', actions: ['actOnServerAhead'] },
 			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,
 		},
@@ -288,6 +307,7 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.localAhead', actions: ['storeDiskMetadata', 'ingestDiskToLocalDoc'], reenter: true },
 			],
 			CM6_CHANGE: { target: 'idle.localAhead', actions: ['accumulateCM6Change'] },
+			SERVER_AHEAD: POCKET_SERVER_AHEAD('idle.localAhead'),
 			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,
 		},
@@ -329,6 +349,7 @@ export const MACHINE: MachineDefinition = {
 			],
 			REMOTE_UPDATE: { target: 'idle.remoteAhead', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.remoteAhead', actions: ['accumulateCM6Change'] },
+			SERVER_AHEAD: { target: 'idle.remoteAhead', actions: ['actOnServerAhead'] },
 			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,
 		},
@@ -370,6 +391,7 @@ export const MACHINE: MachineDefinition = {
 			],
 			DISK_CHANGED: { target: 'idle.diskAhead', actions: ['storeDiskMetadata'], reenter: true },
 			CM6_CHANGE: { target: 'idle.diskAhead', actions: ['accumulateCM6Change'] },
+			SERVER_AHEAD: { target: 'idle.diskAhead', actions: ['actOnServerAhead'] },
 			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,
 		},
@@ -394,7 +416,7 @@ export const MACHINE: MachineDefinition = {
 			canUseRemoteDoc: true,
 			canUsePendingDiskContents: true,
 		},
-		entry: ['ensureLocalDocForIdle'],
+		entry: ['ensureLocalDocForIdle', 'drainServerAheadEvidence'],
 		invoke: {
 			src: 'idle-merge',
 			onDone: [
@@ -419,6 +441,10 @@ export const MACHINE: MachineDefinition = {
 			],
 			REMOTE_UPDATE: { target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.diverged', actions: ['accumulateCM6Change'] },
+			// Divergence cannot be resolved from head equality: the parked
+			// merge needs the remote replica's content, so the signal always
+			// requests the session that delivers it.
+			SERVER_AHEAD: { target: 'idle.diverged', actions: ['actOnServerAheadEvidence'] },
 			PROVIDER_SYNCED: [
 				{ target: 'idle.recoverLCA', guard: 'canRecoverLCAWithPendingDisk', actions: ['markProviderSynced', 'prepareRecoverLCAFromPendingDisk'] },
 				{ target: 'idle.diverged', actions: ['markProviderSynced'], reenter: true },
@@ -452,6 +478,7 @@ export const MACHINE: MachineDefinition = {
 			REMOTE_UPDATE: { target: 'idle.conflict', actions: ['applyRemoteToRemoteDoc'] },
 			PROVIDER_SYNCED: { target: 'idle.conflict', actions: ['markProviderSynced'] },
 			CM6_CHANGE: { target: 'idle.conflict', actions: ['accumulateCM6Change'] },
+			SERVER_AHEAD: POCKET_SERVER_AHEAD('idle.conflict'),
 			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,
 		},
@@ -491,6 +518,7 @@ export const MACHINE: MachineDefinition = {
 			DISK_CHANGED: { target: 'idle.recoverLCA', actions: ['storeDiskMetadata', 'storeRecoverLCADisk'] },
 			REMOTE_UPDATE: { target: 'idle.recoverLCA', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.recoverLCA', actions: ['accumulateCM6Change'] },
+			SERVER_AHEAD: { target: 'idle.recoverLCA', actions: ['actOnServerAhead'] },
 			...IDLE_LIFECYCLE,
 		},
 	},
@@ -520,6 +548,12 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.error', actions: ['markProviderSynced'] },
 			],
 			CM6_CHANGE: { target: 'idle.error', actions: ['accumulateCM6Change'] },
+			// A retryable error acts: the requested session delivers the
+			// PROVIDER_SYNCED that re-arms recovery. A permanent error pockets.
+			SERVER_AHEAD: [
+				{ target: 'idle.error', guard: 'errorIsRetryable', actions: ['actOnServerAheadEvidence'] },
+				{ target: 'idle.error', actions: ['rememberServerAhead'] },
+			],
 			ACQUIRE_LOCK: IDLE_LIFECYCLE.ACQUIRE_LOCK,
 			UNLOAD: IDLE_LIFECYCLE.UNLOAD,
 			LOAD: IDLE_LIFECYCLE.LOAD,
@@ -546,6 +580,7 @@ export const MACHINE: MachineDefinition = {
 			PROVIDER_SYNCED: { target: 'active.merging.twoWay', actions: ['markProviderSynced'] },
 			CM6_CHANGE: { target: 'active.merging.twoWay', actions: ['trackEditorText'] },
 			REMOTE_UPDATE: { target: 'active.merging.twoWay', actions: ['applyRemoteToRemoteDoc'] },
+			SERVER_AHEAD: POCKET_SERVER_AHEAD('active.merging.twoWay'),
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 		},
@@ -567,6 +602,7 @@ export const MACHINE: MachineDefinition = {
 			PROVIDER_SYNCED: { target: 'active.merging.threeWay', actions: ['markProviderSynced'] },
 			CM6_CHANGE: { target: 'active.merging.threeWay', actions: ['trackEditorText'] },
 			REMOTE_UPDATE: { target: 'active.merging.threeWay', actions: ['applyRemoteToRemoteDoc'] },
+			SERVER_AHEAD: POCKET_SERVER_AHEAD('active.merging.threeWay'),
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 		},
@@ -594,6 +630,7 @@ export const MACHINE: MachineDefinition = {
 			REMOTE_UPDATE: { target: 'active.conflict.bannerShown', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
 			DISK_CHANGED: { target: 'active.conflict.bannerShown', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
 			RESOLVE_HUNK: { target: 'active.conflict.bannerShown', actions: ['resolveHunk'] },
+			SERVER_AHEAD: POCKET_SERVER_AHEAD('active.conflict.bannerShown'),
 			RELEASE_LOCK: { target: 'unloading', actions: ['storeDeferredConflict', 'beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['storeDeferredConflict', 'beginUnload'] },
 		},
@@ -621,6 +658,7 @@ export const MACHINE: MachineDefinition = {
 			CM6_CHANGE: { target: 'active.conflict.resolving', actions: ['trackEditorText'] },
 			REMOTE_UPDATE: { target: 'active.conflict.resolving', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
 			DISK_CHANGED: { target: 'active.conflict.resolving', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
+			SERVER_AHEAD: POCKET_SERVER_AHEAD('active.conflict.resolving'),
 			RELEASE_LOCK: { target: 'unloading', actions: ['storeDeferredConflict', 'beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['storeDeferredConflict', 'beginUnload'] },
 		},
@@ -639,6 +677,7 @@ export const MACHINE: MachineDefinition = {
 			CM6_CHANGE: { target: 'active.loading', actions: ['accumulateCM6Change'] },
 			REMOTE_UPDATE: { target: 'active.loading', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
 			DISK_CHANGED: { target: 'active.loading', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
+			SERVER_AHEAD: POCKET_SERVER_AHEAD('active.loading'),
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 			ERROR: { target: 'active.loading', actions: ['storeError'] },
@@ -685,6 +724,7 @@ export const MACHINE: MachineDefinition = {
 				],
 			},
 			DISK_CHANGED: { target: 'active.entering.awaitingPersistence', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
+			SERVER_AHEAD: POCKET_SERVER_AHEAD('active.entering.awaitingPersistence'),
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 			ERROR: { target: 'active.entering.awaitingPersistence', actions: ['storeError'] },
@@ -734,12 +774,24 @@ export const MACHINE: MachineDefinition = {
 			DISCONNECTED: { target: 'active.tracking', actions: ['setOffline'] },
 			PROVIDER_SYNCED: { target: 'active.tracking', actions: ['markProviderSynced', 'mergeRemoteToLocal', 'seedFrontmatterMap', 'reconcileForkInActive'] },
 			MERGE_CONFLICT: { target: 'active.conflict.bannerShown', actions: ['storeConflictData'] },
+			SERVER_AHEAD: POCKET_SERVER_AHEAD('active.tracking'),
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 			ERROR: { target: 'active.tracking', actions: ['storeError'] },
 		},
 	},
 };
+
+// A completed content download carries the same conclusion as a provider
+// session reaching synced: remote state is now known. Every state that
+// handles PROVIDER_SYNCED handles DOWNLOAD_COMPLETE identically — one rule,
+// not twenty hand-kept copies. DOWNLOAD_FAILED delivers no state and is
+// absorbed wherever it lands.
+for (const node of Object.values(MACHINE)) {
+	if (node?.on?.PROVIDER_SYNCED && !node.on.DOWNLOAD_COMPLETE) {
+		node.on.DOWNLOAD_COMPLETE = node.on.PROVIDER_SYNCED;
+	}
+}
 
 // =============================================================================
 // Default Lookup Tables (empty — overridden per-instance by MergeHSM)
