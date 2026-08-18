@@ -103,6 +103,8 @@ import {
 	TextViewRegistry,
 	type PluginRegistrationSettings,
 } from "./TextViewRegistry";
+import { HSMEditorPlugin } from "./merge-hsm/integration/HSMEditorPlugin";
+import { authorizeWholeDocumentEditor } from "./merge-hsm/integration/editorBindingAuthority";
 
 type SettingsController = {
 	open(): void | Promise<void>;
@@ -1544,6 +1546,28 @@ export default class Live extends Plugin {
 		getPatcher().patch(TextFileViewPrototype, {
 			setViewData(old: any) {
 				return function (this: any, data: string, clear: boolean) {
+					// Only workspace-owned Markdown views may bind the editor extension.
+					// Editable embeds can share this prototype, file, and app while their
+					// buffers contain only a footnote, heading, block, or other fragment.
+					try {
+						const isWorkspaceMarkdownView = plugin.app.workspace
+							.getLeavesOfType("markdown")
+							.some((leaf) => leaf.view === this);
+						const cm = isWorkspaceMarkdownView
+							? (this.editor as { cm?: import("@codemirror/view").EditorView } | undefined)?.cm
+							: undefined;
+						if (cm) {
+							authorizeWholeDocumentEditor(
+								cm,
+								this,
+								"workspace-markdown-view",
+							);
+							cm.plugin(HSMEditorPlugin)?.initializeIfReady();
+						}
+					} catch (e) {
+						plugin.debug("Error authorizing workspace Markdown editor:", e);
+					}
+
 					// Universal disk→CRDT ingest point for every TextFileView
 					// subclass (markdown, canvas, kanban, …). Obsidian calls
 					// setViewData synchronously inside loadFileInternal before

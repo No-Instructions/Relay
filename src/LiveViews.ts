@@ -22,6 +22,7 @@ import { SharedFolder, SharedFolders } from "./SharedFolder";
 import { curryLog, HasLogging, RelayInstances, metrics } from "./debug";
 import { Banner } from "./ui/Banner";
 import { HSMEditorPlugin } from "./merge-hsm/integration/HSMEditorPlugin";
+import { authorizeWholeDocumentEditor } from "./merge-hsm/integration/editorBindingAuthority";
 import {
 	yRemoteSelections,
 	yRemoteSelectionsTheme,
@@ -848,6 +849,11 @@ export class LiveView<ViewType extends TextFileView>
 		if (!cm) {
 			return;
 		}
+		authorizeWholeDocumentEditor(
+			cm,
+			this.view,
+			"workspace-markdown-view",
+		);
 		const plugin = cm.plugin(HSMEditorPlugin);
 		plugin?.initializeIfReady();
 	}

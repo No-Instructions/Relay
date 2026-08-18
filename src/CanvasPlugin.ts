@@ -1,3 +1,4 @@
+import type { EditorView } from "@codemirror/view";
 import type { TFile } from "obsidian";
 import { getPatcher } from "./Patcher";
 import { Canvas } from "src/Canvas";
@@ -25,6 +26,11 @@ import * as Y from "yjs";
 import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 import type { EditorViewRef } from "./merge-hsm/types";
 import { HSMEditorPlugin } from "./merge-hsm/integration/HSMEditorPlugin";
+import {
+	authorizeWholeDocumentEditor,
+	revokeWholeDocumentEditor,
+	type EditorBindingAuthority,
+} from "./merge-hsm/integration/editorBindingAuthority";
 import { isDocument, type Document } from "./Document";
 
 export class CanvasPlugin extends HasLogging {
@@ -297,6 +303,12 @@ export class CanvasPlugin extends HasLogging {
 		if (!embedView.file) {
 			return;
 		}
+		// A Canvas file node is a whole-document editor only when it has no
+		// subpath. Fragment nodes persist their buffer into one span of the host
+		// file and therefore receive no whole-document binding authority.
+		if (typeof embedView.subpath === "string" && embedView.subpath.length > 0) {
+			return;
+		}
 
 		// Only markdown embeds have CM6 editors that need ViewHookPlugin + HSM.
 		// Canvas embeds render as canvas views, and media (images, SVG, PDF)
@@ -331,6 +343,8 @@ export class CanvasPlugin extends HasLogging {
 				);
 				const state = { saving: false, tracking: false };
 				let observedYText: Y.Text | null = null;
+				let authorizedEditor: EditorView | null = null;
+				let editorAuthority: EditorBindingAuthority | null = null;
 				let ytextObserver:
 					| ((event: Y.YTextEvent, tr: Y.Transaction) => void)
 					| null = null;
@@ -433,7 +447,18 @@ export class CanvasPlugin extends HasLogging {
 							"initial-sync",
 						);
 
-						const cm = (embedView.editor as any)?.cm;
+						const cm = (embedView.editor as any)?.cm as EditorView | undefined;
+						if (
+							cm &&
+							!(typeof embedView.subpath === "string" && embedView.subpath.length > 0)
+						) {
+							authorizedEditor = cm;
+							editorAuthority = authorizeWholeDocumentEditor(
+								cm,
+								embedView,
+								"canvas-file-node",
+							);
+						}
 						const hsmEditorPlugin = cm?.plugin?.(HSMEditorPlugin);
 						hsmEditorPlugin?.initializeIfReady();
 
@@ -455,6 +480,9 @@ export class CanvasPlugin extends HasLogging {
 					cancelled = true;
 					this.trackedEmbedViews.delete(embedView);
 					requestSaveUnsubscribe();
+					if (authorizedEditor && editorAuthority) {
+						revokeWholeDocumentEditor(authorizedEditor, editorAuthority);
+					}
 					if (observedYText && ytextObserver) {
 						observedYText.unobserve(ytextObserver);
 					}
