@@ -17,6 +17,7 @@ export interface FeatureFlags {
 	enableNoteStateInspector: boolean;
 	enableSavingFlagPolyfill: boolean;
 	enableFrontmatterDuplicateRecovery: boolean;
+	enableSingleUserHistory: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -173,6 +174,13 @@ export const FeatureFlagSchema: {
 		title: "Repair duplicate frontmatter keys",
 		description:
 			"Rewrite duplicate top-level YAML keys using last-wins recovery instead of leaving invalid frontmatter for manual repair.",
+	},
+	enableSingleUserHistory: {
+		default: true,
+		category: "labs",
+		title: "Limit undo to edits made here",
+		description:
+			"Keep synchronization-origin changes out of each editor's undo history, so undo only reverts edits made in that editor.",
 	},
 };
 

@@ -14,8 +14,9 @@ import { editorInfoField, getFrontMatterInfo } from "obsidian";
 import type { MergeHSM } from "../MergeHSM";
 import type { PositionedChange } from "../types";
 // Import the shared annotation to prevent feedback loops
-import { ySyncAnnotation } from "./annotations";
+import { syncDispatchAnnotations, ySyncAnnotation } from "./annotations";
 import { curryLog } from "../../debug";
+import { flags } from "../../flagManager";
 
 /**
  * Callback to verify the editor is still bound to the expected document.
@@ -176,7 +177,10 @@ export class CM6Integration {
 				const dispatchSpec: TransactionSpec = {
 					changes: cmChanges,
 					// Mark as coming from Yjs/HSM to prevent feedback loops
-					annotations: [ySyncAnnotation.of(this.view)],
+					annotations: syncDispatchAnnotations(
+						this.view,
+						flags().enableSingleUserHistory,
+					),
 			};
 			if (this.shouldBypassFrontmatterTransactionFilters(changes)) {
 				dispatchSpec.filter = false;
@@ -200,7 +204,10 @@ export class CM6Integration {
 							);
 								const dispatchSpec: TransactionSpec = {
 									changes: cmChanges,
-									annotations: [ySyncAnnotation.of(this.view)],
+									annotations: syncDispatchAnnotations(
+										this.view,
+										flags().enableSingleUserHistory,
+									),
 							};
 							if (this.shouldBypassFrontmatterTransactionFilters(changes)) {
 								dispatchSpec.filter = false;
@@ -257,7 +264,10 @@ export class CM6Integration {
 			const replacementChanges = [{ from: 0, to: currentText.length, insert: text }];
 				const dispatchSpec: TransactionSpec = {
 					changes,
-					annotations: [ySyncAnnotation.of(this.view)],
+					annotations: syncDispatchAnnotations(
+						this.view,
+						flags().enableSingleUserHistory,
+					),
 			};
 			if (
 				this.shouldBypassFrontmatterTransactionFilters(
@@ -275,7 +285,10 @@ export class CM6Integration {
 						const replacementChanges = [{ from: 0, to: currentText.length, insert: text }];
 							const dispatchSpec: TransactionSpec = {
 								changes,
-								annotations: [ySyncAnnotation.of(this.view)],
+								annotations: syncDispatchAnnotations(
+									this.view,
+									flags().enableSingleUserHistory,
+								),
 						};
 						if (
 							this.shouldBypassFrontmatterTransactionFilters(

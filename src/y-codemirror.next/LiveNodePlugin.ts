@@ -9,9 +9,13 @@ import { getLiveViews } from "../editorContext";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { curryLog } from "src/debug";
 import type { CanvasNodeData } from "src/CanvasView";
+import { flags } from "src/flagManager";
 
 // Import from shared location
-import { ySyncAnnotation } from "../merge-hsm/integration/annotations";
+import {
+	syncDispatchAnnotations,
+	ySyncAnnotation,
+} from "../merge-hsm/integration/annotations";
 
 type RelayCanvasViewBridge = {
 	canvas: {
@@ -131,7 +135,10 @@ export class LiveNodePluginValue implements PluginValue {
 				if (this.view?.canvas) {
 					editor.dispatch({
 						changes,
-						annotations: [ySyncAnnotation.of(this.editor)],
+						annotations: syncDispatchAnnotations(
+							this.editor,
+							flags().enableSingleUserHistory,
+						),
 					});
 				}
 			}

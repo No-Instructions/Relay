@@ -5,7 +5,11 @@
  * the sync system (HSM, Yjs) to prevent feedback loops.
  */
 
-import { Annotation } from "@codemirror/state";
+import {
+	Annotation,
+	Transaction,
+	type TransactionSpec,
+} from "@codemirror/state";
 
 /**
  * Annotation used to mark editor changes that originate from Yjs/HSM sync.
@@ -20,3 +24,26 @@ import { Annotation } from "@codemirror/state";
  *   if (transaction.annotation(ySyncAnnotation)) return; // Skip, from sync
  */
 export const ySyncAnnotation = Annotation.define<unknown>();
+
+/**
+ * Build the annotations for a synchronization-origin editor dispatch.
+ *
+ * The Relay annotation prevents the editor change from being captured by the
+ * HSM again. With single-user history enabled, CodeMirror also keeps the
+ * change out of the current editor's undo stack and identifies it as authored
+ * by another actor. Disabling the flag preserves the shared undo behavior.
+ */
+export function syncDispatchAnnotations(
+	view: unknown,
+	singleUserHistory: boolean,
+): TransactionSpec["annotations"] {
+	if (!singleUserHistory) {
+		return [ySyncAnnotation.of(view)];
+	}
+
+	return [
+		ySyncAnnotation.of(view),
+		Transaction.addToHistory.of(false),
+		Transaction.remote.of(true),
+	];
+}

@@ -22,9 +22,10 @@ import { getLiveViews } from "../../editorContext";
 import { isDocument, type Document } from "../../Document";
 import type { MergeHSM } from "../MergeHSM";
 import { CM6Integration } from "./CM6Integration";
-import { ySyncAnnotation } from "./annotations";
+import { syncDispatchAnnotations, ySyncAnnotation } from "./annotations";
 import { curryLog } from "../../debug";
 import { formatUserFacingError } from "../../UserFacingError";
+import { flags } from "../../flagManager";
 import type { PositionedChange } from "../types";
 import {
   buildBufferedCM6ReplayEvents,
@@ -548,7 +549,10 @@ export class HSMEditorPluginValue implements PluginValue {
       if (currentText !== localText) {
         this.editor.dispatch({
           changes: [{ from: 0, to: currentText.length, insert: localText }],
-          annotations: [ySyncAnnotation.of(this.editor)],
+          annotations: syncDispatchAnnotations(
+            this.editor,
+            flags().enableSingleUserHistory,
+          ),
         });
       }
 
