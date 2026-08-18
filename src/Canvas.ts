@@ -409,6 +409,30 @@ export class Canvas
 		this._bridge?.reconcile();
 	}
 
+	protected isEphemeralSessionActive(): boolean {
+		return Boolean(
+			this.userLock || this.sharedFolder?.mergeManager?.isActive(this.guid),
+		);
+	}
+
+	/**
+	 * Apply full server state. Server content lands on the provider-facing
+	 * remoteDoc; the CanvasDocBridge merges it into the localDoc, and the
+	 * canvas's machine decides whether disk follows. The canvas must be
+	 * warm first — on a hibernated canvas the update would land on a
+	 * bridge-less remoteDoc, and a later re-download of the same ops
+	 * produces no update events to recover it. A full-state download is
+	 * the canvas keyframe: it seeds the applied-remote baseline so later
+	 * folder events classify against it instead of gapping once per
+	 * session.
+	 */
+	applyServerState(update: Uint8Array): void {
+		this.wake();
+		Y.applyUpdate(this.ydoc, update);
+		this.sharedFolder.mergeManager?.seedAppliedRemoteUpdate(this.guid, update);
+		this.hsm.send({ type: "DOWNLOAD_COMPLETE" });
+	}
+
 	get isLocalOnly(): boolean {
 		return this._localOnly;
 	}
@@ -564,7 +588,7 @@ export class Canvas
 			}
 			case "ENQUEUE_DOWNLOAD": {
 				const p = this.sharedFolder.backgroundSync
-					.enqueueCanvasDownload(this, false)
+					.enqueueDownload(this, false)
 					.catch(() => {
 						this.hsm.send({ type: "DOWNLOAD_FAILED" });
 					});

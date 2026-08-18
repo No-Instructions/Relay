@@ -130,10 +130,6 @@ export class ResidencyPool {
     return this._managedFiles.get(guid);
   }
 
-  managedFiles(): Iterable<ManagedFile> {
-    return this._managedFiles.values();
-  }
-
   getWakeQueueStats(): { used: number; pending: number; total: number } {
     let warmCount = 0;
     for (const [, state] of this._hibernationState) {

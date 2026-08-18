@@ -15,6 +15,23 @@ import { S3RN, type S3RNType } from "./S3RN";
 import { encodeClientToken } from "./client/types";
 import type { TimeProvider } from "./TimeProvider";
 import { Awareness } from "y-protocols/awareness";
+import { RetryableProviderSyncError } from "./background-sync/errors";
+import { formatUserFacingError } from "./UserFacingError";
+
+/**
+ * What an ephemeral session needs from its caller: cancellation observed
+ * at stage boundaries, and a deterministic clock for the sync deadline.
+ */
+export interface EphemeralSessionContext {
+	timeProvider: TimeProvider;
+	isCancelled(): boolean;
+}
+
+export function fileNameOf(path: string | undefined): string {
+	const normalized = (path ?? "").replace(/\\/g, "/");
+	const parts = normalized.split("/").filter(Boolean);
+	return parts[parts.length - 1] || "file";
+}
 
 declare const GIT_TAG: string;
 
@@ -566,6 +583,135 @@ export class HasProvider extends HasLogging {
 		if (!this.shouldCompleteDeferredDisconnect()) return;
 		if (!this.deferDisconnectForPendingMessages()) {
 			this.disconnect();
+		}
+	}
+
+	/** Whether a user surface or live convergence owns this file's session. */
+	protected isEphemeralSessionActive(): boolean {
+		return false;
+	}
+
+	/**
+	 * Whether a settled ephemeral session releases its connection. A file
+	 * that was already connected when the session began keeps its
+	 * connection; subclasses that never own a standing idle connection
+	 * release unconditionally.
+	 */
+	protected sessionReleasesOnSettle(startedDisconnected: boolean): boolean {
+		void startedDisconnected;
+		return true;
+	}
+
+	/**
+	 * Acquire whatever integration the session needs and return the
+	 * release. The release is gated by shouldRelease at call time — a file
+	 * that became active mid-session keeps its integration; the active
+	 * session owns it from then on.
+	 */
+	protected beginEphemeralSessionLease(
+		shouldRelease: () => boolean,
+	): () => void {
+		return () => {
+			if (!shouldRelease()) return;
+			this.releaseIdleSession();
+		};
+	}
+
+	/**
+	 * Run body under a brief provider session: connect, wait for provider
+	 * sync (bounded — a dropped connection must not wedge the caller), run
+	 * the body, and release the session unless the file became active
+	 * meanwhile. Returns false when cancellation or teardown stopped the
+	 * session before the body ran; throws RetryableProviderSyncError when
+	 * the provider could not connect or sync in time.
+	 */
+	async withEphemeralSession<T>(
+		ctx: EphemeralSessionContext,
+		body: () => Promise<T>,
+	): Promise<T | false> {
+		const tornDown = () =>
+			Boolean((this as unknown as { destroyed?: boolean }).destroyed);
+		if (tornDown()) return false;
+		if (ctx.isCancelled()) return false;
+
+		const startedDisconnected = this.intent === "disconnected";
+		const shouldRelease = () =>
+			this.sessionReleasesOnSettle(startedDisconnected) &&
+			!this.isEphemeralSessionActive();
+		const maybeRelease = this.beginEphemeralSessionLease(shouldRelease);
+
+		if (tornDown()) return false;
+		const connected = await this.connect();
+		if (!connected) {
+			maybeRelease();
+			if (ctx.isCancelled()) return false;
+			throw new RetryableProviderSyncError(
+				`Provider connection is not ready for ${fileNameOf(this.path)}`,
+			);
+		}
+		if (ctx.isCancelled()) {
+			maybeRelease();
+			return false;
+		}
+
+		// Always wait for provider sync — the fast path resolves immediately
+		// if already synced. Connected does not imply synced, and the bound
+		// keeps a dropped connection from wedging the caller.
+		const SYNC_TIMEOUT_MS = 10_000;
+		let timerId: number | undefined;
+		let cancelTimerId: number | undefined;
+		let providerSyncFailure: unknown;
+		const synced = await Promise.race([
+			this.onceProviderSynced().then(
+				() => true,
+				(e) => {
+					providerSyncFailure = e;
+					return false;
+				},
+			),
+			new Promise<false>((resolve) => {
+				timerId = ctx.timeProvider.setTimeout(
+					() => resolve(false),
+					SYNC_TIMEOUT_MS,
+				);
+			}),
+			new Promise<false>((resolve) => {
+				cancelTimerId = ctx.timeProvider.setInterval(() => {
+					if (ctx.isCancelled()) resolve(false);
+				}, 100);
+			}),
+		]);
+		if (timerId !== undefined) ctx.timeProvider.clearTimeout(timerId);
+		if (cancelTimerId !== undefined)
+			ctx.timeProvider.clearInterval(cancelTimerId);
+		if (!synced) {
+			maybeRelease();
+			if (ctx.isCancelled()) return false;
+			if (providerSyncFailure) {
+				this.warn(
+					`[session] provider sync failed: ${this.path} guid=${this.guid}`,
+					providerSyncFailure,
+				);
+				throw new RetryableProviderSyncError(
+					`Provider sync is not ready for ${fileNameOf(this.path)}: ${formatUserFacingError(providerSyncFailure)}`,
+					providerSyncFailure,
+				);
+			}
+			this.warn(
+				`[session] provider sync timed out: ${this.path} guid=${this.guid}`,
+			);
+			throw new RetryableProviderSyncError(
+				`Provider sync timed out for ${fileNameOf(this.path)}`,
+			);
+		}
+
+		// The release must survive a throwing body: a stranded lease pins
+		// the document's integration for the rest of the session. The gate
+		// still applies — a file that became active keeps its session.
+		try {
+			return await body();
+		} finally {
+			maybeRelease();
 		}
 	}
 

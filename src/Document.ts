@@ -4,6 +4,9 @@ import * as Y from "yjs";
 import { HasProvider } from "./HasProvider";
 import { LoginManager } from "./LoginManager";
 import { S3Document, S3Folder, S3RN, S3RemoteDocument } from "./S3RN";
+import { fileNameOf } from "./HasProvider";
+import { RetryableProviderSyncError } from "./background-sync/errors";
+import { isEmptyDoc } from "./merge-hsm/snapshots";
 import { SharedFolder } from "./SharedFolder";
 import type { TFile, Vault, TFolder } from "obsidian";
 import { debounce, normalizePath } from "obsidian";
@@ -413,9 +416,10 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 
 	protected shouldCompleteDeferredDisconnect(): boolean {
-		if (this.destroyed) return true;
-		if (this.userLock) return false;
-		return !this.sharedFolder?.mergeManager?.isActive(this.guid);
+		// The deferred disconnect completes unless a user surface or live
+		// convergence owns the session — the same predicate ephemeral
+		// sessions consult.
+		return this.destroyed || !this.isEphemeralSessionActive();
 	}
 
 	/**
@@ -1230,6 +1234,104 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		if (!this._forkReconcileIdleLease) return;
 		this._forkReconcileIdleLease = false;
 		this.destroyIdleProviderIntegration();
+	}
+
+	protected isEphemeralSessionActive(): boolean {
+		return Boolean(
+			this.userLock || this.sharedFolder?.mergeManager?.isActive(this.guid),
+		);
+	}
+
+	/**
+	 * Apply server CRDT bytes to the provider-facing doc and seed the
+	 * machine's remote state from it. The caller decides what the applied
+	 * state means (baseline bootstrap, machine signals); the mechanics of
+	 * touching the two-doc architecture live here.
+	 */
+	applyServerState(update: Uint8Array): void {
+		Y.applyUpdate(this.ydoc, update);
+		this.hsm?.setRemoteDoc(this.ydoc);
+	}
+
+	/**
+	 * Encode the enrolled local CRDT into the remote doc for a
+	 * local-authoritative publish. Refuses forked documents; a missing
+	 * local doc is retryable (enrollment races the upload). Asserts the
+	 * remote holds content afterwards — publishing an empty remote would
+	 * advertise membership for content that never transferred.
+	 */
+	pushLocalState(): void {
+		const hsm = this.hsm;
+		if (!hsm) return;
+		if (hsm.hasFork()) {
+			throw new Error(
+				`Cannot upload ${fileNameOf(this.path)} while a fork exists`,
+			);
+		}
+		const localDoc = hsm.getLocalDoc();
+		if (!localDoc) {
+			throw new RetryableProviderSyncError(
+				`Local document is not ready for upload: ${fileNameOf(this.path)}`,
+			);
+		}
+		const remoteDoc = this.ensureRemoteDoc();
+		Y.applyUpdate(remoteDoc, Y.encodeStateAsUpdate(localDoc), hsm);
+		hsm.setRemoteDoc(remoteDoc);
+		this.assertRemoteHasContent();
+	}
+
+	/** The publish guard: an empty remote must never mark uploaded. */
+	assertRemoteHasContent(): void {
+		const remoteDoc = this.hsm?.getRemoteDoc() ?? this.remoteDocOrNull;
+		if (!remoteDoc || isEmptyDoc(remoteDoc)) {
+			throw new RetryableProviderSyncError(
+				`Remote document is empty after upload preparation: ${fileNameOf(this.path)}`,
+			);
+		}
+	}
+
+	/** A document already connected keeps its connection past the session. */
+	protected sessionReleasesOnSettle(startedDisconnected: boolean): boolean {
+		return startedDisconnected;
+	}
+
+	/**
+	 * A session on an idle document rides the ref-counted idle provider
+	 * integration; a ref acquired here is always paired with its release —
+	 * an unpaired ref would pin the integration for the rest of the
+	 * session once the editor closes. Teardown itself stays guarded: the
+	 * decrement's destroy step refuses under userLock, so a document that
+	 * became active mid-session keeps its integration while giving the
+	 * ref back. The connection and token bookkeeping release only when
+	 * the session may release them (shouldRelease). When no integration
+	 * was acquired, a pre-existing one is left untouched and only a bare
+	 * idle connection is released.
+	 */
+	protected beginEphemeralSessionLease(
+		shouldRelease: () => boolean,
+	): () => void {
+		const active = this.isEphemeralSessionActive();
+		const hadIntegration = this.hasProviderIntegration();
+		const acquired = !active
+			? this.ensureIdleProviderIntegration({
+					freshRemoteDoc: !!this.hsm?.hasFork(),
+				})
+			: false;
+		const refreshQueueKey = S3RN.encode(this.s3rn);
+		return () => {
+			if (acquired) {
+				this.destroyIdleProviderIntegration();
+				if (shouldRelease()) {
+					this.sharedFolder?.tokenStore.removeFromRefreshQueue(
+						refreshQueueKey,
+					);
+				}
+				return;
+			}
+			if (!shouldRelease()) return;
+			if (hadIntegration || this.hasProviderIntegration()) return;
+			this.releaseIdleSession();
+		};
 	}
 
 	/**

@@ -385,6 +385,7 @@ export class MergeManager {
   private _hibernateTimeoutMs: number;
   private _maxConcurrentWarm: number;
 
+
   // Configuration
   private _getVaultId: (guid: string) => string;
   private _getDocument: (guid: string) => MergeManagerDocument | undefined;

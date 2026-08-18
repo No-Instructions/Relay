@@ -60,7 +60,8 @@ import {
 import { FeatureFlagDefaults, flag, type FeatureFlags } from "./flags";
 import { FeatureFlagManager, flags, withFlag } from "./flagManager";
 import { PostOffice } from "./observable/Postie";
-import { BackgroundSync } from "./BackgroundSync";
+import type { BackgroundSyncApi } from "./background-sync/types";
+import { BackgroundSyncEngine } from "./background-sync/BackgroundSyncEngine";
 import { HSMStore } from "./merge-hsm/persistence";
 import { trackAsyncCleanup } from "./reloadUtils";
 import { isDestroyedError } from "./DestroyedError";
@@ -160,7 +161,7 @@ export default class Live extends Plugin {
 	tokenStore!: LiveTokenStore;
 	interceptedUrls: Array<string | RegExp> = [];
 	networkStatus!: NetworkStatus;
-	backgroundSync!: BackgroundSync;
+	backgroundSync!: BackgroundSyncApi;
 	folderNavDecorations!: FolderNavigationDecorations;
 	private metadataHealthSidebarNotice: MetadataHealthSidebarNoticeMount | null = null;
 	private resourceMeter: ResourceMeterMount | null = null;
@@ -886,7 +887,7 @@ export default class Live extends Plugin {
 
 		this.networkStatus = new NetworkStatus(this.timeProvider, HEALTH_URL);
 
-		this.backgroundSync = new BackgroundSync(
+		this.backgroundSync = new BackgroundSyncEngine(
 			this.loginManager,
 			this.timeProvider,
 			this.sharedFolders,

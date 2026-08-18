@@ -14,7 +14,7 @@ import TextPill from "src/components/TextPill.svelte";
 import UploadPill from "src/components/UploadPill.svelte";
 import { flags, withAnyOf, withFlag } from "src/flagManager";
 import { flag } from "src/flags";
-import type { BackgroundSync, QueueItem } from "src/BackgroundSync";
+import type { BackgroundSyncApi, QueueItem } from "src/background-sync/types";
 import type { Unsubscriber } from "src/observable/Observable";
 import type { ObservableSet } from "src/observable/ObservableSet";
 import type { SyncStatus } from "src/merge-hsm/types";
@@ -834,7 +834,7 @@ export class FolderNavigationDecorations {
 	vault: Vault;
 	workspace: Workspace;
 	sharedFolders: SharedFolders;
-	backgroundSync: BackgroundSync;
+	backgroundSync: BackgroundSyncApi;
 	private warn = curryLog("[FolderNav]", "warn");
 	offLayoutChange: () => void;
 	treeState: Map<WorkspaceLeaf, FileExplorerWalker>;
@@ -895,7 +895,7 @@ export class FolderNavigationDecorations {
 		vault: Vault,
 		workspace: Workspace,
 		sharedFolders: SharedFolders,
-		backgroundSync: BackgroundSync,
+		backgroundSync: BackgroundSyncApi,
 	) {
 		this.vault = vault;
 		this.workspace = workspace;

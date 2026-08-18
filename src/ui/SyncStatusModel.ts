@@ -1,4 +1,7 @@
-import type { BackgroundSyncFailure, QueueItem } from "../BackgroundSync";
+import type {
+	BackgroundSyncFailure,
+	QueueItem,
+} from "../background-sync/types";
 import {
 	buildFolderSyncSnapshot,
 	type FolderSyncSnapshot,

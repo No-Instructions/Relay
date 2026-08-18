@@ -30,10 +30,10 @@ import { S3Folder, S3RN, S3RemoteFolder, S3RemoteDocument } from "./S3RN";
 import type { RemoteSharedFolder } from "./Relay";
 import { RelayManager } from "./RelayManager";
 import type { Unsubscriber } from "svelte/store";
-import {
-	BackgroundSync,
-	type SyncCompletionOutcome,
-} from "./BackgroundSync";
+import type {
+	BackgroundSyncApi,
+	SyncCompletionOutcome,
+} from "./background-sync/types";
 import type { NamespacedSettings } from "./SettingsStorage";
 import { RelayInstances, metrics } from "./debug";
 import { LocalStorage } from "./LocalStorage";
@@ -64,6 +64,10 @@ import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
 import { Canvas, isCanvas } from "./Canvas";
 import { flags } from "./flagManager";
 import { MergeManager } from "./merge-hsm/MergeManager";
+import {
+	planBaselineBackfills,
+	planFolderConvergeSweep,
+} from "./merge-hsm/SyncPlanner";
 import {
 	E2ERecordingBridge,
 	type HSMLogEntry,
@@ -166,6 +170,9 @@ interface PendingPublicationRun {
 // server pushes a document.updated event (and lists the guid in the
 // subdoc index) once content exists, so polling past this is wasted work.
 const MAX_EMPTY_SERVER_ATTEMPTS = 3;
+
+// Cadence of the folder's own disk poll for external writes.
+const FOLDER_DISK_POLL_INTERVAL_MS = 5000;
 
 // Vault-delete echo suppression tokens outlive the slowest observed
 // reconcile dispatch (seconds) by a wide margin, and expire so a stale
@@ -346,6 +353,7 @@ export class SharedFolder extends HasProvider {
 	private startupScanComplete = false;
 	private startupScanPromise: Promise<void>;
 	private resolveStartupScan?: () => void;
+	private diskPollInterval: number | null = null;
 	private connectionAttempt: Promise<boolean> | null = null;
 	private startupConnectRequested = false;
 
@@ -360,7 +368,7 @@ export class SharedFolder extends HasProvider {
 		tokenStore: LiveTokenStore,
 		relayManager: RelayManager,
 		private hashStore: ContentAddressedFileStore,
-		public backgroundSync: BackgroundSync,
+		public backgroundSync: BackgroundSyncApi,
 		private _settings: NamespacedSettings<SharedFolderSettings>,
 		private _hsmStore: HSMStore,
 		timeProvider: TimeProvider,
@@ -378,6 +386,12 @@ export class SharedFolder extends HasProvider {
 			this.resolveStartupScan = resolve;
 		});
 		this.timeProvider = timeProvider;
+		// The folder owns its disk-poll cadence: external writes (vim, git,
+		// other sync tools) surface as stat changes between vault events.
+		this.diskPollInterval = this.timeProvider.setInterval(() => {
+			if (this.destroyed) return;
+			void this.poll();
+		}, FOLDER_DISK_POLL_INTERVAL_MS);
 		this.path = path;
 		this.setLoggers(`[SharedFile](${this.path})`);
 		this.fileManager = fileManager;
@@ -1183,7 +1197,9 @@ export class SharedFolder extends HasProvider {
 		pending: Uint8Array[],
 	): void {
 		this._pendingKeyframeUpdates.set(guid, pending);
-		this.backgroundSync.enqueueDownload(file, false).then((keyframe) => {
+		// Immediate lane: buffered live edits wait on this keyframe, so the
+		// fetch must not park behind queued sweep downloads.
+		this.backgroundSync.downloadNow(file).then((keyframe) => {
 			// The longest window in the folder: a network round trip, after
 			// which every branch below reaches for the merge manager that
 			// teardown released. This callback has no rejection handler, so
@@ -1673,7 +1689,20 @@ export class SharedFolder extends HasProvider {
 				await this.whenMembershipSettled();
 			}
 			if (this.destroyed) return;
-			this.backgroundSync.enqueueSharedFolderSync(this);
+			// The sweep's selection is the merge layer's; the executor owns
+			// pass accounting, ordering, and admission.
+			const documents: Document[] = [];
+			const canvases: Canvas[] = [];
+			const syncFiles: SyncFile[] = [];
+			for (const file of this.files.values()) {
+				if (isDocument(file)) documents.push(file);
+				else if (isCanvas(file)) canvases.push(file);
+				else if (isSyncFile(file)) syncFiles.push(file);
+			}
+			this.backgroundSync.enqueuePass(
+				this,
+				planFolderConvergeSweep({ documents, canvases, files: syncFiles }),
+			);
 		} catch (error) {
 			if (isDestroyedError(error)) return;
 			throw error;
@@ -1849,9 +1878,16 @@ export class SharedFolder extends HasProvider {
 
 	private enqueueLCABackfill(reason: string): void {
 		if (this.destroyed || this.localOnly || !this.connected) return;
-		const queued = this.backgroundSync.enqueueLCABackfill(this);
-		if (queued > 0) {
-			this.debug(`[lca-backfill] queued ${queued} documents (${reason})`);
+		// The planner selects; the executor admits.
+		const documents = [...this.files.values()].filter(isDocument);
+		const requests = planBaselineBackfills(documents, (guid) =>
+			this.backgroundSync.isQueuedOrActive(guid, "session"),
+		);
+		if (requests.length > 0) {
+			this.backgroundSync.enqueueMany(requests);
+			this.debug(
+				`[lca-backfill] queued ${requests.length} documents (${reason})`,
+			);
 		}
 	}
 
@@ -3871,7 +3907,7 @@ export class SharedFolder extends HasProvider {
 		const canvas = this.getOrCreateCanvas(guid, vpath);
 		canvas.markOrigin("remote");
 
-		this.backgroundSync.enqueueCanvasDownload(canvas, userVisible);
+		this.backgroundSync.enqueueDownload(canvas, userVisible);
 
 		this.files.set(guid, canvas);
 		this.fset.add(canvas);
@@ -3968,7 +4004,7 @@ export class SharedFolder extends HasProvider {
 			.then(async () => {
 				const synced = await canvas.getServerSynced();
 				if (canvas.stat.size === 0 && !synced) {
-					this.backgroundSync.enqueueCanvasDownload(canvas);
+					this.backgroundSync.enqueueDownload(canvas);
 				} else if (this.pendingUpload.get(canvas.path)) {
 					if (this.shouldRoutePendingPublication(canvas.path)) {
 						await this.applyPendingUpload(canvas.path).promise;
@@ -4865,6 +4901,10 @@ export class SharedFolder extends HasProvider {
 			`${this.path} (${this.guid})`,
 		);
 		this.destroyed = true;
+		if (this.diskPollInterval != null) {
+			this.timeProvider.clearInterval(this.diskPollInterval);
+			this.diskPollInterval = null;
+		}
 		this.markStartupScanComplete();
 		// Release outbound work held for membership settlement: awaiters
 		// re-check `destroyed` and bail instead of pending forever.
