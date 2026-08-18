@@ -50,8 +50,10 @@ import {
   updateHasDeleteSet,
   type YjsSnapshot,
 } from './snapshots';
-import { metrics, curryLog } from '../debug';
+import { curryLog } from '../debug';
 import { trackPromise } from '../trackPromise';
+import { ResidencyPool, WakePriority } from './ResidencyPool';
+import type { HibernationState, WakeRequest } from './ResidencyPool';
 
 // =============================================================================
 // Types
@@ -72,6 +74,14 @@ export interface MergeManagerDocument {
   hasProviderIntegration(): boolean;
   /** Create/return the remote YDoc. */
   ensureRemoteDoc(): import('yjs').Doc;
+  // The ManagedFile lifecycle contract, implemented by Document: the
+  // residency pool drives documents and managed files uniformly.
+  /** Build the working form (idempotent). */
+  wake(): void;
+  /** Release the working form; false defers (in-flight invoke). */
+  tryHibernate(): boolean;
+  /** Apply remote update bytes through the file's own machine. */
+  applyRemoteUpdate(update: Uint8Array): void;
 }
 
 export interface MergeManagerConfig {
@@ -254,37 +264,9 @@ function syncStatusesEqual(a: SyncStatus | undefined, b: SyncStatus): boolean {
 // =============================================================================
 
 /** Memory state for a document */
-export type HibernationState = 'hibernated' | 'working' | 'cached' | 'active';
-
-function emptyHibernationStateCounts(): Record<HibernationState, number> {
-  return {
-    hibernated: 0,
-    working: 0,
-    cached: 0,
-    active: 0,
-  };
-}
-
-/** Wake priority levels (lower number = higher priority) */
-export enum WakePriority {
-  /** P1: Editor opened — immediate, blocking */
-  OPEN_DOC = 1,
-  /** P2: External file change detected */
-  DISK_EDIT = 2,
-  /** P3: Inbound CBOR remote update */
-  REMOTE_UPDATE = 3,
-  /** P4: Background cache validation sweep */
-  CACHE_VALIDATION = 4,
-}
-
-export interface WakeRequest {
-  guid: string;
-  priority: WakePriority;
-  /** Raw update bytes to buffer (for P3 wake from remote update) */
-  update?: Uint8Array;
-  /** Signal that the document should connect its provider after waking (for fork reconciliation) */
-  connect?: boolean;
-}
+export { WakePriority, ResidencyPool } from './ResidencyPool';
+export type { HibernationState, WakeRequest } from './ResidencyPool';
+// Residency vocabulary stays importable from this module for existing callers.
 
 export interface HibernationConfig {
   /** Timeout in ms before warm documents re-hibernate (default: 60000) */
@@ -301,9 +283,6 @@ export class MergeManager {
   // Sync status for ALL registered documents - Observable per spec
   private readonly _syncStatus = new ObservableMap<string, SyncStatus>('MergeManager.syncStatus');
 
-  // GUIDs with editor open (lock acquired)
-  private activeDocs: Set<string> = new Set();
-
   // Track destroyed state to prevent operations after cleanup
   private destroyed = false;
   private shuttingDown = false;
@@ -311,9 +290,7 @@ export class MergeManager {
   beginShutdown(): void {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
-    for (const [guid] of this._hibernateTimers) {
-      this.clearHibernateTimer(guid);
-    }
+    this.residency.shutdown();
     // Tear down each HSM's localPersistence so its IDB connection closes.
     // Document.destroy → releaseLock only triggers a 'release' cleanup
     // (deactivateEditor) and never destroys localPersistence; an open
@@ -327,13 +304,6 @@ export class MergeManager {
         hsm.destroyLocalDoc().catch(() => {}),
         `mergeManager:beginShutdown:destroyLocalDoc:${guid}`,
       );
-    }
-    // Managed files close their own IDB connections on hibernate;
-    // refusals (held locks) are torn down by their owners' destroy paths.
-    for (const managed of this._managedFiles.values()) {
-      if (!managed.destroyed) {
-        managed.tryHibernate();
-      }
     }
   }
 
@@ -360,20 +330,8 @@ export class MergeManager {
   // Hibernation State
   // =========================================================================
 
-  /** Memory state per document: hibernated (no YDocs), warm (loaded), active (editor open) */
-  private _hibernationState = new Map<string, HibernationState>();
-
-  /** Buffered raw update bytes for hibernated documents. Compacted via Y.mergeUpdates. */
-  private _hibernationBuffer = new Map<string, Uint8Array>();
-
-  /** Hibernate timers: guid → timer ID. When timer fires, warm → hibernated. */
-  private _hibernateTimers = new Map<string, number>();
-
-  /** Wake queue: sorted by priority (lower = higher priority). */
-  private _wakeQueue: WakeRequest[] = [];
-
-  /** Currently waking documents (bounded concurrency). */
-  private _wakingDocs = new Set<string>();
+  /** The folder's residency pool: hibernation, wake queue, LRU, leases. */
+  private residency!: ResidencyPool;
 
   /** Full persisted-state loads requested by active entry. */
   private _activeStateLoads = new Set<string>();
@@ -384,30 +342,6 @@ export class MergeManager {
    * workspace scan must not race it with one of its own.
    */
   private _pendingPersistenceLoads = new Set<string>();
-
-  /**
-   * LRU cache of warm document GUIDs. Insertion order = access order
-   * (least recently used first). Capacity bounded by _maxConcurrentWarm.
-   * When full, the oldest entry is evicted (hibernated) to make room.
-   */
-  private _warmLRU = new Map<string, number>();
-
-  /**
-   * Reference counts of warm leases: guid → count of in-flight background
-   * operations holding the doc's YDocs. While a lease is held, hibernate()
-   * and evictLRU() defer exactly like an in-flight invoke — the pipeline's
-   * working set cannot be destroyed beneath a running upload/download by
-   * the warm timer or wake-queue pressure. Leases are scoped: wake() with
-   * `{ lease: true }` returns the release handle. Holders are tracked as a
-   * set of per-acquisition tokens rather than a bare count, so a release
-   * handle can only ever remove the acquisition it belongs to — a stale
-   * handle surviving stopTracking/re-track churn cannot strip a successor
-   * operation's lease.
-   */
-  private _warmLeases = new Map<string, Set<symbol>>();
-
-  /** Whether the wake queue processor is currently running. */
-  private _isProcessingWakeQueue = false;
 
   /**
    * Remote state we have actually incorporated locally, tracked as decoded
@@ -436,13 +370,6 @@ export class MergeManager {
 
   /** Per-HSM manager subscription unsubscribers, keyed by guid. */
   private _hsmUnsubs = new Map<string, () => void>();
-
-  /**
-   * Non-document files (canvases today) sharing the hibernation
-   * substrate: same warm budget, timers, LRU, leases, and buffers as
-   * documents. Registered via registerManagedFile.
-   */
-  private _managedFiles = new Map<string, ManagedFile>();
 
   /** Bulk-loaded metadata for managed-file records (kind-discriminated). */
   private _managedMetaCache = new Map<string, PersistedStateMeta>();
@@ -496,6 +423,16 @@ export class MergeManager {
     // Hibernation defaults
     this._hibernateTimeoutMs = config.hibernation?.hibernateTimeoutMs ?? 60_000;
     this._maxConcurrentWarm = config.hibernation?.maxConcurrentWarm ?? 5;
+
+    this.residency = new ResidencyPool({
+      timeProvider: this.timeProvider,
+      folderGuid: this._folderGuid,
+      getDocument: (guid) => this._getDocument(guid),
+      isDestroyed: () => this.destroyed,
+      isShuttingDown: () => this.shuttingDown,
+      hibernateTimeoutMs: this._hibernateTimeoutMs,
+      maxConcurrentWarm: this._maxConcurrentWarm,
+    });
   }
 
   // ===========================================================================
@@ -506,23 +443,11 @@ export class MergeManager {
    * Wake queue slot usage for the resource meter UI.
    */
   getWakeQueueStats(): { used: number; pending: number; total: number } {
-    let warmCount = 0;
-    for (const [, state] of this._hibernationState) {
-      if (state === 'working') warmCount++;
-    }
-    return {
-      used: warmCount + this._wakingDocs.size,
-      pending: this._wakeQueue.length,
-      total: this._maxConcurrentWarm,
-    };
+    return this.residency.getWakeQueueStats();
   }
 
   getHibernationStateCounts(): Record<HibernationState, number> {
-    const counts = emptyHibernationStateCounts();
-    for (const state of this._hibernationState.values()) {
-      counts[state]++;
-    }
-    return counts;
+    return this.residency.getHibernationStateCounts();
   }
 
   shouldMaterializeOnStartup(
@@ -877,8 +802,8 @@ export class MergeManager {
         fork: null,
       });
       hsm.send({ type: 'SET_MODE_IDLE_COLD' });
-      this._hibernationState.set(guid, 'hibernated');
-      this._updateWakeQueueMetrics();
+      this.residency.markCold(guid);
+      this.residency.updateMetrics();
       return hsm;
     }
 
@@ -905,7 +830,7 @@ export class MergeManager {
         fork: restorePersistedFork(state?.fork ?? null),
       });
       hsm.send({ type: 'SET_MODE_IDLE' });
-      this._updateWakeQueueMetrics();
+      this.residency.updateMetrics();
     }).catch((err) => {
       this._pendingPersistenceLoads.delete(guid);
       this._error(`Failed to load state for ${guid}: ${err}`);
@@ -919,7 +844,7 @@ export class MergeManager {
         localSnapshot: this._localSnapshotCache.get(guid) ?? null,
       });
       hsm.send({ type: 'SET_MODE_IDLE' });
-      this._updateWakeQueueMetrics();
+      this.residency.updateMetrics();
     });
 
     return hsm;
@@ -931,13 +856,7 @@ export class MergeManager {
    */
   notifyHSMCreated(guid: string): void {
     if (this.destroyed) return;
-    if (this._hibernationState.get(guid) === 'hibernated') {
-      this._updateWakeQueueMetrics();
-      return;
-    }
-    this._hibernationState.set(guid, 'cached');
-    this.resetHibernateTimer(guid);
-    this._updateWakeQueueMetrics();
+    this.residency.notifyHSMCreated(guid);
   }
 
   /**
@@ -949,15 +868,10 @@ export class MergeManager {
    */
   private stopTracking(guid: string): void {
     if (this.destroyed) return;
-    this._warmLeases.delete(guid);
-    this._hibernationState.delete(guid);
-    this._hibernationBuffer.delete(guid);
+    this.residency.forget(guid);
     this._appliedRemoteSV.delete(guid);
     this._appliedRemoteDS.delete(guid);
-    this.clearHibernateTimer(guid);
-    this.removeFromWarmLRU(guid);
     this._syncStatus.delete(guid);
-    this.activeDocs.delete(guid);
     this._stateMetaCache.delete(guid);
     this._lcaCache.delete(guid);
     this._localSnapshotCache.delete(guid);
@@ -965,7 +879,6 @@ export class MergeManager {
     // Conflict providers and sync machines are removed only through their
     // identity-guarded unsubscribes: a raw delete here would take out what
     // a newer HSM registered for the same guid.
-    this._updateWakeQueueMetrics();
   }
 
   /**
@@ -985,22 +898,16 @@ export class MergeManager {
     }
     this._hsmUnsubs.get(guid)?.();
     this._hsmUnsubs.delete(guid);
-    this._warmLeases.delete(guid);
-    this._hibernationState.delete(guid);
-    this._hibernationBuffer.delete(guid);
+    this.residency.forget(guid);
     this._appliedRemoteSV.delete(guid);
     this._appliedRemoteDS.delete(guid);
-    this.clearHibernateTimer(guid);
-    this.removeFromWarmLRU(guid);
     this._syncStatus.delete(guid);
-    this.activeDocs.delete(guid);
     this._stateMetaCache.delete(guid);
     this._lcaCache.delete(guid);
     this._localSnapshotCache.delete(guid);
     this._managedMetaCache.delete(guid);
     // Conflict providers are removed only through their identity-guarded
     // unsubscribe (part of the bundle above).
-    this._updateWakeQueueMetrics();
   }
 
   // ===========================================================================
@@ -1012,11 +919,7 @@ export class MergeManager {
    * Returns 'hibernated' for unknown documents.
    */
   getHibernationState(guid: string): HibernationState {
-    return this._hibernationState.get(guid) ?? 'hibernated';
-  }
-
-  private isLoaded(state: HibernationState): boolean {
-    return state === 'working' || state === 'cached' || state === 'active';
+    return this.residency.getState(guid);
   }
 
   /**
@@ -1024,7 +927,7 @@ export class MergeManager {
    * Returns null if no updates are buffered.
    */
   getHibernationBuffer(guid: string): Uint8Array | null {
-    return this._hibernationBuffer.get(guid) ?? null;
+    return this.residency.getBuffer(guid);
   }
 
   /**
@@ -1044,20 +947,12 @@ export class MergeManager {
    * the hibernate countdown like any other warm file.
    */
   registerManagedFile(file: ManagedFile): void {
-    if (this.destroyed || this._managedFiles.has(file.guid)) return;
-    this._managedFiles.set(file.guid, file);
-    if (file.isWarm()) {
-      this._hibernationState.set(file.guid, 'cached');
-      this.touchWarmLRU(file.guid);
-      this.resetHibernateTimer(file.guid);
-    } else {
-      this._hibernationState.set(file.guid, 'hibernated');
-    }
-    this._updateWakeQueueMetrics();
+    if (this.destroyed) return;
+    this.residency.registerManagedFile(file);
   }
 
   unregisterManagedFile(guid: string): void {
-    if (!this._managedFiles.delete(guid)) return;
+    if (!this.residency.unregisterManagedFile(guid)) return;
     this._managedMetaCache.delete(guid);
     // The sync-machine registration is removed only through its
     // identity-guarded unsubscriber (held by the registering host); a raw
@@ -1073,27 +968,7 @@ export class MergeManager {
    * unrelated event.
    */
   notifyManagedFileWarm(guid: string): void {
-    if (this.destroyed || !this._managedFiles.has(guid)) return;
-    if (this.getHibernationState(guid) === 'hibernated') {
-      this._hibernationState.set(guid, 'cached');
-    }
-    const managed = this._managedFiles.get(guid);
-    const buffered = this._hibernationBuffer.get(guid);
-    if (managed && !managed.destroyed && buffered) {
-      this._hibernationBuffer.delete(guid);
-      managed.applyRemoteUpdate(buffered);
-    }
-    this._wakeQueue = this._wakeQueue.filter(r => r.guid !== guid);
-    this.touchWarmLRU(guid);
-    this.resetHibernateTimer(guid);
-    let warmCount = 0;
-    for (const [, state] of this._hibernationState) {
-      if (state === 'working' || state === 'cached') warmCount++;
-    }
-    if (warmCount > this._maxConcurrentWarm) {
-      this.evictLRU();
-    }
-    this._updateWakeQueueMetrics();
+    this.residency.notifyManagedFileWarm(guid);
   }
 
   /**
@@ -1101,21 +976,7 @@ export class MergeManager {
    * the working form and drain buffered remote updates.
    */
   wakeManagedFile(guid: string): void {
-    const managed = this._managedFiles.get(guid);
-    if (!managed || this.destroyed || managed.destroyed) return;
-    managed.wake();
-    const buffered = this._hibernationBuffer.get(guid);
-    if (buffered) {
-      this._hibernationBuffer.delete(guid);
-      managed.applyRemoteUpdate(buffered);
-    }
-    this._wakeQueue = this._wakeQueue.filter(r => r.guid !== guid);
-    if (this.getHibernationState(guid) === 'hibernated') {
-      this._hibernationState.set(guid, 'cached');
-    }
-    this.touchWarmLRU(guid);
-    this.resetHibernateTimer(guid);
-    this._updateWakeQueueMetrics();
+    this.residency.wakeManagedFile(guid);
   }
 
   /** Bulk-loaded record metadata for a managed file (cold-start input). */
@@ -1149,40 +1010,7 @@ export class MergeManager {
   }
 
   enqueueWake(request: WakeRequest): void {
-    if (this.destroyed) return;
-
-    const currentState = this.getHibernationState(request.guid);
-
-    // Buffer remote update bytes for hibernated documents
-    if (request.update) {
-      this.bufferUpdate(request.guid, request.update);
-    }
-
-    // Already active or warm — just reset the hibernate timer
-    if (this.isLoaded(currentState)) {
-      this.resetHibernateTimer(request.guid);
-      return;
-    }
-
-    // Already in the wake queue — update priority if higher
-    const existingIdx = this._wakeQueue.findIndex(r => r.guid === request.guid);
-    if (existingIdx >= 0) {
-      if (request.priority < this._wakeQueue[existingIdx].priority) {
-        this._wakeQueue[existingIdx].priority = request.priority;
-        this.sortWakeQueue();
-      }
-      return;
-    }
-
-    // Already waking — nothing to do
-    if (this._wakingDocs.has(request.guid)) {
-      return;
-    }
-
-    this._wakeQueue.push(request);
-    this.sortWakeQueue();
-    this._updateWakeQueueMetrics();
-    this.processWakeQueue();
+    this.residency.enqueueWake(request);
   }
 
   /**
@@ -1192,13 +1020,7 @@ export class MergeManager {
    *
    * With `{ lease: true }` the wake also takes a warm lease and returns its
    * release handle: until released, hibernate() and LRU eviction defer, so a
-   * background operation's localDoc cannot be destroyed mid-pipeline. The
-   * lease is scoped to the operation — release exactly once when it
-   * resolves. Callers that do not pass the option get no lease (the editor
-   * path is protected by `active` instead).
-   *
-   * @param guid - Document GUID
-   * @param remoteDoc - The lazily-created remote YDoc to attach
+   * background operation's localDoc cannot be destroyed mid-pipeline.
    */
   wake(guid: string, remoteDoc: Y.Doc): void;
   wake(guid: string, remoteDoc: Y.Doc, options: { lease: true }): () => void;
@@ -1207,37 +1029,10 @@ export class MergeManager {
     remoteDoc: Y.Doc,
     options?: { lease: true },
   ): (() => void) | void {
-    const lease = options?.lease ? this.acquireWarmLease(guid) : undefined;
-    if (this.destroyed) return lease;
-
-    const doc = this._getDocument(guid);
-    const hsm = doc?.hsm;
-    if (!hsm) return lease;
-    const currentState = this.getHibernationState(guid);
-    if (currentState === 'active') return lease;
-
-    // Recreate localDoc destroyed during hibernation
-    hsm.ensureLocalDocForIdle();
-
-    // Attach remoteDoc to HSM
-    hsm.setRemoteDoc(remoteDoc);
-
-    // Drain buffered updates into the HSM
-    const buffered = this._hibernationBuffer.get(guid);
-    if (buffered) {
-      hsm.send({ type: 'REMOTE_UPDATE', update: buffered });
-      this._hibernationBuffer.delete(guid);
+    if (options?.lease) {
+      return this.residency.wake(guid, remoteDoc, options);
     }
-
-    // Remove from wake queue if present
-    this._wakeQueue = this._wakeQueue.filter(r => r.guid !== guid);
-
-    if (currentState === 'hibernated') {
-      this._hibernationState.set(guid, 'cached');
-    }
-    this.resetHibernateTimer(guid);
-    this._updateWakeQueueMetrics();
-    return lease;
+    this.residency.wake(guid, remoteDoc);
   }
 
   /**
@@ -1245,62 +1040,7 @@ export class MergeManager {
    * The HSM stays alive with cached state vectors — no YDocs in memory.
    */
   hibernate(guid: string): void {
-    if (this.destroyed) return;
-
-    const currentState = this.getHibernationState(guid);
-    if (currentState === 'hibernated') return;
-    if (currentState === 'active') return; // Never hibernate active docs
-
-    // A leased doc has a background operation in flight. Defer like a
-    // running invoke: reschedule instead of destroying the localDoc the
-    // operation is reading.
-    if (this._warmLeases.has(guid)) {
-      this.resetHibernateTimer(guid);
-      return;
-    }
-
-    const managed = this._managedFiles.get(guid);
-    if (managed) {
-      // The file owns its eligibility (in-flight work, held lock,
-      // unsettled machine) — a refusal defers like a running invoke.
-      if (!managed.tryHibernate()) {
-        this.resetHibernateTimer(guid);
-        return;
-      }
-      this.clearHibernateTimer(guid);
-      this.removeFromWarmLRU(guid);
-      this._hibernationState.set(guid, 'hibernated');
-      this._updateWakeQueueMetrics();
-      this.processWakeQueue();
-      return;
-    }
-
-    const doc = this._getDocument(guid);
-
-    // Tear down any idle-mode provider integration before destroying docs
-    doc?.destroyIdleProviderIntegration();
-
-    const hsm = doc?.hsm;
-    if (hsm) {
-      // If an async invoke (idle-merge, fork-reconcile) is running, defer
-      // hibernation so the work can finish rather than aborting mid-merge.
-      if (hsm.getActiveInvoke()) {
-        this.resetHibernateTimer(guid);
-        return;
-      }
-      hsm.prepareForHibernate();
-      hsm.setRemoteDoc(null);
-      // destroyLocalDoc() nulls out references synchronously, then does
-      // async IDB cleanup on the captured refs. Fire-and-forget is safe
-      // because wake → ensureLocalDocForIdle() creates fresh instances.
-      trackAsyncCleanup(hsm.destroyLocalDoc());
-    }
-
-    this.clearHibernateTimer(guid);
-    this.removeFromWarmLRU(guid);
-    this._hibernationState.set(guid, 'hibernated');
-    this._updateWakeQueueMetrics();
-    this.processWakeQueue();
+    this.residency.hibernate(guid);
   }
 
   // ===========================================================================
@@ -1381,7 +1121,7 @@ export class MergeManager {
    * Check if an HSM is currently in active mode (lock acquired).
    */
   isActive(guid: string): boolean {
-    return this.activeDocs.has(guid);
+    return this.residency.isActive(guid);
   }
 
   /**
@@ -1389,12 +1129,8 @@ export class MergeManager {
    * Used by Document.acquireLock() after sending ACQUIRE_LOCK directly.
    */
   markActive(guid: string): void {
-    this.activeDocs.add(guid);
-    this._hibernationState.set(guid, 'active');
-    this.clearHibernateTimer(guid);
-    this.removeFromWarmLRU(guid);
+    this.residency.markActive(guid);
     this.loadFullStateForActiveEntry(guid);
-    this._updateWakeQueueMetrics();
   }
 
   private loadFullStateForActiveEntry(guid: string): void {
@@ -1406,7 +1142,7 @@ export class MergeManager {
     this._activeStateLoads.add(guid);
     loadStateFn(guid).then((state) => {
       this._activeStateLoads.delete(guid);
-      if (this.destroyed || !this.activeDocs.has(guid) || this._getDocument(guid)?.hsm !== hsm) return;
+      if (this.destroyed || !this.residency.isActive(guid) || this._getDocument(guid)?.hsm !== hsm) return;
 
       hsm.send({
         type: 'PERSISTENCE_LOADED',
@@ -1466,7 +1202,7 @@ export class MergeManager {
           // the load path settle it with the record in hand.
           hsm.send({ type: 'SET_MODE_IDLE' });
         }
-      } else if (statePath.startsWith('active.') && !activeGuids.has(guid) && !this.activeDocs.has(guid)) {
+      } else if (statePath.startsWith('active.') && !activeGuids.has(guid) && !this.residency.isActive(guid)) {
         // HSM is in active mode but no editor is open and MergeManager doesn't
         // consider it active. This can happen when a stale ACQUIRE_LOCK arrives
         // (e.g., from a race between async acquireLock and sync releaseLock).
@@ -1488,12 +1224,12 @@ export class MergeManager {
     if (!hsm) return;
 
     // Only send RELEASE_LOCK if currently active
-    if (this.activeDocs.has(guid)) {
+    if (this.residency.isActive(guid)) {
       hsm.send({ type: 'RELEASE_LOCK' });
-      // The editor session ends at RELEASE_LOCK: drop the guid from activeDocs
-      // immediately so deferred disconnects and folder-reconnect checks do not
-      // observe a live session for the entire cleanup drain.
-      this.activeDocs.delete(guid);
+      // The editor session ends at RELEASE_LOCK: drop the guid from the
+      // active set immediately so deferred disconnects and folder-reconnect
+      // checks do not observe a live session for the entire cleanup drain.
+      this.residency.releaseActive(guid);
       // Wait for cleanup to complete (IndexedDB writes)
       try {
         await trackPromise(`awaitCleanup:${guid}`, hsm.awaitCleanup());
@@ -1505,13 +1241,9 @@ export class MergeManager {
 
     if (this.destroyed || hsm.isDestroyed() || doc?.hsm !== hsm) return;
 
-    // HSM stays alive in idle.* state
-    // Sync status preserved
-    // Transition to cached — hibernate timer will eventually move to hibernated
-    this._hibernationState.set(guid, 'cached');
-    this.touchWarmLRU(guid);
-    this.resetHibernateTimer(guid);
-    this._updateWakeQueueMetrics();
+    // HSM stays alive in idle.* state; sync status preserved. Cached —
+    // the hibernate countdown will eventually move it to hibernated.
+    this.residency.markCached(guid);
   }
 
   /**
@@ -1520,7 +1252,7 @@ export class MergeManager {
    * If warm/active, forwards directly to the HSM.
    */
   handleRemoteUpdate(guid: string, update: Uint8Array): void {
-    const managed = this._managedFiles.get(guid);
+    const managed = this.residency.getManagedFile(guid);
     if (managed) {
       const managedUpdateError = validateUpdate(update);
       if (managedUpdateError) {
@@ -1536,8 +1268,7 @@ export class MergeManager {
         return;
       }
       managed.applyRemoteUpdate(update);
-      this.touchWarmLRU(guid);
-      this.resetHibernateTimer(guid);
+      this.residency.touchWarm(guid);
       return;
     }
 
@@ -1567,9 +1298,8 @@ export class MergeManager {
     hsm.send({ type: 'REMOTE_UPDATE', update });
 
     // Touch LRU and reset hibernate timer if warm
-    if (this.isLoaded(state) && state !== 'active') {
-      this.touchWarmLRU(guid);
-      this.resetHibernateTimer(guid);
+    if (this.residency.isLoaded(state) && state !== 'active') {
+      this.residency.touchWarm(guid);
     }
   }
 
@@ -1708,7 +1438,7 @@ export class MergeManager {
         continue;
       }
 
-      const warm = this.isLoaded(this.getHibernationState(guid));
+      const warm = this.residency.isLoaded(this.getHibernationState(guid));
       if (!warm && machine.compareServerHead(head) === "current") {
         // Provably current: no signal and no wake, but the machine keeps
         // the head so later sweeps skip this file instead of re-proving.
@@ -1744,10 +1474,7 @@ export class MergeManager {
     if (this.destroyed) return;
     this.destroyed = true;
 
-    // Clear all hibernate timers
-    for (const [guid] of this._hibernateTimers) {
-      this.clearHibernateTimer(guid);
-    }
+    this.residency.destroy();
 
     // Unsubscribe from all HSM effect subscriptions
     for (const unsub of this._hsmUnsubs.values()) {
@@ -1755,28 +1482,20 @@ export class MergeManager {
     }
     this._hsmUnsubs.clear();
 
-    this.activeDocs.clear();
     this._syncStatus.clear();
-    this._hibernationState.clear();
-    this._hibernationBuffer.clear();
     this._stateMetaCache.clear();
     this._lcaCache.clear();
     this._localSnapshotCache.clear();
     this._appliedRemoteSV.clear();
     this._appliedRemoteDS.clear();
     this._syncMachines.clear();
-    this._wakeQueue.length = 0;
-    this._wakingDocs.clear();
     this._activeStateLoads.clear();
     this._pendingPersistenceLoads.clear();
-    this._warmLRU.clear();
-    this._warmLeases.clear();
-    this._managedFiles.clear();
     this._managedMetaCache.clear();
     this._conflictProviders.clear();
     // Per-document teardown suppresses metric refreshes after beginShutdown;
     // publish the cleared state once after every tracked collection is empty.
-    this._updateWakeQueueMetrics(true);
+    this.residency.updateMetrics(true);
 
     // These callbacks close over SharedFolder and related plugin services.
     // Clear them so a retained MergeManager shell does not pin the folder graph.
@@ -1793,233 +1512,6 @@ export class MergeManager {
     this._yaml = null;
     this._onTransition = undefined;
     this._transitionListeners.clear();
-  }
-
-  // ===========================================================================
-  // Hibernation Internals
-  // ===========================================================================
-
-  /**
-   * Buffer a raw update for a hibernated document.
-   * Uses Y.mergeUpdates to compact multiple updates into one blob.
-   */
-  private bufferUpdate(guid: string, update: Uint8Array): void {
-    const existing = this._hibernationBuffer.get(guid);
-    if (existing) {
-      this._hibernationBuffer.set(guid, Y.mergeUpdates([existing, update]));
-    } else {
-      this._hibernationBuffer.set(guid, update);
-    }
-  }
-
-  /**
-   * Reset (or start) the hibernate timer for a warm document.
-   * When the timer fires, the document transitions warm → hibernated.
-   */
-  private resetHibernateTimer(guid: string): void {
-    this.clearHibernateTimer(guid);
-    if (this.shuttingDown || this.destroyed) return;
-    const timerId = this.timeProvider.setTimeout(() => {
-      this._hibernateTimers.delete(guid);
-      // Only hibernate if still loaded but not active
-      const s = this.getHibernationState(guid);
-      if (s === 'working' || s === 'cached') {
-        this.hibernate(guid);
-      }
-    }, this._hibernateTimeoutMs);
-    this._hibernateTimers.set(guid, timerId);
-  }
-
-  /**
-   * Clear the hibernate timer for a document.
-   */
-  private clearHibernateTimer(guid: string): void {
-    const timerId = this._hibernateTimers.get(guid);
-    if (timerId !== undefined) {
-      this.timeProvider.clearTimeout(timerId);
-      this._hibernateTimers.delete(guid);
-    }
-  }
-
-  /**
-   * Touch a document in the warm LRU cache (move to most-recent position).
-   * Resets the hibernate timer since the doc is actively receiving updates.
-   */
-  private touchWarmLRU(guid: string): void {
-    if (this.destroyed || !this.timeProvider) {
-      return;
-    }
-    this._warmLRU.delete(guid);
-    this._warmLRU.set(guid, this.timeProvider.now());
-  }
-
-  /**
-   * Remove a document from the warm LRU cache.
-   */
-  private removeFromWarmLRU(guid: string): void {
-    this._warmLRU.delete(guid);
-  }
-
-  /**
-   * Evict the least recently used warm doc to free a slot.
-   * Skips docs with active async invokes (they shouldn't be interrupted).
-   * Returns true if a slot was freed.
-   */
-  private evictLRU(): boolean {
-    for (const [guid] of this._warmLRU) {
-      // Skip files leased by an in-flight background operation
-      if (this._warmLeases.has(guid)) continue;
-      // Skip active files (shouldn't be in LRU, but guard anyway)
-      if (this.getHibernationState(guid) === 'active') continue;
-      if (this._managedFiles.has(guid)) {
-        // The file owns its eligibility; hibernate() defers internally
-        // on refusal, so success shows up as a state change.
-        this.hibernate(guid);
-        if (this.getHibernationState(guid) === 'hibernated') return true;
-        continue;
-      }
-      const doc = this._getDocument(guid);
-      const hsm = doc?.hsm;
-      // Skip docs with in-flight async work
-      if (hsm?.getActiveInvoke()) continue;
-      this.hibernate(guid);
-      return true;
-    }
-    return false;
-  }
-
-  /**
-   * Take a warm lease on a document. Concurrent leases are tracked as
-   * individual holder tokens; returns an idempotent release scoped to this
-   * acquisition. The last release restarts the normal hibernate countdown
-   * so the doc re-hibernates like any other warm doc.
-   */
-  private acquireWarmLease(guid: string): () => void {
-    if (this.destroyed) return () => {};
-    const holder = Symbol('warmLease');
-    let holders = this._warmLeases.get(guid);
-    if (!holders) {
-      holders = new Set();
-      this._warmLeases.set(guid, holders);
-    }
-    holders.add(holder);
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      if (this.destroyed) return;
-      const current = this._warmLeases.get(guid);
-      // Identity guard: after stopTracking and a re-track, the guid's entry
-      // holds successor acquisitions. This handle's token can only be in the
-      // set it was acquired into, so a stale handle is a no-op here.
-      if (!current || !current.has(holder)) return;
-      current.delete(holder);
-      if (current.size > 0) return;
-      this._warmLeases.delete(guid);
-      const state = this.getHibernationState(guid);
-      if (state === 'working' || state === 'cached') {
-        this.resetHibernateTimer(guid);
-      }
-    };
-  }
-
-  /**
-   * Sort the wake queue by priority (lower number = higher priority).
-   */
-  private sortWakeQueue(): void {
-    this._wakeQueue.sort((a, b) => a.priority - b.priority);
-  }
-
-  /**
-   * Process the wake queue with bounded concurrency.
-   * Wakes documents in priority order, up to maxConcurrentWarm.
-   */
-  private processWakeQueue(): void {
-    if (this._isProcessingWakeQueue || this.destroyed) return;
-    this._isProcessingWakeQueue = true;
-
-    try {
-      while (this._wakeQueue.length > 0 && this._wakingDocs.size < this._maxConcurrentWarm) {
-        // Count currently warm (non-active) documents
-        let warmCount = 0;
-        for (const [, state] of this._hibernationState) {
-          if (state === 'working') warmCount++;
-        }
-
-        // Check concurrency limit (warm + currently waking)
-        if (warmCount + this._wakingDocs.size >= this._maxConcurrentWarm) {
-          // Try to evict the least recently used warm doc to free a slot
-          if (!this.evictLRU()) {
-            break; // All warm docs have active invokes — can't evict
-          }
-          continue; // Slot freed — re-check counts on next iteration
-        }
-
-        const request = this._wakeQueue.shift()!;
-        const currentState = this.getHibernationState(request.guid);
-
-        // Skip if already warm/active
-        if (currentState !== 'hibernated') continue;
-
-        const managed = this._managedFiles.get(request.guid);
-        if (managed) {
-          if (managed.destroyed) continue;
-          this._wakingDocs.add(request.guid);
-          managed.wake();
-          const managedBuffer = this._hibernationBuffer.get(request.guid);
-          if (managedBuffer) {
-            this._hibernationBuffer.delete(request.guid);
-            managed.applyRemoteUpdate(managedBuffer);
-          }
-          this._hibernationState.set(request.guid, 'working');
-          this.touchWarmLRU(request.guid);
-          this.resetHibernateTimer(request.guid);
-          this._wakingDocs.delete(request.guid);
-          continue;
-        }
-
-        const doc = this._getDocument(request.guid);
-        const hsm = doc?.hsm;
-        if (!hsm) continue;
-
-        this._wakingDocs.add(request.guid);
-
-        // Recreate localDoc destroyed during hibernation
-        hsm.ensureLocalDocForIdle();
-
-        // Background wake: drain buffer and mark warm.
-        // When buffered remote updates exist, attach a remoteDoc so the
-        // HSM can read remote content during three-way merge. Without this,
-        // the REMOTE_UPDATE action drops the data and conflicts show empty "theirs".
-        const buffered = this._hibernationBuffer.get(request.guid);
-        if (buffered) {
-          const remoteDoc = doc.ensureRemoteDoc();
-          hsm.setRemoteDoc(remoteDoc);
-          hsm.send({ type: 'REMOTE_UPDATE', update: buffered });
-          this._hibernationBuffer.delete(request.guid);
-        }
-
-        this._hibernationState.set(request.guid, 'working');
-        this.touchWarmLRU(request.guid);
-        this.resetHibernateTimer(request.guid);
-        this._wakingDocs.delete(request.guid);
-
-        // Connect provider if requested (for fork reconciliation)
-        if (request.connect) {
-          doc.connectForForkReconcile?.().catch(() => {});
-        }
-      }
-    } finally {
-      this._isProcessingWakeQueue = false;
-    }
-    this._updateWakeQueueMetrics();
-  }
-
-  private _updateWakeQueueMetrics(force = false): void {
-    if (this.shuttingDown && !force) return;
-    const stats = this.getWakeQueueStats();
-    metrics.setWakeQueueSlots(this._folderGuid, stats.used, stats.pending, stats.total);
-    metrics.setHSMDocumentsByState(this._folderGuid, this.getHibernationStateCounts());
   }
 
   // ===========================================================================
