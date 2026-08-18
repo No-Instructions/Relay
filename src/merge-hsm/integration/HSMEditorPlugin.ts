@@ -34,6 +34,7 @@ import {
 } from "./replayBufferedEdits";
 import {
   editorBindingAuthority,
+  onEditorBindingAuthorityChange,
   type EditorBindingAuthority,
 } from "./editorBindingAuthority";
 
@@ -99,6 +100,7 @@ export class HSMEditorPluginValue implements PluginValue {
     | null = null;
   private log: (...args: unknown[]) => void;
   private debug: (...args: unknown[]) => void;
+  private authorityUnsubscribe: (() => void) | null = null;
 
   private clearPendingEdits(): void {
     this.pendingEdits = [];
@@ -167,9 +169,14 @@ export class HSMEditorPluginValue implements PluginValue {
     this.log = curryLog("[HSMEditorPlugin]", "log");
     this.debug = curryLog("[HSMEditorPlugin]", "debug");
 
-    // A known whole-document host can grant authority before the extension is
-    // constructed. Otherwise initialization waits for that host to authorize
-    // this exact EditorView and call initializeIfReady().
+    this.authorityUnsubscribe = onEditorBindingAuthorityChange(
+      editor,
+      () => this.initializeIfReady(),
+    );
+
+    // A host may grant before or after extension construction. The initial
+    // probe covers the first ordering; the authority subscription above
+    // synchronously re-probes for the second.
     this.initializeIfReady();
   }
 
@@ -761,6 +768,8 @@ export class HSMEditorPluginValue implements PluginValue {
    */
   destroy(): void {
     this.destroyed = true;
+    this.authorityUnsubscribe?.();
+    this.authorityUnsubscribe = null;
     if (this.cm6Integration) {
       this.cm6Integration.destroy();
       this.cm6Integration = null;

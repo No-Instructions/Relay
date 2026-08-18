@@ -10,6 +10,13 @@ export type EditorBindingAuthority = Readonly<{
 }>;
 
 const authorities = new WeakMap<EditorView, EditorBindingAuthority>();
+const authorityListeners = new WeakMap<EditorView, Set<() => void>>();
+
+function notifyAuthorityChange(editor: EditorView): void {
+	for (const listener of authorityListeners.get(editor) ?? []) {
+		listener();
+	}
+}
 
 /**
  * Grant whole-document sync authority to one exact CodeMirror view.
@@ -30,7 +37,29 @@ export function authorizeWholeDocumentEditor(
 
 	const authority = Object.freeze({ kind, owner });
 	authorities.set(editor, authority);
+	notifyAuthorityChange(editor);
 	return authority;
+}
+
+/**
+ * Re-run editor binding work whenever this exact editor's grant changes.
+ * Registration is synchronous so grant-before-probe and probe-before-grant
+ * converge without relying on a later CodeMirror transaction.
+ */
+export function onEditorBindingAuthorityChange(
+	editor: EditorView,
+	listener: () => void,
+): () => void {
+	let listeners = authorityListeners.get(editor);
+	if (!listeners) {
+		listeners = new Set();
+		authorityListeners.set(editor, listeners);
+	}
+	listeners.add(listener);
+	return () => {
+		listeners?.delete(listener);
+		if (listeners?.size === 0) authorityListeners.delete(editor);
+	};
 }
 
 /** Return the positive binding authority for this exact editor, if any. */
@@ -49,5 +78,7 @@ export function revokeWholeDocumentEditor(
 	authority: EditorBindingAuthority,
 ): boolean {
 	if (authorities.get(editor) !== authority) return false;
-	return authorities.delete(editor);
+	const deleted = authorities.delete(editor);
+	if (deleted) notifyAuthorityChange(editor);
+	return deleted;
 }

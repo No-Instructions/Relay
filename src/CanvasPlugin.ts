@@ -348,16 +348,19 @@ export class CanvasPlugin extends HasLogging {
 				const authorizeEditor = (): EditorView | undefined => {
 					const cm = (embedView.editor as any)?.cm as EditorView | undefined;
 					if (!cm) return undefined;
-					if (authorizedEditor === cm && editorAuthority) return cm;
-					if (authorizedEditor && editorAuthority) {
+					if (authorizedEditor !== cm && authorizedEditor && editorAuthority) {
 						revokeWholeDocumentEditor(authorizedEditor, editorAuthority);
 					}
-					authorizedEditor = cm;
-					editorAuthority = authorizeWholeDocumentEditor(
-						cm,
-						embedView,
-						"canvas-file-node",
-					);
+					if (authorizedEditor !== cm || !editorAuthority) {
+						authorizedEditor = cm;
+						editorAuthority = authorizeWholeDocumentEditor(
+							cm,
+							embedView,
+							"canvas-file-node",
+						);
+					}
+					// A repeated host probe is also a readiness retry: the authority
+					// may have arrived before the document/HSM became bindable.
 					cm.plugin(HSMEditorPlugin)?.initializeIfReady();
 					return cm;
 				};
