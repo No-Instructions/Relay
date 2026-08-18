@@ -2018,6 +2018,7 @@ export class SharedFolder extends HasProvider {
 		await this.fileManager
 			.renameFile(file, normalizePath(this.getPath(path)))
 			.then(() => {
+				if (this.destroyed) return;
 				doc.move(path, this);
 				// Remote file moves update membership before this disk rename,
 				// so SyncStore.move never installed the source alias locally.
@@ -2787,6 +2788,8 @@ export class SharedFolder extends HasProvider {
 			// The observation itself proves a writer is still using the source;
 			// give its resolution the full settling window from this event.
 			this.scheduleMoveResolution(vpath);
+			this.scheduleLegacyCreate(vpath);
+			return false;
 		}
 		if (this.syncStore.has(vpath)) return true;
 		this.scheduleLegacyCreate(vpath);
@@ -2852,7 +2855,7 @@ export class SharedFolder extends HasProvider {
 			this.renameFile(file, oldPath);
 			return;
 		}
-		if (this.syncStore.has(newVPath) || !this.isSyncableTFile(file)) {
+		if (this.syncStore.hasRaw(newVPath) || !this.isSyncableTFile(file)) {
 			return;
 		}
 		const newDocs = this.placeHold([file]);
@@ -3739,7 +3742,7 @@ export class SharedFolder extends HasProvider {
 					this.log("skipping place hold for known file identity", vpath);
 					return;
 				}
-				if (!this.syncStore.has(vpath)) {
+				if (!this.syncStore.hasRaw(vpath)) {
 					// A loaded file still claiming this path marks it as the
 					// disk-side source of a move whose membership entry has
 					// already gone elsewhere — not a novel local create.
@@ -4693,7 +4696,6 @@ export class SharedFolder extends HasProvider {
 		const cleanupGuids = new Map<string, string>();
 		this.folderDoc.transact(() => {
 			for (const vpath of paths) {
-				this.pendingUpload.delete(vpath);
 				// A delete echo at a retained move source belongs to the path the
 				// document vacated, not to the document now living at its target.
 				// Following that alias here would destroy the moved live document
@@ -4701,6 +4703,7 @@ export class SharedFolder extends HasProvider {
 				if (this.syncStore.hasMoveAlias(vpath)) {
 					continue;
 				}
+				this.pendingUpload.delete(vpath);
 				const guid = this.syncStore?.get(vpath);
 				if (guid) {
 					this.syncStore.delete(vpath);

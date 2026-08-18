@@ -172,13 +172,38 @@ export class SyncStore extends Observable<SyncStore> {
 
 	hasMoveAlias(vpath: string): boolean {
 		this.assertVPath(vpath);
-		return this.renames.has(vpath);
+		return this.renames.has(vpath) && !this.hasRaw(vpath);
+	}
+
+	/** Whether this path itself has live membership, without following aliases. */
+	hasRaw(vpath: string): boolean {
+		this.assertVPath(vpath);
+		if (this.deleteSet.has(vpath)) return false;
+		return (
+			this.meta.has(vpath) ||
+			this.legacyIds.has(vpath) ||
+			this.overlay.has(vpath) ||
+			this.pendingUpload.has(vpath)
+		);
+	}
+
+	/** A move alias is only a fallback while its source remains unoccupied. */
+	private resolveLookupPath(vpath: string): string {
+		if (!this.hasRaw(vpath) && this.renames.has(vpath)) {
+			return this.renames.get(vpath)!;
+		}
+		return vpath;
 	}
 
 	/** Retain a path claim for a move whose membership is already committed. */
 	retainMoveAlias(oldVPath: string, newVPath: string): void {
 		this.assertVPath(oldVPath);
 		this.assertVPath(newVPath);
+		if (this.hasRaw(oldVPath)) {
+			this.renames.delete(oldVPath);
+			return;
+		}
+		this.renames.delete(newVPath);
 		this.renames.set(oldVPath, newVPath);
 	}
 
@@ -191,6 +216,7 @@ export class SyncStore extends Observable<SyncStore> {
 		this.log("moving file", oldVPath, "to", newVPath);
 		this.assertVPath(oldVPath);
 		this.assertVPath(newVPath);
+		this.renames.delete(newVPath);
 		this.renames.set(oldVPath, newVPath);
 		const guid = this.pendingUpload.get(oldVPath);
 		if (guid) {
@@ -217,6 +243,7 @@ export class SyncStore extends Observable<SyncStore> {
 
 	new(vpath: string): string {
 		this.assertVPath(vpath);
+		this.renames.delete(vpath);
 		const guid = uuidv4();
 		this.pendingUpload.set(vpath, guid);
 		this.log("minted identity", vpath, guid);
@@ -279,9 +306,7 @@ export class SyncStore extends Observable<SyncStore> {
 	}
 
 	has(path: string) {
-		if (this.renames.has(path)) {
-			path = this.renames.get(path)!;
-		}
+		path = this.resolveLookupPath(path);
 		if (this.deleteSet.has(path)) {
 			return false;
 		}
@@ -319,6 +344,7 @@ export class SyncStore extends Observable<SyncStore> {
 
 	set(vpath: string, meta: Meta) {
 		this.assertVPath(vpath);
+		this.renames.delete(vpath);
 		// Both membership maps commit in one transaction: a document entry
 		// must never be observable in one map without the other. A nested
 		// transact inherits the caller's transaction and origin; a bare
@@ -463,8 +489,11 @@ export class SyncStore extends Observable<SyncStore> {
 			// hide the live entry from every accessor and commit() would
 			// delete it outright.
 			event.changes.keys.forEach((change, path) => {
-				if (change.action !== "delete" && this.deleteSet.has(path)) {
-					this.deleteSet.delete(path);
+				if (change.action !== "delete") {
+					this.renames.delete(path);
+					if (this.deleteSet.has(path)) {
+						this.deleteSet.delete(path);
+					}
 				}
 			});
 
@@ -504,8 +533,11 @@ export class SyncStore extends Observable<SyncStore> {
 			// — otherwise the stale entry masks the re-created file from
 			// every accessor and commit() deletes it outright.
 			event.changes.keys.forEach((change, path) => {
-				if (change.action !== "delete" && this.deleteSet.has(path)) {
-					this.deleteSet.delete(path);
+				if (change.action !== "delete") {
+					this.renames.delete(path);
+					if (this.deleteSet.has(path)) {
+						this.deleteSet.delete(path);
+					}
 				}
 			});
 			this.migrateUp();
@@ -529,9 +561,7 @@ export class SyncStore extends Observable<SyncStore> {
 
 	get(vpath: string): string | undefined {
 		this.assertVPath(vpath);
-		if (this.renames.has(vpath)) {
-			vpath = this.renames.get(vpath)!;
-		}
+		vpath = this.resolveLookupPath(vpath);
 		if (this.deleteSet.has(vpath)) {
 			return undefined;
 		}
@@ -548,9 +578,7 @@ export class SyncStore extends Observable<SyncStore> {
 
 	getMeta(vpath: string): Meta | undefined {
 		this.assertVPath(vpath);
-		if (this.renames.has(vpath)) {
-			vpath = this.renames.get(vpath)!;
-		}
+		vpath = this.resolveLookupPath(vpath);
 		if (this.deleteSet.has(vpath)) {
 			return undefined;
 		}
@@ -590,9 +618,7 @@ export class SyncStore extends Observable<SyncStore> {
 	 */
 	getCommittedMeta(vpath: string): Meta | undefined {
 		this.assertVPath(vpath);
-		if (this.renames.has(vpath)) {
-			vpath = this.renames.get(vpath)!;
-		}
+		vpath = this.resolveLookupPath(vpath);
 		if (this.deleteSet.has(vpath)) {
 			return undefined;
 		}
@@ -723,6 +749,7 @@ export class SyncStore extends Observable<SyncStore> {
 
 	migrateFile(guid: string, vpath: string) {
 		this.assertVPath(vpath);
+		this.renames.delete(vpath);
 		if (this.meta.get(vpath)?.id === guid) {
 			return;
 		}
