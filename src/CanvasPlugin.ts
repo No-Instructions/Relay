@@ -345,6 +345,25 @@ export class CanvasPlugin extends HasLogging {
 				let observedYText: Y.Text | null = null;
 				let authorizedEditor: EditorView | null = null;
 				let editorAuthority: EditorBindingAuthority | null = null;
+				const authorizeEditor = (): EditorView | undefined => {
+					const cm = (embedView.editor as any)?.cm as EditorView | undefined;
+					if (!cm) return undefined;
+					if (authorizedEditor === cm && editorAuthority) return cm;
+					if (authorizedEditor && editorAuthority) {
+						revokeWholeDocumentEditor(authorizedEditor, editorAuthority);
+					}
+					authorizedEditor = cm;
+					editorAuthority = authorizeWholeDocumentEditor(
+						cm,
+						embedView,
+						"canvas-file-node",
+					);
+					cm.plugin(HSMEditorPlugin)?.initializeIfReady();
+					return cm;
+				};
+				// Do not leave an already-created Canvas editor detached while the
+				// document readiness chain awaits network and HSM state.
+				authorizeEditor();
 				let ytextObserver:
 					| ((event: Y.YTextEvent, tr: Y.Transaction) => void)
 					| null = null;
@@ -447,20 +466,8 @@ export class CanvasPlugin extends HasLogging {
 							"initial-sync",
 						);
 
-						const cm = (embedView.editor as any)?.cm as EditorView | undefined;
-						if (
-							cm &&
-							!(typeof embedView.subpath === "string" && embedView.subpath.length > 0)
-						) {
-							authorizedEditor = cm;
-							editorAuthority = authorizeWholeDocumentEditor(
-								cm,
-								embedView,
-								"canvas-file-node",
-							);
-						}
-						const hsmEditorPlugin = cm?.plugin?.(HSMEditorPlugin);
-						hsmEditorPlugin?.initializeIfReady();
+						// The editor may have been constructed during the async wait.
+						authorizeEditor();
 
 						plugin.initialize().catch((error) => {
 							this.error(

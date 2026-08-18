@@ -1550,10 +1550,10 @@ export default class Live extends Plugin {
 					// Editable embeds can share this prototype, file, and app while their
 					// buffers contain only a footnote, heading, block, or other fragment.
 					try {
-						const isWorkspaceMarkdownView = plugin.app.workspace
-							.getLeavesOfType("markdown")
-							.some((leaf) => leaf.view === this);
-						const cm = isWorkspaceMarkdownView
+						// The leaf registry lags view construction during rapid opens. The
+						// host instance is already definitive here: embeds can inherit this
+						// TextFileView method, but they are not workspace MarkdownViews.
+						const cm = this instanceof MarkdownView
 							? (this.editor as { cm?: import("@codemirror/view").EditorView } | undefined)?.cm
 							: undefined;
 						if (cm) {
