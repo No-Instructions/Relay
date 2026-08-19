@@ -124,6 +124,7 @@ export class HasProvider extends HasLogging {
 	private _offConnectionClose: (() => void) | null = null;
 	private _offState: (() => void) | null = null;
 	private _offSynced: (() => void) | null = null;
+	private _offLoginManager: (() => void) | null = null;
 	private _awarenessActive: boolean;
 	listeners: Map<unknown, Listener>;
 	timeProvider!: TimeProvider;
@@ -139,6 +140,10 @@ export class HasProvider extends HasLogging {
 		this.listeners = new Map<unknown, Listener>();
 		this.loginManager = loginManager;
 		this._awarenessActive = !options.awarenessRequiresLock;
+		this._offLoginManager =
+			this.loginManager.on?.(() => {
+				this.refreshLocalAwareness();
+			}) ?? null;
 
 		this.tokenStore = tokenStore;
 		this.clientToken =
@@ -274,6 +279,17 @@ export class HasProvider extends HasLogging {
 			// transition; the next connection handshake conveys the current
 			// state.
 			this.warn("awareness state change failed", error);
+		}
+	}
+
+	private refreshLocalAwareness(): void {
+		if (!this._awarenessActive) return;
+		const awareness = this._provider?.awareness;
+		if (!awareness) return;
+		try {
+			awareness.setLocalState(localAwarenessState(this.loginManager?.user));
+		} catch (error) {
+			this.warn("awareness profile refresh failed", error);
 		}
 	}
 
@@ -804,6 +820,8 @@ export class HasProvider extends HasLogging {
 	}
 
 	destroy() {
+		this._offLoginManager?.();
+		this._offLoginManager = null;
 		this.destroyRemoteDoc();
 		this.loginManager = null as any;
 	}

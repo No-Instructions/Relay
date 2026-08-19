@@ -35,6 +35,13 @@ import {
 	type IPolicyManager,
 	ObservablePermission,
 } from "./PolicyManager";
+import {
+	resolveProfileAvatar,
+	resolveProfileEmail,
+	resolveProfileName,
+	type ProfileFileUrl,
+} from "./User";
+import { FeatureFlagManager } from "./flagManager";
 
 interface Identified {
 	id: string;
@@ -55,6 +62,10 @@ function hasName(obj: any): obj is Named {
 interface UserDAO extends RecordModel {
 	id: string;
 	name: string;
+	displayName?: string;
+	email: string;
+	picture?: string;
+	avatar?: string;
 }
 
 interface RoleDAO extends RecordModel {
@@ -329,8 +340,15 @@ class StorageQuotaCollection
 }
 
 class RelayUserAuto extends Auto implements RelayUser {
-	constructor(private user: UserDAO) {
+	private avatarUrl: string;
+
+	constructor(
+		private user: UserDAO,
+		private getFileUrl: ProfileFileUrl,
+		private getStreamerMode: () => boolean,
+	) {
 		super();
+		this.avatarUrl = resolveProfileAvatar(user, getFileUrl);
 	}
 
 	public get id() {
@@ -338,19 +356,22 @@ class RelayUserAuto extends Auto implements RelayUser {
 	}
 
 	public get name() {
-		return this.user.name;
+		return resolveProfileName(this.user, "", this.getStreamerMode());
 	}
 
 	public get email() {
-		return this.user.email;
+		return resolveProfileEmail(this.user, "", this.getStreamerMode());
 	}
 
 	public get picture() {
-		return this.user.picture;
+		return (
+			this.avatarUrl || (this.getStreamerMode() ? "" : this.user.picture || "")
+		);
 	}
 
 	public update(update: UserDAO): RelayUser {
 		this.user = update;
+		this.avatarUrl = resolveProfileAvatar(update, this.getFileUrl);
 		return this;
 	}
 }
@@ -803,7 +824,11 @@ class RelayInvitationsCollection
 class UserCollection implements Collection<UserDAO, RelayUser> {
 	collectionName: string = "users";
 
-	constructor(private users: ObservableMap<string, RelayUser>) {}
+	constructor(
+		private users: ObservableMap<string, RelayUser>,
+		private getFileUrl: ProfileFileUrl,
+		private getStreamerMode: () => boolean,
+	) {}
 
 	items(): RelayUser[] {
 		return this.users.values();
@@ -824,7 +849,11 @@ class UserCollection implements Collection<UserDAO, RelayUser> {
 			this.users.notifyListeners();
 			return existingUser;
 		}
-		const user = new RelayUserAuto(update);
+		const user = new RelayUserAuto(
+			update,
+			this.getFileUrl,
+			this.getStreamerMode,
+		);
 		this.users.set(update.id, user);
 		return user;
 	}
@@ -1492,9 +1521,14 @@ export class RelayManager extends HasLogging {
 	store?: Store;
 	policyManager?: IPolicyManager;
 	_offLoginManager: Unsubscriber;
+	_offFeatureFlags: Unsubscriber;
 	private _isSubscribed = false;
 	private pb: PocketBase | null;
 	destroyed = false;
+	private getProfileFileUrl: ProfileFileUrl = (record, filename, options) =>
+		this.pb?.files.getUrl(record, filename, options) || "";
+	private getStreamerMode = () =>
+		FeatureFlagManager.getInstance().getFlag("enableStreamerMode");
 
 	constructor(private loginManager: LoginManager) {
 		super();
@@ -1536,6 +1570,9 @@ export class RelayManager extends HasLogging {
 				this.logout();
 			}
 		});
+		this._offFeatureFlags = FeatureFlagManager.getInstance().on(() => {
+			this.users.notifyListeners();
+		});
 
 		// XXX this is so akward that the class behaves poorly if a user is unset.
 		this.setUser();
@@ -1564,7 +1601,11 @@ export class RelayManager extends HasLogging {
 		}
 		// Build the AdapterGraph
 		const roleCollection = new RoleCollection(this.roles);
-		const userCollection = new UserCollection(this.users);
+		const userCollection = new UserCollection(
+			this.users,
+			this.getProfileFileUrl,
+			this.getStreamerMode,
+		);
 		const providerCollection = new ProviderCollection(this.providers);
 		const relayCollection = new RelayCollection(
 			this.relays,
@@ -1655,7 +1696,16 @@ export class RelayManager extends HasLogging {
 	setUser() {
 		this.authUser = this.pb?.authStore.model;
 		if (this.authUser) {
-			this.user = new RelayUserAuto(this.authUser as UserDAO);
+			const authUser = this.authUser as UserDAO;
+			if (this.user?.id === authUser.id) {
+				this.user.update(authUser);
+			} else {
+				this.user = new RelayUserAuto(
+					authUser,
+					this.getProfileFileUrl,
+					this.getStreamerMode,
+				);
+			}
 			this.users.set(this.user.id, this.user);
 		}
 	}
@@ -2302,6 +2352,8 @@ export class RelayManager extends HasLogging {
 		this.destroyed = true;
 		this._offLoginManager?.();
 		this._offLoginManager = null as any;
+		this._offFeatureFlags?.();
+		this._offFeatureFlags = null as any;
 		this.pb?.cancelAllRequests();
 		this.pb?.realtime?.unsubscribe();
 		this._isSubscribed = false;

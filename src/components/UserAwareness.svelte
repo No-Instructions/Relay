@@ -11,6 +11,8 @@
 		toggleUserAttributionForUser,
 		type AttributionFilter,
 	} from "../y-codemirror.next/UserAttributionPlugin";
+	import { flags } from "../flagManager";
+	import { ANONYMOUS_PROFILE_NAME } from "../User";
 
 	export let awareness: Awareness;
 	export let relayUsers: any;
@@ -108,12 +110,15 @@
 			states.forEach((state, clientId) => {
 				// Include all users (both local and remote)
 				const user = state.user;
-				if (user && user.name && user.id) {
+				if (user && user.id) {
 					// Try to look up the full RelayUser from the users store
 					const relayUser = $relayUsers.get(user.id);
+					const awarenessName = flags().enableStreamerMode
+						? ANONYMOUS_PROFILE_NAME
+						: user.name || ANONYMOUS_PROFILE_NAME;
 
 					users.push({
-						name: user.name,
+						name: relayUser?.name || awarenessName,
 						id: user.id,
 						color: user.color || "#30bced",
 						colorLight: user.colorLight || user.color + "33" || "#30bced33",

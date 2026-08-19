@@ -1,7 +1,13 @@
 "use strict";
 
 import type { RequestUrlResponsePromise } from "obsidian";
-import { User } from "./User";
+import {
+	User,
+	resolveProfileEmail,
+	resolveProfileName,
+	resolveProfilePicture,
+	type ProfileFileUrl,
+} from "./User";
 import PocketBase, {
 	BaseAuthStore,
 	type AuthProviderInfo,
@@ -133,14 +139,29 @@ export function createUserFromOAuth(
 	token: string,
 	authStoreModel: any,
 	rawUser?: GoogleUser | GitHubUser | MicrosoftUser | OIDCUser | any,
+	getFileUrl?: ProfileFileUrl,
+	streamerMode = false,
 ): User {
-	const normalizedOAuth = rawUser ? normalizeOAuthUser(rawUser) : null;
+	const normalizedOAuth = rawUser && !streamerMode ? normalizeOAuthUser(rawUser) : null;
 
 	return new User(
 		id,
-		authStoreModel?.name || normalizedOAuth?.name || "",
-		authStoreModel?.email || normalizedOAuth?.email || "",
-		authStoreModel?.picture || normalizedOAuth?.picture || "",
+		resolveProfileName(
+			authStoreModel,
+			normalizedOAuth?.name || "",
+			streamerMode,
+		),
+		resolveProfileEmail(
+			authStoreModel,
+			normalizedOAuth?.email || "",
+			streamerMode,
+		),
+		resolveProfilePicture(
+			authStoreModel,
+			normalizedOAuth?.picture || "",
+			getFileUrl,
+			streamerMode,
+		),
 		token,
 	);
 }
@@ -203,6 +224,13 @@ export class LoginManager extends Observable<LoginManager> {
 		};
 		this.refreshToken();
 		timeProvider.setInterval(() => this.refreshToken(), 86400000);
+		this.unsubscribes.push(
+			FeatureFlagManager.getInstance().on(() => {
+				if (!this.pb.authStore.isValid) return;
+				this.user = this.makeUser(this.pb.authStore);
+				this.notifyListeners();
+			}),
+		);
 		this.openSettings = openSettings;
 		if (!this.pb.authStore.isValid) {
 			this.logout();
@@ -232,11 +260,17 @@ export class LoginManager extends Observable<LoginManager> {
 
 	refreshToken() {
 		if (this.pb.authStore.isValid) {
-			this.user = this.makeUser(this.pb.authStore);
-			this.pb
+			const pb = this.pb;
+			this.user = this.makeUser(pb.authStore);
+			pb
 				.collection("users")
 				.authRefresh()
 				.then((authData) => {
+					if (this.pb !== pb) {
+						return;
+					}
+					this.user = this.makeUser(pb.authStore);
+					this.notifyListeners();
 					const token = authData.token;
 					const [, payload] = token.split(".");
 					const decodedPayload = JSON.parse(atob(payload));
@@ -252,7 +286,9 @@ export class LoginManager extends Observable<LoginManager> {
 						expiresAt: expiryDate.toLocaleString(),
 						expiresIn: `${daysUntilExpiry} days`,
 						userId: decodedPayload.id,
-						email: decodedPayload.email,
+						...(FeatureFlagManager.getInstance().getFlag("enableStreamerMode")
+							? {}
+							: { email: decodedPayload.email }),
 					});
 				})
 				.catch((reason) => {
@@ -342,7 +378,11 @@ export class LoginManager extends Observable<LoginManager> {
 			relayNetworkDomain: "api",
 		})
 			.then((response) => {
-				this.log(response.json);
+				this.log(
+					FeatureFlagManager.getInstance().getFlag("enableStreamerMode")
+						? { id: response.json?.id }
+						: response.json,
+				);
 			})
 			.catch((reason) => {
 				this.log(reason);
@@ -351,6 +391,10 @@ export class LoginManager extends Observable<LoginManager> {
 
 	public get loggedIn() {
 		return this.user !== undefined;
+	}
+
+	public getAccountEmailForRequest(): string {
+		return this.pb.authStore.model?.email || "";
 	}
 
 	/**
@@ -413,6 +457,9 @@ export class LoginManager extends Observable<LoginManager> {
 			authStore.token,
 			authStore.model,
 			rawUser,
+			(record, filename, options) =>
+				this.pb.files.getUrl(record, filename, options),
+			FeatureFlagManager.getInstance().getFlag("enableStreamerMode"),
 		);
 	}
 
