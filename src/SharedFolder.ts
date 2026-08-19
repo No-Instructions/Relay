@@ -71,7 +71,13 @@ import {
 import { recordHSMEntry } from "./debug";
 import { trackAsyncCleanup } from "./reloadUtils";
 import { DestroyedError, isDestroyedError } from "./DestroyedError";
-import { isServerUpdateSink } from "./background-sync/SyncParticipant";
+import {
+	isServerUpdateSink,
+	isSyncParticipant,
+	type PlanContext,
+	type PlanOccasion,
+} from "./background-sync/SyncParticipant";
+import type { WorkRequest } from "./background-sync/WorkRequest";
 import { readNoteText } from "./diskText";
 import {
 	HSMStore,
@@ -1562,11 +1568,38 @@ export class SharedFolder extends HasProvider {
 				await this.whenMembershipSettled();
 			}
 			if (this.destroyed) return;
-			this.backgroundSync.enqueueSharedFolderSync(this);
+			this.backgroundSync.beginFolderPass(this);
+			this.admitPlannedWork({ kind: "sweep" });
 		} catch (error) {
 			if (isDestroyedError(error)) return;
 			throw error;
 		}
+	}
+
+	/**
+	 * Ask every file in the folder to plan its work for an occasion and
+	 * return the concatenation. The folder names no file type and reads no
+	 * machine: each participant answers from its own surface.
+	 */
+	planSyncWork(occasion: PlanOccasion): WorkRequest[] {
+		const context: PlanContext = {
+			occasion,
+			now: this.currentTime(),
+			inFlight: (guid, scope) => this.backgroundSync.isClaimed(guid, scope),
+		};
+		const requests: WorkRequest[] = [];
+		for (const file of this.files.values()) {
+			if (!isSyncParticipant(file)) continue;
+			requests.push(...file.planSyncWork(context));
+		}
+		return requests;
+	}
+
+	/** Plan for an occasion and admit the result as one batch. */
+	private admitPlannedWork(occasion: PlanOccasion): number {
+		const requests = this.planSyncWork(occasion);
+		if (requests.length > 0) this.backgroundSync.admitAll(requests);
+		return requests.length;
 	}
 
 	async resync(): Promise<void> {
@@ -1597,11 +1630,13 @@ export class SharedFolder extends HasProvider {
 			if (this.destroyed) return;
 			let staged = 0;
 			this.files.forEach((doc) => {
-				if (isSyncFolder(doc)) return; // directories have no rooms
+				// Directories have no rooms; only files that take part in
+				// background sync can be staged.
+				if (!isSyncParticipant(doc)) return;
 				// The outcome is dropped: this staging path never publishes
 				// membership itself, so there is no publication decision to make here.
 				const p = this.backgroundSync
-					.enqueueUpload(doc as Document | Canvas | SyncFile)
+					.enqueueUpload(doc)
 					.then(
 						() => undefined,
 						(e) => {
@@ -1721,7 +1756,7 @@ export class SharedFolder extends HasProvider {
 					// and re-sends the server subscribe frame itself, so the
 					// callbacks registered by the constructor's
 					// setupEventSubscriptions() call stay live.
-					this.enqueueLCABackfill("connect");
+					this.admitReconnectWork("connect");
 					this.connectForkedIdleDocuments();
 				}
 				return result;
@@ -1736,11 +1771,15 @@ export class SharedFolder extends HasProvider {
 		this.resolveStartupScan?.();
 	}
 
-	private enqueueLCABackfill(reason: string): void {
+	/**
+	 * The provider session came back: let every file plan the recovery work
+	 * it needs (a document without a merge base recovers it here).
+	 */
+	private admitReconnectWork(reason: string): void {
 		if (this.destroyed || this.localOnly || !this.connected) return;
-		const queued = this.backgroundSync.enqueueLCABackfill(this);
+		const queued = this.admitPlannedWork({ kind: "reconnect" });
 		if (queued > 0) {
-			this.debug(`[lca-backfill] queued ${queued} documents (${reason})`);
+			this.debug(`[reconnect] admitted ${queued} recovery requests (${reason})`);
 		}
 	}
 

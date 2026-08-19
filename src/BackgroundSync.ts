@@ -42,11 +42,6 @@ import {
 	type LaneOperation,
 	type LaneSortReason,
 } from "./background-sync/WorkLane";
-import {
-	isSyncParticipant,
-	type PlanContext,
-	type PlanOccasion,
-} from "./background-sync/SyncParticipant";
 
 export type {
 	QueueItem,
@@ -730,7 +725,7 @@ export class BackgroundSync extends HasLogging {
 	 * then flush the queue once after the batch is complete.
 	 */
 	async enqueueSync(
-		target: SyncTarget,
+		target: WorkTarget,
 		deferQueueFlush = false,
 		trigger = "sync",
 	): Promise<SyncCompletionOutcome> {
@@ -742,7 +737,7 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	async enqueueRetryableSync(
-		target: SyncTarget,
+		target: WorkTarget,
 		error: Error,
 	): Promise<SyncCompletionOutcome> {
 		const completion = await this.admitForRetry(
@@ -764,7 +759,7 @@ export class BackgroundSync extends HasLogging {
 	 * for content that only partially transferred.
 	 */
 	async enqueueUpload(
-		target: SyncTarget,
+		target: WorkTarget,
 		trigger = "upload",
 	): Promise<SyncCompletionOutcome> {
 		const completion = await this.admit(
@@ -779,7 +774,7 @@ export class BackgroundSync extends HasLogging {
 	 * content (or the work was cancelled).
 	 */
 	async enqueueDownload(
-		target: SyncTarget,
+		target: WorkTarget,
 		userVisible = true,
 		trigger = "download",
 	): Promise<Uint8Array | undefined> {
@@ -787,51 +782,6 @@ export class BackgroundSync extends HasLogging {
 			createWorkRequest(target, "download", trigger, { userVisible }),
 		);
 		return completion.bytes;
-	}
-
-	// =========================================================================
-	// Planning occasions (folder sweeps and reconnect backfill)
-	// =========================================================================
-
-	/**
-	 * Ask every participant in a folder to plan for an occasion and admit the
-	 * concatenation as one batch. Returns how many requests were admitted.
-	 */
-	admitPlannedWork(
-		participants: Iterable<unknown>,
-		occasion: PlanOccasion,
-	): number {
-		const context: PlanContext = {
-			occasion,
-			now: this.timeProvider.now(),
-			inFlight: (guid, scope) => this.lanes[scope].isClaimed(guid),
-		};
-		const requests: WorkRequest[] = [];
-		for (const file of participants) {
-			if (!isSyncParticipant(file)) continue;
-			requests.push(...file.planSyncWork(context));
-		}
-		if (requests.length > 0) this.admitAll(requests);
-		return requests.length;
-	}
-
-	/**
-	 * Sweep a shared folder: a fresh progress pass, then a converge request
-	 * for every file that plans one.
-	 *
-	 * @param sharedFolder The shared folder to synchronize
-	 */
-	enqueueSharedFolderSync(sharedFolder: SharedFolder): void {
-		this.beginFolderPass(sharedFolder);
-		this.admitPlannedWork(sharedFolder.files.values(), { kind: "sweep" });
-	}
-
-	/** The provider reconnected: let every file plan its recovery work. */
-	enqueueLCABackfill(sharedFolder: SharedFolder): number {
-		if (!sharedFolder.connected) return 0;
-		return this.admitPlannedWork(sharedFolder.files.values(), {
-			kind: "reconnect",
-		});
 	}
 
 	// =========================================================================
