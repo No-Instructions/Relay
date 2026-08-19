@@ -33,8 +33,11 @@ import { metrics } from "./debug";
 import type {
 	PlanContext,
 	ServerUpdateSink,
+	SessionIntent,
+	SyncOperationContext,
 	SyncParticipant,
 } from "./background-sync/SyncParticipant";
+import { CanvasSyncAdapter } from "./background-sync/CanvasSyncAdapter";
 import {
 	createWorkRequest,
 	type WorkRequest,
@@ -806,7 +809,7 @@ export class Canvas
 	 * the spot and plans no request of its own — the machine asks for the
 	 * download it needs.
 	 */
-	planSyncWork(context: PlanContext): WorkRequest[] {
+	planSyncWork(context: PlanContext): WorkRequest<SyncParticipant>[] {
 		if (this.destroyed) return [];
 		switch (context.occasion.kind) {
 			case "sweep":
@@ -819,6 +822,33 @@ export class Canvas
 			default:
 				return [];
 		}
+	}
+
+	private _syncAdapter: CanvasSyncAdapter | null = null;
+
+	/** How this canvas performs its background work. */
+	private get syncAdapter(): CanvasSyncAdapter {
+		if (!this._syncAdapter) {
+			this._syncAdapter = new CanvasSyncAdapter(this);
+		}
+		return this._syncAdapter;
+	}
+
+	acceptsSession(): boolean {
+		return this.syncAdapter.acceptsSession();
+	}
+
+	runSyncSession(
+		intent: SessionIntent,
+		context: SyncOperationContext,
+	): Promise<void> {
+		return this.syncAdapter.runSession(intent, context);
+	}
+
+	transferFromServer(
+		context: SyncOperationContext,
+	): Promise<Uint8Array | undefined> {
+		return this.syncAdapter.transfer(context);
 	}
 
 	/**

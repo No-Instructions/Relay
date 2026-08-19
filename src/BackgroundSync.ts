@@ -1,9 +1,7 @@
 import type { RequestUrlResponse } from "obsidian";
 import type { LoginManager } from "./LoginManager";
 import * as Y from "yjs";
-import { S3RN, S3RemoteCanvas, S3RemoteDocument } from "./S3RN";
-import { isDocument, type Document } from "./Document";
-import { isCanvas } from "./Canvas";
+import { S3RN, S3RemoteCanvas, S3RemoteDocument, type S3RNType } from "./S3RN";
 import type { TimeProvider } from "./TimeProvider";
 import { HasLogging, RelayInstances, metrics } from "./debug";
 import {
@@ -15,8 +13,6 @@ import { ObservableSet } from "./observable/ObservableSet";
 import { ObservableMap } from "./observable/ObservableMap";
 import type { SharedFolder, SharedFolders } from "./SharedFolder";
 import type { ClientToken } from "./client/types";
-import { Canvas } from "./Canvas";
-import { SyncFile } from "./SyncFile";
 import { isEmptyDoc } from "./merge-hsm/snapshots";
 import {
 	buildFolderSyncSnapshot,
@@ -26,7 +22,15 @@ import {
 } from "./BackgroundSyncProgress";
 import { errorFromUnknown, formatUserFacingError } from "./UserFacingError";
 import { getRelayRequestHeaders, requestUrlWithMetrics } from "./customFetch";
-import { isRetryableS3Error } from "./S3Error";
+import {
+	isRetryableProviderSyncError,
+	isRetryableSyncError,
+	ProviderTimeoutError,
+} from "./background-sync/errors";
+import type {
+	SyncOperationContext,
+	SyncParticipant,
+} from "./background-sync/SyncParticipant";
 import {
 	createWorkRequest,
 	type QueueItem,
@@ -55,11 +59,15 @@ export { createWorkRequest } from "./background-sync/WorkRequest";
 export type {
 	PlanContext,
 	PlanOccasion,
+	SessionIntent,
+	SyncOperationContext,
 	SyncParticipant,
 } from "./background-sync/SyncParticipant";
-
-/** The file types the engine can currently drive. */
-export type SyncTarget = Document | Canvas | SyncFile;
+export {
+	isRetryableSyncError,
+	ProviderTimeoutError,
+	RetryableProviderSyncError,
+} from "./background-sync/errors";
 
 export interface BackgroundSyncFailure {
 	id: string;
@@ -127,16 +135,6 @@ interface FolderSyncSnapshotSubscription {
 	emit: () => void;
 }
 
-export class RetryableProviderSyncError extends Error {
-	constructor(message: string, cause?: unknown) {
-		super(message);
-		this.name = "RetryableProviderSyncError";
-		if (cause !== undefined) {
-			(this as Error & { cause?: unknown }).cause = cause;
-		}
-	}
-}
-
 const MAX_PROVIDER_SYNC_RETRIES = 5;
 const BACKGROUND_SYNC_QUEUE_PUMP_INTERVAL_MS = 1000;
 const BACKGROUND_SYNC_FOLDER_POLL_INTERVAL_MS = 5000;
@@ -166,32 +164,16 @@ export interface ProviderOperationToken {
 	abandoned: boolean;
 }
 
-// A provider-bound operation abandoned after PROVIDER_OP_DEADLINE_MS. Retryable
-// like any provider sync error so the lane re-drives it, but a distinct type so
-// a genuine operation error and a stalled transport are never conflated.
-export class ProviderTimeoutError extends RetryableProviderSyncError {
-	constructor(
-		readonly operation: LaneOperation,
-		readonly awaited: string,
-		readonly guid: string,
-		readonly deadlineMs: number,
-	) {
-		super(
-			`timed out awaiting provider ${awaited} for ${guid} after ` +
-				`${Math.round(deadlineMs / 1000)}s`,
-		);
-		this.name = "ProviderTimeoutError";
-	}
-}
-
-function isRetryableProviderSyncError(
-	error: unknown,
-): error is RetryableProviderSyncError {
-	return error instanceof RetryableProviderSyncError;
-}
-
-export function isRetryableSyncError(error: unknown): error is Error {
-	return isRetryableProviderSyncError(error) || isRetryableS3Error(error);
+// Identity for a single in-flight provider-bound operation, minted by
+// withProviderDeadline and threaded through the operation's call chain. Warm
+// leases acquired inside the operation register their releases against the
+// token, so a deadline sweep can only ever release what its own operation
+// holds — never a concurrent operation's lease on the same document. The
+// sweep marks the token abandoned; a lease registered afterwards (an
+// abandoned operation resuming on a late settle) is released immediately
+// instead of parking with no deadline left to watch it.
+export interface ProviderOperationToken {
+	abandoned: boolean;
 }
 
 export interface QueueStatus {
@@ -359,10 +341,6 @@ export class BackgroundSync extends HasLogging {
 		);
 	}
 
-	private shouldSkipDocumentSync(target: WorkTarget): boolean {
-		const file = target as SyncTarget;
-		return isDocument(file) && file.hsm?.getSyncStatus().status === "conflict";
-	}
 
 	// =========================================================================
 	// Pass accounting
@@ -619,10 +597,10 @@ export class BackgroundSync extends HasLogging {
 	 * outcome tells the caller.
 	 */
 	admit(
-		request: WorkRequest,
+		request: WorkRequest<SyncParticipant>,
 		options: { deferFlush?: boolean } = {},
 	): Promise<WorkCompletion> {
-		if (request.scope === "session" && this.shouldSkipDocumentSync(request.target)) {
+		if (request.scope === "session" && !request.target.acceptsSession()) {
 			this.clearFailure(this.failureKey(laneFailureKind(request.scope), request.guid));
 			return Promise.resolve({ outcome: "completed" });
 		}
@@ -653,7 +631,9 @@ export class BackgroundSync extends HasLogging {
 	 * Admit a batch, sorting and draining once at the end. Returns the
 	 * completions in request order.
 	 */
-	admitAll(requests: readonly WorkRequest[]): Promise<WorkCompletion>[] {
+	admitAll(
+		requests: readonly WorkRequest<SyncParticipant>[],
+	): Promise<WorkCompletion>[] {
 		const completions: Promise<WorkCompletion>[] = [];
 		const touched = new Set<WorkScope>();
 		for (const request of requests) {
@@ -667,7 +647,7 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	private async admitAfterActive(
-		request: WorkRequest,
+		request: WorkRequest<SyncParticipant>,
 		settled: Promise<unknown>,
 	): Promise<WorkCompletion> {
 		// The stronger request is the follow-up operation. Let it run even if
@@ -684,8 +664,11 @@ export class BackgroundSync extends HasLogging {
 	 * engine: it enters its lane parked in the backoff window rather than at
 	 * the head. Rejects with the original error once retries are spent.
 	 */
-	admitForRetry(request: WorkRequest, error: Error): Promise<WorkCompletion> {
-		if (request.scope === "session" && this.shouldSkipDocumentSync(request.target)) {
+	admitForRetry(
+		request: WorkRequest<SyncParticipant>,
+		error: Error,
+	): Promise<WorkCompletion> {
+		if (request.scope === "session" && !request.target.acceptsSession()) {
 			this.clearFailure(this.failureKey(laneFailureKind(request.scope), request.guid));
 			return Promise.resolve({ outcome: "completed" });
 		}
@@ -725,7 +708,7 @@ export class BackgroundSync extends HasLogging {
 	 * then flush the queue once after the batch is complete.
 	 */
 	async enqueueSync(
-		target: WorkTarget,
+		target: SyncParticipant,
 		deferQueueFlush = false,
 		trigger = "sync",
 	): Promise<SyncCompletionOutcome> {
@@ -737,7 +720,7 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	async enqueueRetryableSync(
-		target: WorkTarget,
+		target: SyncParticipant,
 		error: Error,
 	): Promise<SyncCompletionOutcome> {
 		const completion = await this.admitForRetry(
@@ -759,7 +742,7 @@ export class BackgroundSync extends HasLogging {
 	 * for content that only partially transferred.
 	 */
 	async enqueueUpload(
-		target: WorkTarget,
+		target: SyncParticipant,
 		trigger = "upload",
 	): Promise<SyncCompletionOutcome> {
 		const completion = await this.admit(
@@ -774,7 +757,7 @@ export class BackgroundSync extends HasLogging {
 	 * content (or the work was cancelled).
 	 */
 	async enqueueDownload(
-		target: WorkTarget,
+		target: SyncParticipant,
 		userVisible = true,
 		trigger = "download",
 	): Promise<Uint8Array | undefined> {
@@ -829,8 +812,8 @@ export class BackgroundSync extends HasLogging {
 			// A reclaimed session re-runs as a plain converge pass: the caller
 			// that wanted the stronger intent already saw its failure and owns
 			// any follow-up; transfers re-run as themselves.
-			const request: WorkRequest = {
-				...failure.request,
+			const request: WorkRequest<SyncParticipant> = {
+				...(failure.request as WorkRequest<SyncParticipant>),
 				intent: failure.request.scope === "transfer" ? "download" : "converge",
 				trigger: "reclaim",
 			};
@@ -1135,20 +1118,22 @@ export class BackgroundSync extends HasLogging {
 		return !item.sharedFolder.syncStore.getCommittedMeta(item.target.path);
 	}
 
-	/** Run one item's operation under the provider deadline. */
+	/**
+	 * Run one item's operation under the provider deadline. The participant
+	 * performs the work — the engine hands it the slot, the lease registry,
+	 * and the cancellation flag, and never asks what kind of file it is.
+	 */
 	private execute(item: QueueItem): Promise<WorkCompletion> {
-		const target = item.target as SyncTarget;
+		const target = item.target as SyncParticipant;
+		const lane = this.lanes[item.scope];
+		const contextFor = (token: ProviderOperationToken): SyncOperationContext => ({
+			timeProvider: this.timeProvider,
+			holdLease: (release) => this.registerHeldLease(token, release),
+			isCancelled: () => lane.isCancelled(item),
+		});
 		if (item.scope === "transfer") {
-			let downloadWork: (token: ProviderOperationToken) => Promise<Uint8Array | undefined | void>;
-			if (target instanceof Canvas) {
-				downloadWork = () => this.getCanvas(target);
-			} else if (target instanceof SyncFile) {
-				downloadWork = () => this.getSyncFile(target);
-			} else {
-				downloadWork = (token) => this.getDocument(target, token);
-			}
 			return this.withProviderDeadline(
-				downloadWork,
+				(token) => target.transferFromServer(contextFor(token)),
 				"download",
 				"download delivery",
 				item.guid,
@@ -1157,29 +1142,13 @@ export class BackgroundSync extends HasLogging {
 				bytes: bytes ?? undefined,
 			}));
 		}
-
-		let syncWork: (token: ProviderOperationToken) => Promise<unknown>;
-		let awaited: string;
-		if (target instanceof SyncFile) {
-			syncWork = () => this.syncFile(target);
-			awaited = "file sync";
-		} else if (item.intent === "upload") {
-			syncWork = (token) => this.syncDocumentUpload(target, token);
-			awaited = "upload ack";
-		} else if (item.intent === "backfill" && isDocument(target)) {
-			syncWork = (token) => this.syncDocumentLCABackfill(target, token);
-			awaited = "lca-backfill sync";
-		} else {
-			syncWork = (token) => this.syncDocument(target, token);
-			awaited = "provider sync";
-		}
-		return this.withProviderDeadline(syncWork, "sync", awaited, item.guid).then(
-			() => ({ outcome: "completed" as const }),
-		);
-	}
-
-	private isSyncCancelledForDoc(doc: SyncTarget): boolean {
-		return this.lanes.session.isCancelledGuid(doc.guid, doc.destroyed);
+		const intent = item.intent === "download" ? "converge" : item.intent;
+		return this.withProviderDeadline(
+			(token) => target.runSyncSession(intent, contextFor(token)),
+			"sync",
+			sessionAwaited(intent),
+			item.guid,
+		).then(() => ({ outcome: "completed" as const }));
 	}
 
 	// =========================================================================
@@ -1209,7 +1178,7 @@ export class BackgroundSync extends HasLogging {
 		return baseUrl;
 	}
 
-	async downloadItem(item: Document | Canvas): Promise<RequestUrlResponse> {
+	async downloadItem(item: RemoteEntityFile): Promise<RequestUrlResponse> {
 		const getId = (entity: S3RemoteCanvas | S3RemoteDocument) => {
 			if (entity instanceof S3RemoteCanvas) {
 				return entity.canvasId;
@@ -1324,494 +1293,6 @@ export class BackgroundSync extends HasLogging {
 			return undefined;
 		}
 		return updateBytes;
-	}
-
-	// =========================================================================
-	// Operations (per file type, pending their move behind the machine
-	// surface)
-	// =========================================================================
-
-	async syncDocumentWebsocket(
-		doc: Document | Canvas,
-		token: ProviderOperationToken,
-	): Promise<boolean> {
-		if (doc.destroyed) return false;
-		this.log(`[syncDocWS] start: ${doc.path} guid=${doc.guid} intent=${doc.intent} connected=${doc.connected}`);
-		if (this.isSyncCancelledForDoc(doc)) return false;
-		const sharedFolder = doc.sharedFolder;
-		const refreshQueueKey = S3RN.encode(doc.s3rn);
-		// Manager activeness only exists for documents; canvas activeness
-		// is the view lock alone.
-		const isActive =
-			doc.userLock ||
-			(isDocument(doc) && sharedFolder?.mergeManager?.isActive(doc.guid));
-		const startedDisconnected = doc.intent === "disconnected";
-		const hadProviderIntegration = isDocument(doc) && doc.hasProviderIntegration();
-		const acquiredIdleIntegration =
-			isDocument(doc) && !isActive
-				? doc.ensureIdleProviderIntegration({
-						freshRemoteDoc: !!doc.hsm?.hasFork(),
-					})
-				: false;
-		const shouldCleanupIdleSession = () =>
-			(startedDisconnected || isCanvas(doc)) &&
-			!(doc.userLock || sharedFolder?.mergeManager?.isActive(doc.guid));
-		const cleanupIdleSession = () => {
-			if (isDocument(doc)) {
-				if (acquiredIdleIntegration) {
-					doc.destroyIdleProviderIntegration();
-					if (shouldCleanupIdleSession()) {
-						sharedFolder?.tokenStore.removeFromRefreshQueue(refreshQueueKey);
-					}
-					return;
-				}
-				if (!shouldCleanupIdleSession()) return;
-				if (hadProviderIntegration || doc.hasProviderIntegration()) {
-					return;
-				}
-			}
-			if (!shouldCleanupIdleSession()) return;
-			doc.releaseIdleSession();
-		};
-		if (doc.destroyed) return false;
-		const connected = await doc.connect();
-		if (!connected) {
-			if (shouldCleanupIdleSession()) {
-				cleanupIdleSession();
-			}
-			if (this.isSyncCancelledForDoc(doc)) return false;
-			throw new RetryableProviderSyncError(
-				`Provider connection is not ready for ${this.fileName(doc.path)}`,
-			);
-		}
-		if (this.isSyncCancelledForDoc(doc)) {
-			if (shouldCleanupIdleSession()) {
-				cleanupIdleSession();
-			}
-			return false;
-		}
-		// Always wait for provider sync — _providerSynced fast-path resolves
-		// immediately if already synced.  Connected does not imply synced.
-		// Timeout prevents hanging the sync queue if the connection drops.
-		const SYNC_TIMEOUT_MS = 10_000;
-		let timerId: number | undefined;
-		let cancelTimerId: number | undefined;
-		let providerSyncFailure: unknown;
-		const synced = await Promise.race([
-			doc.onceProviderSynced().then(
-				() => true,
-				(e) => {
-					providerSyncFailure = e;
-					return false;
-				},
-			),
-			new Promise<false>((resolve) => {
-				timerId = this.timeProvider.setTimeout(
-					() => resolve(false),
-					SYNC_TIMEOUT_MS,
-				);
-			}),
-			new Promise<false>((resolve) => {
-				cancelTimerId = this.timeProvider.setInterval(() => {
-					if (this.isSyncCancelledForDoc(doc)) resolve(false);
-				}, 100);
-			}),
-		]);
-		if (timerId !== undefined) this.timeProvider.clearTimeout(timerId);
-		if (cancelTimerId !== undefined) this.timeProvider.clearInterval(cancelTimerId);
-		if (!synced) {
-			if (shouldCleanupIdleSession()) {
-				cleanupIdleSession();
-			}
-			if (this.isSyncCancelledForDoc(doc)) return false;
-			if (providerSyncFailure) {
-				this.warn(
-					`[syncDocWS] provider sync failed: ${doc.path} guid=${doc.guid}: ${this.errorMessage(providerSyncFailure)}`,
-				);
-				throw new RetryableProviderSyncError(
-					`Provider sync is not ready for ${this.fileName(doc.path)}: ${this.errorMessage(providerSyncFailure)}`,
-					providerSyncFailure,
-				);
-			} else {
-				this.warn(`[syncDocWS] provider sync timed out: ${doc.path} guid=${doc.guid}`);
-				throw new RetryableProviderSyncError(
-					`Provider sync timed out for ${this.fileName(doc.path)}`,
-				);
-			}
-		}
-
-		if (isDocument(doc)) {
-			await this.maybeBootstrapDocumentLCA(doc, token);
-		}
-
-		// A session reaching synced means the same thing to every machine;
-		// the send is idempotent for documents, whose provider integration
-		// already delivered it mid-session.
-		doc.hsm?.send({ type: "PROVIDER_SYNCED" });
-
-		if (shouldCleanupIdleSession()) {
-			cleanupIdleSession();
-		}
-		return true;
-	}
-
-	async getCanvas(canvas: Canvas): Promise<Uint8Array | undefined> {
-		if (canvas.sharedFolder.serverEmptyTerminal(canvas.guid)) {
-			this.debug(
-				`[getCanvas] skipped ${canvas.path}: server has no content for guid; awaiting server evidence`,
-			);
-			canvas.hsm.send({ type: "DOWNLOAD_FAILED" });
-			return undefined;
-		}
-		try {
-			const response = await this.downloadItem(canvas);
-			const rawUpdate = response.arrayBuffer;
-			const updateBytes = new Uint8Array(rawUpdate);
-
-			// A guid that is registered but never uploaded downloads as an
-			// empty doc; defer instead of reporting a contentless download
-			// as complete. Enrolled canvases always carry the header op, so
-			// only truly never-uploaded content defers.
-			const peekDoc = new Y.Doc();
-			Y.applyUpdate(peekDoc, updateBytes);
-			const serverEmpty = isEmptyDoc(peekDoc);
-			peekDoc.destroy();
-			if (serverEmpty) {
-				canvas.sharedFolder.recordServerEmpty(canvas.guid);
-				this.log(
-					"[getCanvas] server has guid registered but no content",
-					canvas.path,
-				);
-				canvas.hsm.send({ type: "DOWNLOAD_FAILED" });
-				return undefined;
-			}
-
-			this.log("[getCanvas] applying content from server");
-			// Server content lands on the provider-facing remoteDoc; the
-			// CanvasDocBridge merges it into the localDoc, and the canvas's
-			// machine decides whether disk follows. The canvas must be warm
-			// first — on a hibernated canvas the update would land on a
-			// bridge-less remoteDoc, and a later re-download of the same ops
-			// produces no update events to recover it.
-			canvas.wake();
-			Y.applyUpdate(canvas.ydoc, updateBytes);
-			// A full-state download is the canvas keyframe: seed the
-			// applied-remote baseline so later folder events classify
-			// against it instead of gapping once per session.
-			canvas.sharedFolder.mergeManager?.seedAppliedRemoteUpdate(
-				canvas.guid,
-				updateBytes,
-			);
-			canvas.hsm.send({ type: "DOWNLOAD_COMPLETE" });
-			return updateBytes;
-		} catch (e) {
-			this.logError("[getCanvas] failed", e);
-			canvas.hsm.send({ type: "DOWNLOAD_FAILED" });
-			throw e;
-		}
-	}
-
-	private async getDocument(
-		doc: Document,
-		token: ProviderOperationToken,
-	): Promise<Uint8Array | undefined> {
-		if (doc.sharedFolder.serverEmptyTerminal(doc.guid)) {
-			this.debug(
-				`[getDocument] skipped ${doc.path}: server has no content for guid; awaiting server evidence`,
-			);
-			doc.hsm?.send({ type: "DOWNLOAD_FAILED" });
-			return undefined;
-		}
-		try {
-			const response = await this.downloadItem(doc);
-			const rawUpdate = response.arrayBuffer;
-			const updateBytes = new Uint8Array(rawUpdate);
-
-			// Validate: reject uninitialized documents.
-			const newDoc = new Y.Doc();
-			Y.applyUpdate(newDoc, updateBytes);
-
-			if (isEmptyDoc(newDoc)) {
-				if (doc.text) {
-					this.log(
-						"[getDocument] server CRDT empty, local has content — uploading",
-					);
-					void this.enqueueSync(doc, false, "download-empty");
-					doc.hsm?.send({ type: "DOWNLOAD_FAILED" });
-					return undefined;
-				}
-				// The server pushes a document.updated event once a peer
-				// uploads content, which re-enables downloads for the guid —
-				// no timer-based retry needed.
-				doc.sharedFolder.recordServerEmpty(doc.guid);
-				this.log(
-					"[getDocument] Server contains uninitialized document. Waiting for peer to upload.",
-				);
-				doc.hsm?.send({ type: "DOWNLOAD_FAILED" });
-				return undefined;
-			}
-
-			this.log("[getDocument] applying content from server");
-			Y.applyUpdate(doc.ydoc, updateBytes);
-			doc.hsm?.setRemoteDoc(doc.ydoc);
-			await this.maybeBootstrapDocumentLCA(doc, token);
-			doc.hsm?.send({ type: "DOWNLOAD_COMPLETE" });
-			return updateBytes;
-		} catch (e) {
-			this.logError("[getDocument] failed", e);
-			doc.hsm?.send({ type: "DOWNLOAD_FAILED" });
-			throw e;
-		}
-	}
-
-	private async maybeBootstrapDocumentLCA(
-		doc: Document,
-		token: ProviderOperationToken,
-	): Promise<void> {
-		const hsm = doc.hsm;
-		if (!hsm || hsm.state.lca || hsm.isActive()) return;
-
-		// A first download has not written the file yet — the applied server
-		// content materializes it through the WRITE_DISK effect. With no file
-		// on disk there is no on-disk content to reconcile, so there is no
-		// last-common-ancestor to recover from disk. Skip rather than read,
-		// which would throw for the absent TFile and fail the download for a
-		// doc that is simply arriving for the first time. The LCA is
-		// established once the file lands, through the idle-merge path.
-		if (!doc.tfile) {
-			this.debug(
-				`[bootstrapLCA] skipped for ${doc.path}: file not yet materialized`,
-			);
-			return;
-		}
-
-		let releaseLease: () => void = () => {};
-		try {
-			const mergeManager = doc.sharedFolder.mergeManager;
-			if (mergeManager?.getHibernationState(doc.guid) === "hibernated") {
-				const lease = mergeManager.wake(doc.guid, doc.ensureRemoteDoc(), {
-					lease: true,
-				});
-				if (lease) {
-					releaseLease = this.registerHeldLease(token, lease);
-				}
-				await hsm.awaitPersistenceReady();
-			}
-
-			const diskState = await doc.readDiskContent();
-			const repaired = await hsm.bootstrapLCAFromDisk(diskState);
-			if (!repaired && hsm.getSyncStatus().status === "pending") {
-				if (!hsm.hasPersistenceUserData()) {
-					this.debug(
-						`[bootstrapLCA] deferred for ${doc.path}: awaiting local CRDT enrollment`,
-					);
-					return;
-				}
-				this.debug(
-					`[bootstrapLCA] skipped for ${doc.path}: local CRDT is not enrolled or remote state is not ready`,
-				);
-			}
-		} catch (e) {
-			this.warn(
-				`[bootstrapLCA] failed for ${doc.path}: ${this.errorMessage(e)}`,
-				e,
-			);
-			throw e;
-		} finally {
-			releaseLease();
-		}
-	}
-
-	private async syncFile(file: SyncFile) {
-		await file.sync();
-	}
-
-	private async getSyncFile(file: SyncFile) {
-		await file.pull();
-	}
-
-	private async syncDocument(
-		doc: Document | Canvas,
-		token: ProviderOperationToken,
-	): Promise<void> {
-		if (doc.destroyed) {
-			return;
-		}
-		if (this.shouldSkipDocumentSync(doc)) {
-			return;
-		}
-		try {
-			if (isDocument(doc) || isCanvas(doc)) {
-				const synced = await this.syncDocumentWebsocket(doc, token);
-				if (!synced) {
-					if (this.isSyncCancelledForDoc(doc)) return;
-					throw new Error(`Unable to sync ${this.fileName(doc.path)}`);
-				}
-			}
-		} catch (e) {
-			if (!isRetryableSyncError(e)) {
-				this.logError("[syncDocument] failed", e);
-			}
-			throw e;
-		}
-	}
-
-	private async syncDocumentUpload(
-		doc: Document | Canvas,
-		token: ProviderOperationToken,
-	): Promise<void> {
-		// The lease from upload preparation must survive the websocket sync
-		// and the final content assert: hibernation mid-upload detaches the
-		// remoteDoc, which surfaces as an empty remote after preparation.
-		let releaseLease: () => void = () => {};
-		try {
-			if (isDocument(doc) && doc.hsm) {
-				releaseLease = await this.prepareDocumentUpload(doc, token);
-			}
-			await this.syncDocument(doc, token);
-			if (isDocument(doc) && doc.hsm) {
-				this.assertUploadedDocumentHasRemoteContent(doc);
-			}
-		} finally {
-			releaseLease();
-		}
-	}
-
-	private async syncDocumentLCABackfill(
-		doc: Document,
-		token: ProviderOperationToken,
-	): Promise<void> {
-		if (doc.destroyed || this.shouldSkipDocumentSync(doc)) {
-			return;
-		}
-
-		const hsm = doc.hsm;
-		if (!hsm || hsm.state.lca || hsm.isActive() || hsm.hasFork()) {
-			return;
-		}
-
-		let updateBytes: Uint8Array | undefined;
-		try {
-			updateBytes = await this.downloadByGuid(
-				doc.sharedFolder,
-				doc.guid,
-				doc.path,
-			);
-		} catch (error) {
-			throw new RetryableProviderSyncError(
-				`LCA backfill download failed for ${this.fileName(doc.path)}: ${this.errorMessage(error)}`,
-				error,
-			);
-		}
-		if (!updateBytes) {
-			throw new RetryableProviderSyncError(
-				`Remote document is empty while backfilling LCA: ${this.fileName(doc.path)}`,
-			);
-		}
-
-		const validationDoc = new Y.Doc();
-		try {
-			Y.applyUpdate(validationDoc, updateBytes);
-			if (isEmptyDoc(validationDoc)) {
-				throw new RetryableProviderSyncError(
-					`Remote document is empty while backfilling LCA: ${this.fileName(doc.path)}`,
-				);
-			}
-		} finally {
-			validationDoc.destroy();
-		}
-
-		const remoteDoc = doc.ensureRemoteDoc();
-		Y.applyUpdate(remoteDoc, updateBytes, remoteDoc);
-		const mergeManager = doc.sharedFolder.mergeManager;
-		let releaseLease: () => void = () => {};
-		if (mergeManager) {
-			const lease = mergeManager.wake(doc.guid, remoteDoc, { lease: true });
-			if (lease) {
-				releaseLease = this.registerHeldLease(token, lease);
-			}
-		} else {
-			hsm.setRemoteDoc(remoteDoc);
-		}
-		try {
-			const diskState = await doc.readDiskContent();
-			const settled = await hsm.bootstrapLCAFromDisk(diskState);
-			if (!settled && hsm.getSyncStatus().status === "pending") {
-				if (!hsm.hasPersistenceUserData()) {
-					this.debug(
-						`[lca-backfill] deferred for ${doc.path}: awaiting local enrollment`,
-					);
-					return;
-				}
-				this.debug(
-					`[lca-backfill] deferred for ${doc.path}: local or remote state is not ready`,
-				);
-			}
-		} finally {
-			releaseLease();
-		}
-	}
-
-	/**
-	 * Wake the doc and encode its localDoc into the remoteDoc for upload.
-	 * Returns the warm-lease release; the caller holds it until the upload
-	 * resolves so hibernation cannot tear the doc down mid-pipeline.
-	 */
-	private async prepareDocumentUpload(
-		doc: Document,
-		token: ProviderOperationToken,
-	): Promise<() => void> {
-		const hsm = doc.hsm;
-		if (!hsm) return () => {};
-		if (hsm.hasFork()) {
-			throw new Error(`Cannot upload ${this.fileName(doc.path)} while a fork exists`);
-		}
-
-		const remoteDoc = doc.ensureRemoteDoc();
-		const mergeManager = doc.sharedFolder.mergeManager;
-		let releaseLease: () => void = () => {};
-		if (!doc.userLock && !mergeManager?.isActive(doc.guid)) {
-			if (mergeManager) {
-				const lease = mergeManager.wake(doc.guid, remoteDoc, {
-					lease: true,
-				});
-				if (lease) {
-					releaseLease = this.registerHeldLease(token, lease);
-				}
-			}
-		} else {
-			hsm.setRemoteDoc(remoteDoc);
-		}
-		try {
-			await hsm.awaitPersistenceReady();
-
-			if (hsm.hasFork()) {
-				throw new Error(`Cannot upload ${this.fileName(doc.path)} while a fork exists`);
-			}
-			const localDoc = hsm.getLocalDoc();
-			if (!localDoc) {
-				throw new RetryableProviderSyncError(
-					`Local document is not ready for upload: ${this.fileName(doc.path)}`,
-				);
-			}
-
-			Y.applyUpdate(remoteDoc, Y.encodeStateAsUpdate(localDoc), hsm);
-			hsm.setRemoteDoc(remoteDoc);
-			this.assertUploadedDocumentHasRemoteContent(doc);
-			return releaseLease;
-		} catch (e) {
-			releaseLease();
-			throw e;
-		}
-	}
-
-	private assertUploadedDocumentHasRemoteContent(doc: Document): void {
-		const remoteDoc = doc.hsm?.getRemoteDoc() ?? doc.remoteDocOrNull;
-		if (!remoteDoc || isEmptyDoc(remoteDoc)) {
-			throw new RetryableProviderSyncError(
-				`Remote document is empty after upload preparation: ${this.fileName(doc.path)}`,
-			);
-		}
 	}
 
 	// =========================================================================
@@ -2205,11 +1686,24 @@ export class BackgroundSync extends HasLogging {
 	private logError(context: string, error: unknown): void {
 		this.error(`${context}: ${this.errorMessage(error)}`, error);
 	}
+}
 
-	private fileName(path: string): string {
-		const normalized = path.replace(/\\/g, "/");
-		const parts = normalized.split("/").filter(Boolean);
-		return parts[parts.length - 1] || "file";
+/** A file whose content lives in a per-file room on the relay. */
+export interface RemoteEntityFile {
+	readonly path: string;
+	readonly s3rn: S3RNType;
+	getProviderToken(): Promise<ClientToken>;
+}
+
+/** Metric label for what a session-scope operation awaits. */
+function sessionAwaited(intent: "converge" | "upload" | "backfill"): string {
+	switch (intent) {
+		case "upload":
+			return "upload ack";
+		case "backfill":
+			return "lca-backfill sync";
+		default:
+			return "provider sync";
 	}
 }
 

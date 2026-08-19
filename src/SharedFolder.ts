@@ -76,6 +76,7 @@ import {
 	isSyncParticipant,
 	type PlanContext,
 	type PlanOccasion,
+	type SyncParticipant,
 } from "./background-sync/SyncParticipant";
 import type { WorkRequest } from "./background-sync/WorkRequest";
 import { readNoteText } from "./diskText";
@@ -1581,13 +1582,13 @@ export class SharedFolder extends HasProvider {
 	 * return the concatenation. The folder names no file type and reads no
 	 * machine: each participant answers from its own surface.
 	 */
-	planSyncWork(occasion: PlanOccasion): WorkRequest[] {
+	planSyncWork(occasion: PlanOccasion): WorkRequest<SyncParticipant>[] {
 		const context: PlanContext = {
 			occasion,
 			now: this.currentTime(),
 			inFlight: (guid, scope) => this.backgroundSync.isClaimed(guid, scope),
 		};
-		const requests: WorkRequest[] = [];
+		const requests: WorkRequest<SyncParticipant>[] = [];
 		for (const file of this.files.values()) {
 			if (!isSyncParticipant(file)) continue;
 			requests.push(...file.planSyncWork(context));

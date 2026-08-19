@@ -17,6 +17,8 @@ import { flags } from "./flagManager";
 import { errorFromUnknown, formatUserFacingError } from "./UserFacingError";
 import type {
 	PlanContext,
+	SessionIntent,
+	SyncOperationContext,
 	SyncParticipant,
 } from "./background-sync/SyncParticipant";
 import {
@@ -898,11 +900,34 @@ export class SyncFile
 	 * content reconciliation unless its publication is being held back by
 	 * the folder; nothing else asks a file to plan.
 	 */
-	planSyncWork(context: PlanContext): WorkRequest[] {
+	planSyncWork(context: PlanContext): WorkRequest<SyncParticipant>[] {
 		if (this.destroyed) return [];
 		if (context.occasion.kind !== "sweep") return [];
 		if (this.sharedFolder.shouldDeferPendingPublication(this.path)) return [];
 		return [createWorkRequest(this, "converge", "sweep")];
+	}
+
+	acceptsSession(): boolean {
+		return true;
+	}
+
+	/**
+	 * Every session-scope request for a file is the file's own content
+	 * reconciliation: uploads and converge passes take the same path.
+	 */
+	async runSyncSession(
+		_intent: SessionIntent,
+		_context: SyncOperationContext,
+	): Promise<void> {
+		await this.sync();
+	}
+
+	/** A transfer pulls the committed content for the file's path. */
+	async transferFromServer(
+		_context: SyncOperationContext,
+	): Promise<Uint8Array | undefined> {
+		await this.pull();
+		return undefined;
 	}
 
 	async connect(): Promise<boolean> {

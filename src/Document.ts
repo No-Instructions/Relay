@@ -29,8 +29,11 @@ import { DocumentDestroyedError } from "./DocumentDestroyedError";
 import type {
 	PlanContext,
 	ServerUpdateSink,
+	SessionIntent,
+	SyncOperationContext,
 	SyncParticipant,
 } from "./background-sync/SyncParticipant";
+import { DocumentSyncAdapter } from "./background-sync/DocumentSyncAdapter";
 import { metrics } from "./debug";
 import {
 	createWorkRequest,
@@ -318,7 +321,7 @@ export class Document
 	 * resolution surface. A reconnect recovers the merge base for documents
 	 * that never established one and are not otherwise busy.
 	 */
-	planSyncWork(context: PlanContext): WorkRequest[] {
+	planSyncWork(context: PlanContext): WorkRequest<SyncParticipant>[] {
 		if (this.destroyed) return [];
 		switch (context.occasion.kind) {
 			case "sweep":
@@ -410,6 +413,33 @@ export class Document
 				this._pendingKeyframeUpdates = null;
 				this.warn("[onServerUpdate] keyframe fetch failed", e);
 			});
+	}
+
+	private _syncAdapter: DocumentSyncAdapter | null = null;
+
+	/** How this document performs its background work. */
+	private get syncAdapter(): DocumentSyncAdapter {
+		if (!this._syncAdapter) {
+			this._syncAdapter = new DocumentSyncAdapter(this);
+		}
+		return this._syncAdapter;
+	}
+
+	acceptsSession(): boolean {
+		return this.syncAdapter.acceptsSession();
+	}
+
+	runSyncSession(
+		intent: SessionIntent,
+		context: SyncOperationContext,
+	): Promise<void> {
+		return this.syncAdapter.runSession(intent, context);
+	}
+
+	transferFromServer(
+		context: SyncOperationContext,
+	): Promise<Uint8Array | undefined> {
+		return this.syncAdapter.transfer(context);
 	}
 
 	private wantsConverge(): boolean {
