@@ -3871,7 +3871,7 @@ export class SharedFolder extends HasProvider {
 		const canvas = this.getOrCreateCanvas(guid, vpath);
 		canvas.markOrigin("remote");
 
-		this.backgroundSync.enqueueCanvasDownload(canvas, userVisible);
+		this.backgroundSync.enqueueDownload(canvas, userVisible);
 
 		this.files.set(guid, canvas);
 		this.fset.add(canvas);
@@ -3968,7 +3968,7 @@ export class SharedFolder extends HasProvider {
 			.then(async () => {
 				const synced = await canvas.getServerSynced();
 				if (canvas.stat.size === 0 && !synced) {
-					this.backgroundSync.enqueueCanvasDownload(canvas);
+					this.backgroundSync.enqueueDownload(canvas);
 				} else if (this.pendingUpload.get(canvas.path)) {
 					if (this.shouldRoutePendingPublication(canvas.path)) {
 						await this.applyPendingUpload(canvas.path).promise;

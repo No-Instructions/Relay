@@ -564,7 +564,7 @@ export class Canvas
 			}
 			case "ENQUEUE_DOWNLOAD": {
 				const p = this.sharedFolder.backgroundSync
-					.enqueueCanvasDownload(this, false)
+					.enqueueDownload(this, false)
 					.catch(() => {
 						this.hsm.send({ type: "DOWNLOAD_FAILED" });
 					});

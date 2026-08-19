@@ -14,7 +14,6 @@ import {
 import { ObservableSet } from "./observable/ObservableSet";
 import { ObservableMap } from "./observable/ObservableMap";
 import type { SharedFolder, SharedFolders } from "./SharedFolder";
-import { compareFilePaths } from "./FolderSort";
 import type { ClientToken } from "./client/types";
 import { Canvas } from "./Canvas";
 import { SyncFile, isSyncFile } from "./SyncFile";
@@ -28,30 +27,34 @@ import {
 import { errorFromUnknown, formatUserFacingError } from "./UserFacingError";
 import { getRelayRequestHeaders, requestUrlWithMetrics } from "./customFetch";
 import { isRetryableS3Error } from "./S3Error";
+import {
+	createWorkRequest,
+	type QueueItem,
+	type RetryReason,
+	type SyncCompletionOutcome,
+	type WorkCompletion,
+	type WorkRequest,
+	type WorkScope,
+	type WorkTarget,
+} from "./background-sync/WorkRequest";
+import {
+	WorkLane,
+	type LaneOperation,
+	type LaneSortReason,
+} from "./background-sync/WorkLane";
 
-export interface QueueItem {
-	guid: string;
-	path: string;
-	doc: Document | Canvas | SyncFile;
-	status: "pending" | "running" | "completed" | "failed";
-	sharedFolder: SharedFolder;
-	userVisible: boolean;
-	enqueuedAt: number;
-	syncIntent?: "sync" | "upload" | "lca-backfill";
-	retryAttempts?: number;
-	nextAttemptAt?: number;
-	retryReason?: "provider" | "s3";
-}
+export type {
+	QueueItem,
+	SyncCompletionOutcome,
+	WorkCompletion,
+	WorkIntent,
+	WorkRequest,
+	WorkScope,
+} from "./background-sync/WorkRequest";
+export { createWorkRequest } from "./background-sync/WorkRequest";
 
-/**
- * How a sync completion settled. Cancellation resolves rather than
- * rejects — the pipeline behind the completion has nothing to retry —
- * but the two outcomes are not interchangeable to the caller: an
- * upload's caller publishes membership on "completed" and must stand
- * down on "cancelled", because a cancelled transfer moved only part of
- * its bytes.
- */
-export type SyncCompletionOutcome = "completed" | "cancelled";
+/** The file types the engine can currently drive. */
+export type SyncTarget = Document | Canvas | SyncFile;
 
 export interface BackgroundSyncFailure {
 	id: string;
@@ -68,6 +71,8 @@ export interface BackgroundSyncFailure {
 	 */
 	retryable: boolean;
 	recordedAt: number;
+	/** The request that failed, so a reclaim re-admits the same work. */
+	request?: WorkRequest;
 }
 
 export interface SyncGroup {
@@ -117,7 +122,7 @@ interface FolderSyncSnapshotSubscription {
 	emit: () => void;
 }
 
-class RetryableProviderSyncError extends Error {
+export class RetryableProviderSyncError extends Error {
 	constructor(message: string, cause?: unknown) {
 		super(message);
 		this.name = "RetryableProviderSyncError";
@@ -131,20 +136,18 @@ const MAX_PROVIDER_SYNC_RETRIES = 5;
 const BACKGROUND_SYNC_QUEUE_PUMP_INTERVAL_MS = 1000;
 const BACKGROUND_SYNC_FOLDER_POLL_INTERVAL_MS = 5000;
 const BACKGROUND_SYNC_DRAIN_BUDGET_MS = 8;
-// How long a terminally-failed file transfer rests before the periodic pass
-// re-enqueues it. Short-lived blips are already absorbed by the queue's own
+// How long a terminally-failed transient failure rests before the periodic
+// pass re-admits it. Short-lived blips are already absorbed by the lane's own
 // backoff retries; this interval is the long-tail self-heal for outages that
 // outlast them, so it can be generous without stranding files until reload.
-const SYNC_FILE_RECLAIM_INTERVAL_MS = 5 * 60_000;
-// A provider-bound sync or download operation that has not settled in this long
-// is treated as timed out. Generous by design — a healthy but slow transfer
-// must never trip it — because the deadline only detects a wedged await (a dead
-// or stranded connection whose promise never resolves) and converts it into a
-// legible, retryable failure. It never schedules recovery: reconnection and the
-// queue's own retry/backoff do that.
+const FAILURE_RECLAIM_INTERVAL_MS = 5 * 60_000;
+// A provider-bound operation that has not settled in this long is treated as
+// timed out. Generous by design — a healthy but slow transfer must never trip
+// it — because the deadline only detects a wedged await (a dead or stranded
+// connection whose promise never resolves) and converts it into a legible,
+// retryable failure. It never schedules recovery: reconnection and the lane's
+// own retry/backoff do that.
 const PROVIDER_OP_DEADLINE_MS = 5 * 60_000;
-type BackgroundSyncOperation = "sync" | "download";
-type BackgroundSyncSortReason = "enqueue" | "retry" | "batch" | "group";
 
 // Identity for a single in-flight provider-bound operation, minted by
 // withProviderDeadline and threaded through the operation's call chain. Warm
@@ -154,16 +157,16 @@ type BackgroundSyncSortReason = "enqueue" | "retry" | "batch" | "group";
 // sweep marks the token abandoned; a lease registered afterwards (an
 // abandoned operation resuming on a late settle) is released immediately
 // instead of parking with no deadline left to watch it.
-interface ProviderOperationToken {
+export interface ProviderOperationToken {
 	abandoned: boolean;
 }
 
 // A provider-bound operation abandoned after PROVIDER_OP_DEADLINE_MS. Retryable
-// like any provider sync error so the queue re-drives it, but a distinct type so
+// like any provider sync error so the lane re-drives it, but a distinct type so
 // a genuine operation error and a stalled transport are never conflated.
-class ProviderTimeoutError extends RetryableProviderSyncError {
+export class ProviderTimeoutError extends RetryableProviderSyncError {
 	constructor(
-		readonly operation: BackgroundSyncOperation,
+		readonly operation: LaneOperation,
 		readonly awaited: string,
 		readonly guid: string,
 		readonly deadlineMs: number,
@@ -182,7 +185,7 @@ function isRetryableProviderSyncError(
 	return error instanceof RetryableProviderSyncError;
 }
 
-function isRetryableSyncError(error: unknown): error is Error {
+export function isRetryableSyncError(error: unknown): error is Error {
 	return isRetryableProviderSyncError(error) || isRetryableS3Error(error);
 }
 
@@ -194,49 +197,35 @@ export interface QueueStatus {
 	isPaused: boolean;
 }
 
+/**
+ * The background sync engine. Every unit of work — a converge pass, an
+ * upload, a merge-base backfill, a download — enters through `admit` as one
+ * work-request type; the engine owns pass accounting, ordering, concurrency,
+ * retry/backoff, deadlines, and cancellation. What work a file needs is
+ * decided elsewhere (the folder sweep and the file's own machine); the engine
+ * never selects.
+ */
 export class BackgroundSync extends HasLogging {
-	public activeSync = new ObservableSet<QueueItem>();
-	public activeDownloads = new ObservableSet<QueueItem>();
 	public syncGroups = new ObservableMap<SharedFolder, SyncGroup>();
 	private folderResyncs = new ObservableSet<SharedFolder>();
 	private failures = new ObservableMap<string, BackgroundSyncFailure>(
 		"BackgroundSync.failures",
 	);
-	private queueStatusChanged = new Observable<BackgroundSync>("BackgroundSync.queueStatus");
+	private queueStatusChanged = new Observable<BackgroundSync>(
+		"BackgroundSync.queueStatus",
+	);
 
-	private syncQueue: QueueItem[] = [];
-	private downloadQueue: QueueItem[] = [];
-	private isProcessingSync = false;
-	private isProcessingDownloads = false;
+	private lanes: Record<WorkScope, WorkLane>;
+	private draining: Record<WorkScope, boolean> = {
+		session: false,
+		transfer: false,
+	};
 	private isPaused = true;
-	private inProgressSyncs = new Set<string>();
-	private inProgressDownloads = new Set<string>();
-	private cancelledSyncs = new Set<string>();
-	private cancelledDownloads = new Set<string>();
-	private syncCompletionCallbacks = new Map<
-		string,
-		{
-			resolve: (outcome: SyncCompletionOutcome) => void;
-			reject: (error: Error) => void;
-		}
-	>();
-	private syncPromises = new Map<string, Promise<SyncCompletionOutcome>>();
-	private downloadCompletionCallbacks = new Map<
-		string,
-		{
-			resolve: (result?: Uint8Array) => void;
-			reject: (error: Error) => void;
-		}
-	>();
-	private downloadPromises = new Map<string, Promise<Uint8Array | undefined>>();
 	private folderSyncSnapshotSubscriptions = new Map<
 		SharedFolder,
 		FolderSyncSnapshotSubscription
 	>();
 	private folderQueueWakeups = new Map<SharedFolder, Unsubscriber>();
-
-	// A map to track items we've already logged to avoid duplicates
-	private loggedItems = new Map<string, boolean>();
 
 	subscriptions: Unsubscriber[] = [];
 
@@ -248,6 +237,11 @@ export class BackgroundSync extends HasLogging {
 	) {
 		super();
 		RelayInstances.set(this, "BackgroundSync");
+		this.lanes = {
+			session: this.createLane("session"),
+			transfer: this.createLane("transfer"),
+		};
+
 		let lastQueuePumpAt = this.timeProvider.now();
 		this.timeProvider.setInterval(() => {
 			const now = this.timeProvider.now();
@@ -258,8 +252,7 @@ export class BackgroundSync extends HasLogging {
 				BACKGROUND_SYNC_QUEUE_PUMP_INTERVAL_MS,
 			);
 			lastQueuePumpAt = now;
-			this.processSyncQueue();
-			this.processDownloadQueue();
+			this.drainAll();
 		}, BACKGROUND_SYNC_QUEUE_PUMP_INTERVAL_MS);
 
 		// Add polling timer for disk changes (poll all folders)
@@ -276,7 +269,7 @@ export class BackgroundSync extends HasLogging {
 			this.sharedFolders.forEach((folder) => {
 				folder.poll();
 			});
-			this.reclaimStalledSyncFiles();
+			this.reclaimParkedFailures();
 		}, BACKGROUND_SYNC_FOLDER_POLL_INTERVAL_MS);
 
 		this.subscriptions.push(
@@ -287,145 +280,215 @@ export class BackgroundSync extends HasLogging {
 		this.updateFolderQueueWakeups();
 	}
 
-	/**
-	 * Returns items currently in the sync queue
-	 */
+	private createLane(scope: WorkScope): WorkLane {
+		return new WorkLane(scope, {
+			now: () => this.timeProvider.now(),
+			isDrainable: (item) => this.isDrainable(item),
+			onDiscarded: (item) => this.markTerminal(item, "skipped"),
+			onQueueChanged: () => this.noteQueueChanged(scope),
+		});
+	}
+
+	// =========================================================================
+	// Queue surfaces
+	// =========================================================================
+
+	/** Session-scope work that is running. */
+	public get activeSync(): ObservableSet<QueueItem> {
+		return this.lanes.session.active;
+	}
+
+	/** Transfer-scope work that is running. */
+	public get activeDownloads(): ObservableSet<QueueItem> {
+		return this.lanes.transfer.active;
+	}
+
+	/** Session-scope work waiting to start. */
 	public get pendingSyncs(): readonly QueueItem[] {
-		return this.syncQueue;
+		return this.lanes.session.pending;
+	}
+
+	/** Transfer-scope work waiting to start. */
+	public get pendingDownloads(): readonly QueueItem[] {
+		return this.lanes.transfer.pending;
+	}
+
+	/** Whether the guid holds a claim in the scope (queued or running). */
+	isClaimed(guid: string, scope: WorkScope): boolean {
+		return this.lanes[scope].isClaimed(guid);
+	}
+
+	private noteQueueChanged(scope: WorkScope): void {
+		const lane = this.lanes[scope];
+		metrics.setBgSyncQueueLength(lane.operation, lane.queuedCount);
+		this.queueStatusChanged.notifyListeners();
 	}
 
 	/**
-	 * Returns items currently in the download queue
+	 * Cancel every unit of work for a file, in every scope. Queued work leaves
+	 * the queues now; active work settles as cancelled when its pipeline
+	 * returns. Failure rows for the file clear with it.
 	 */
-	public get pendingDownloads(): readonly QueueItem[] {
-		return this.downloadQueue;
-	}
-
 	cancelDocumentWork(guid: string): void {
-		let changed = false;
-
-		const queuedSyncs = this.syncQueue.filter((item) => item.guid === guid);
-		if (queuedSyncs.length > 0) {
-			for (const item of queuedSyncs) {
-				this.removeQueuedSyncFromGroup(item);
+		for (const lane of Object.values(this.lanes)) {
+			const { removed } = lane.cancel(guid);
+			for (const item of removed) {
+				this.removeQueuedFromGroup(item);
 			}
-			this.syncQueue = this.syncQueue.filter((item) => item.guid !== guid);
-			changed = true;
 		}
-
-		const queuedDownloads = this.downloadQueue.filter((item) => item.guid === guid);
-		if (queuedDownloads.length > 0) {
-			for (const item of queuedDownloads) {
-				this.removeQueuedDownloadFromGroup(item);
-			}
-			this.downloadQueue = this.downloadQueue.filter((item) => item.guid !== guid);
-			changed = true;
-		}
-
-		if (this.activeSync.some((item) => item.guid === guid)) {
-			this.cancelledSyncs.add(guid);
-		} else {
-			this.resolveSyncCancellation(guid);
-		}
-
-		if (this.activeDownloads.some((item) => item.guid === guid)) {
-			this.cancelledDownloads.add(guid);
-		} else {
-			this.resolveDownloadCancellation(guid);
-		}
-
 		this.clearFailure(this.failureKey("sync", guid));
 		this.clearFailure(this.failureKey("download", guid));
-
-		if (changed) {
-			metrics.setBgSyncQueueLength("sync", this.syncQueue.length);
-			metrics.setBgSyncQueueLength("download", this.downloadQueue.length);
-			this.queueStatusChanged.notifyListeners();
-		}
-	}
-
-	private removeQueuedSyncFromGroup(item: QueueItem): void {
-		const group = this.syncGroups.get(item.sharedFolder);
-		if (!group) return;
-
-		group.total = Math.max(0, group.total - 1);
-		group.syncs = Math.max(0, group.syncs - 1);
-		this.updateGroupTerminalStatus(group);
-		this.syncGroups.set(item.sharedFolder, group);
-	}
-
-	private removeQueuedDownloadFromGroup(item: QueueItem): void {
-		const group = this.syncGroups.get(item.sharedFolder);
-		if (!group) return;
-
-		group.total = Math.max(0, group.total - 1);
-		group.downloads = Math.max(0, group.downloads - 1);
-		if (item.userVisible) {
-			group.userDownloads = Math.max(0, group.userDownloads - 1);
-		}
-		this.updateGroupTerminalStatus(group);
-		this.syncGroups.set(item.sharedFolder, group);
-	}
-
-	private resolveSyncCancellation(guid: string): void {
-		const callback = this.syncCompletionCallbacks.get(guid);
-		if (callback) callback.resolve("cancelled");
-		this.syncCompletionCallbacks.delete(guid);
-		this.syncPromises.delete(guid);
-		this.inProgressSyncs.delete(guid);
-		this.cancelledSyncs.delete(guid);
-	}
-
-	private resolveDownloadCancellation(guid: string): void {
-		const callback = this.downloadCompletionCallbacks.get(guid);
-		if (callback) callback.resolve(undefined);
-		this.downloadCompletionCallbacks.delete(guid);
-		this.downloadPromises.delete(guid);
-		this.inProgressDownloads.delete(guid);
-		this.cancelledDownloads.delete(guid);
-	}
-
-	private isSyncCancelled(item: QueueItem): boolean {
-		return item.doc.destroyed || this.cancelledSyncs.has(item.guid);
-	}
-
-	private isSyncCancelledForDoc(doc: Document | Canvas | SyncFile): boolean {
-		return doc.destroyed || this.cancelledSyncs.has(doc.guid);
-	}
-
-	private isDownloadCancelled(item: QueueItem): boolean {
-		return item.doc.destroyed || this.cancelledDownloads.has(item.guid);
-	}
-
-	/**
-	 * A deletion landing while a download is queued or in flight makes the
-	 * op moot, not failed. The membership delta is the deletion's trigger,
-	 * so committed-meta absence is the earliest signal; the doc's destroyed
-	 * flag and folder registration lag it — the file can vanish from disk
-	 * mid-op, before doc teardown finishes.
-	 */
-	private downloadTargetDeleted(item: QueueItem): boolean {
-		if (item.doc.destroyed) return true;
-		if (!item.sharedFolder.files.has(item.guid)) return true;
-		return !item.sharedFolder.syncStore.getCommittedMeta(item.doc.path);
-	}
-
-	private shouldSkipDocumentSync(item: Document | Canvas | SyncFile): boolean {
-		return isDocument(item) && item.hsm?.getSyncStatus().status === "conflict";
 	}
 
 	/**
 	 * A queued item is drainable only when its folder is connected and the
 	 * user hasn't asked it to pause. Items for disconnected folders stay in
-	 * the queue — enqueues made while offline (pending uploads, remaps) must
+	 * the queue — admissions made while offline (pending uploads, remaps) must
 	 * survive until reconnect, when the folder-state subscription wakes the
-	 * queues — rather than being dropped at enqueue time.
+	 * lanes — rather than being dropped at admission time.
 	 */
 	private isDrainable(item: QueueItem): boolean {
 		return (
 			item.sharedFolder.connected &&
 			item.sharedFolder.intent !== "disconnected"
 		);
+	}
+
+	private shouldSkipDocumentSync(target: WorkTarget): boolean {
+		const file = target as SyncTarget;
+		return isDocument(file) && file.hsm?.getSyncStatus().status === "conflict";
+	}
+
+	// =========================================================================
+	// Pass accounting
+	// =========================================================================
+
+	private emptyGroup(sharedFolder: SharedFolder): SyncGroup {
+		return {
+			sharedFolder,
+			total: 0,
+			completed: 0,
+			status: "pending",
+			downloads: 0,
+			syncs: 0,
+			completedDownloads: 0,
+			completedSyncs: 0,
+			failedDownloads: 0,
+			failedSyncs: 0,
+			skippedDownloads: 0,
+			skippedSyncs: 0,
+			userDownloads: 0,
+			completedUserDownloads: 0,
+			failedUserDownloads: 0,
+			skippedUserDownloads: 0,
+		};
+	}
+
+	/**
+	 * Start a fresh accounting pass for a folder: a sweep's progress counts
+	 * from zero rather than on top of whatever the last pass left behind.
+	 */
+	beginFolderPass(sharedFolder: SharedFolder): void {
+		const group = this.emptyGroup(sharedFolder);
+		group.status = "completed";
+		this.syncGroups.set(sharedFolder, group);
+	}
+
+	private countAdmitted(request: WorkRequest): void {
+		const sharedFolder = request.sharedFolder;
+		const group = this.syncGroups.get(sharedFolder) ?? this.emptyGroup(sharedFolder);
+		group.total++;
+		if (request.scope === "transfer") {
+			group.downloads++;
+			if (request.userVisible) group.userDownloads++;
+		} else {
+			group.syncs++;
+		}
+		group.status = "running";
+		this.syncGroups.set(sharedFolder, group);
+	}
+
+	private removeQueuedFromGroup(item: QueueItem): void {
+		const group = this.syncGroups.get(item.sharedFolder);
+		if (!group) return;
+		group.total = Math.max(0, group.total - 1);
+		if (item.scope === "transfer") {
+			group.downloads = Math.max(0, group.downloads - 1);
+			if (item.userVisible) {
+				group.userDownloads = Math.max(0, group.userDownloads - 1);
+			}
+		} else {
+			group.syncs = Math.max(0, group.syncs - 1);
+		}
+		this.updateGroupTerminalStatus(group);
+		this.syncGroups.set(item.sharedFolder, group);
+	}
+
+	private markTerminal(
+		item: QueueItem,
+		outcome: "completed" | "failed" | "skipped",
+	): void {
+		const group = this.syncGroups.get(item.sharedFolder);
+		if (!group) return;
+		if (item.scope === "transfer") {
+			if (outcome === "completed") {
+				group.completedDownloads++;
+				group.completed++;
+				if (item.userVisible) group.completedUserDownloads++;
+			} else if (outcome === "failed") {
+				group.failedDownloads++;
+				if (item.userVisible) group.failedUserDownloads++;
+			} else {
+				group.skippedDownloads++;
+				if (item.userVisible) group.skippedUserDownloads++;
+			}
+		} else if (outcome === "completed") {
+			group.completedSyncs++;
+			group.completed++;
+		} else if (outcome === "failed") {
+			group.failedSyncs++;
+		} else {
+			group.skippedSyncs++;
+		}
+		this.updateGroupTerminalStatus(group);
+		this.syncGroups.set(item.sharedFolder, group);
+	}
+
+	private groupFinishedSyncs(group: SyncGroup): number {
+		return Math.min(
+			group.syncs,
+			group.completedSyncs + group.failedSyncs + group.skippedSyncs,
+		);
+	}
+
+	private groupFinishedDownloads(group: SyncGroup): number {
+		return Math.min(
+			group.downloads,
+			group.completedDownloads + group.failedDownloads + group.skippedDownloads,
+		);
+	}
+
+	private groupFinishedTotal(group: SyncGroup): number {
+		return Math.min(
+			group.total,
+			this.groupFinishedSyncs(group) + this.groupFinishedDownloads(group),
+		);
+	}
+
+	private groupFailureCount(group: SyncGroup): number {
+		return group.failedSyncs + group.failedDownloads;
+	}
+
+	private updateGroupTerminalStatus(group: SyncGroup): void {
+		if (this.groupFinishedTotal(group) >= group.total) {
+			group.status = this.groupFailureCount(group) > 0 ? "failed" : "completed";
+		} else if (this.groupFailureCount(group) > 0) {
+			group.status = "failed";
+		} else if (group.total > 0) {
+			group.status = "running";
+		} else {
+			group.status = "completed";
+		}
 	}
 
 	getOverallProgress(): SyncProgress {
@@ -522,179 +585,307 @@ export class BackgroundSync extends HasLogging {
 		};
 	}
 
-	private groupFinishedSyncs(group: SyncGroup): number {
-		return Math.min(
-			group.syncs,
-			group.completedSyncs + group.failedSyncs + group.skippedSyncs,
-		);
-	}
-
-	private groupFinishedDownloads(group: SyncGroup): number {
-		return Math.min(
-			group.downloads,
-			group.completedDownloads + group.failedDownloads + group.skippedDownloads,
-		);
-	}
-
-	private groupFinishedTotal(group: SyncGroup): number {
-		return Math.min(
-			group.total,
-			this.groupFinishedSyncs(group) + this.groupFinishedDownloads(group),
-		);
-	}
-
-	private groupFailureCount(group: SyncGroup): number {
-		return group.failedSyncs + group.failedDownloads;
-	}
-
-	private updateGroupTerminalStatus(group: SyncGroup): void {
-		if (this.groupFinishedTotal(group) >= group.total) {
-			group.status = this.groupFailureCount(group) > 0 ? "failed" : "completed";
-		} else if (this.groupFailureCount(group) > 0) {
-			group.status = "failed";
-		} else if (group.total > 0) {
-			group.status = "running";
-		} else {
-			group.status = "completed";
-		}
-	}
-
-	private markSyncTerminal(
-		sharedFolder: SharedFolder,
-		outcome: "completed" | "failed" | "skipped",
-	): void {
-		const group = this.syncGroups.get(sharedFolder);
-		if (!group) return;
-		if (outcome === "completed") {
-			group.completedSyncs++;
-			group.completed++;
-		} else if (outcome === "failed") {
-			group.failedSyncs++;
-		} else {
-			group.skippedSyncs++;
-		}
-		this.updateGroupTerminalStatus(group);
-		this.syncGroups.set(sharedFolder, group);
-	}
-
-	private markDownloadTerminal(
-		item: QueueItem,
-		outcome: "completed" | "failed" | "skipped",
-	): void {
-		const group = this.syncGroups.get(item.sharedFolder);
-		if (!group) return;
-		if (outcome === "completed") {
-			group.completedDownloads++;
-			group.completed++;
-			if (item.userVisible) {
-				group.completedUserDownloads++;
+	getAllGroupsProgress(): GroupProgress[] {
+		const progress: GroupProgress[] = [];
+		this.syncGroups.forEach((group, sharedFolder) => {
+			const groupProgress = this.getGroupProgress(sharedFolder);
+			if (groupProgress) {
+				progress.push(groupProgress);
 			}
-		} else if (outcome === "failed") {
-			group.failedDownloads++;
-			if (item.userVisible) {
-				group.failedUserDownloads++;
-			}
-		} else {
-			group.skippedDownloads++;
-			if (item.userVisible) {
-				group.skippedUserDownloads++;
-			}
-		}
-		this.updateGroupTerminalStatus(group);
-		this.syncGroups.set(item.sharedFolder, group);
+		});
+		return progress;
 	}
 
-	private requeueRetryableSync(
-		item: QueueItem,
-		error: Error,
-	): boolean {
-		const retries = (item.retryAttempts ?? 0) + 1;
-		item.retryAttempts = retries;
-		if (retries > MAX_PROVIDER_SYNC_RETRIES) {
-			item.nextAttemptAt = undefined;
-			item.retryReason = undefined;
-			this.warn(
-				`[sync] retryable sync failed after ${MAX_PROVIDER_SYNC_RETRIES} retries for ${item.path}: ${error.message}`,
+	// =========================================================================
+	// Admission
+	// =========================================================================
+
+	/**
+	 * Admit one unit of work. The lane for the request's scope dedups it
+	 * against queued-or-active work for the same file: an equal-or-weaker
+	 * request shares the claim already held, a stronger request (an upload
+	 * over a queued converge pass) upgrades the queued work in place, and a
+	 * stronger request colliding with ACTIVE work waits for that work to
+	 * settle and is admitted again — an upload never runs concurrently with
+	 * a plain sync for the same file, and an in-place upgrade is only legal
+	 * against work that has not started.
+	 *
+	 * Resolves when the work settles; see `WorkCompletion` for what the
+	 * outcome tells the caller.
+	 */
+	admit(
+		request: WorkRequest,
+		options: { deferFlush?: boolean } = {},
+	): Promise<WorkCompletion> {
+		if (request.scope === "session" && this.shouldSkipDocumentSync(request.target)) {
+			this.clearFailure(this.failureKey(laneFailureKind(request.scope), request.guid));
+			return Promise.resolve({ outcome: "completed" });
+		}
+		const lane = this.lanes[request.scope];
+		const decision = lane.admit(request);
+		switch (decision.kind) {
+			case "shared":
+				this.debug(
+					`[admit] ${request.intent} for ${request.guid} already claimed, sharing`,
+				);
+				return decision.completion;
+			case "upgraded":
+				return decision.completion;
+			case "after-active":
+				return this.admitAfterActive(request, decision.settled);
+			case "admitted":
+				break;
+		}
+		this.clearFailure(this.failureKey(laneFailureKind(request.scope), request.guid));
+		this.countAdmitted(request);
+		if (!options.deferFlush) {
+			this.flush(request.scope, "enqueue");
+		}
+		return decision.completion;
+	}
+
+	/**
+	 * Admit a batch, sorting and draining once at the end. Returns the
+	 * completions in request order.
+	 */
+	admitAll(requests: readonly WorkRequest[]): Promise<WorkCompletion>[] {
+		const completions: Promise<WorkCompletion>[] = [];
+		const touched = new Set<WorkScope>();
+		for (const request of requests) {
+			completions.push(this.admit(request, { deferFlush: true }));
+			touched.add(request.scope);
+		}
+		for (const scope of touched) {
+			this.flush(scope, "batch");
+		}
+		return completions;
+	}
+
+	private async admitAfterActive(
+		request: WorkRequest,
+		settled: Promise<unknown>,
+	): Promise<WorkCompletion> {
+		// The stronger request is the follow-up operation. Let it run even if
+		// the weaker active attempt fails.
+		await settled;
+		await new Promise<void>((resolve) => queueMicrotask(resolve));
+		// Teardown while waiting: no transfer ran, so nothing may publish.
+		if (!this.timeProvider) return { outcome: "cancelled" };
+		return this.admit(request);
+	}
+
+	/**
+	 * Admit work that already failed with a retryable error outside the
+	 * engine: it enters its lane parked in the backoff window rather than at
+	 * the head. Rejects with the original error once retries are spent.
+	 */
+	admitForRetry(request: WorkRequest, error: Error): Promise<WorkCompletion> {
+		if (request.scope === "session" && this.shouldSkipDocumentSync(request.target)) {
+			this.clearFailure(this.failureKey(laneFailureKind(request.scope), request.guid));
+			return Promise.resolve({ outcome: "completed" });
+		}
+		const lane = this.lanes[request.scope];
+		const decision = lane.admitForRetry(
+			request,
+			this.retryReason(error),
+			MAX_PROVIDER_SYNC_RETRIES,
+		);
+		if (!decision) return Promise.reject(error);
+		if (decision.kind === "admitted") {
+			this.countAdmitted(request);
+			this.clearFailure(this.failureKey(laneFailureKind(request.scope), request.guid));
+			this.debug(
+				`[admit] retryable ${request.intent} failure for ${request.path}: ${error.message}; parked for retry`,
 			);
+		}
+		return decision.completion;
+	}
+
+	private flush(scope: WorkScope, reason: LaneSortReason): void {
+		const lane = this.lanes[scope];
+		lane.sortQueue(reason);
+		this.queueStatusChanged.notifyListeners();
+		void this.drain(scope);
+	}
+
+	// -------------------------------------------------------------------------
+	// Request constructors at the engine's boundary. Each is the one request
+	// type with an intent filled in; nothing below them knows which.
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Converge a file with the server through a background session.
+	 *
+	 * @param deferQueueFlush Batch callers set this while adding all items,
+	 * then flush the queue once after the batch is complete.
+	 */
+	async enqueueSync(
+		target: SyncTarget,
+		deferQueueFlush = false,
+		trigger = "sync",
+	): Promise<SyncCompletionOutcome> {
+		const completion = await this.admit(
+			createWorkRequest(target, "converge", trigger),
+			{ deferFlush: deferQueueFlush },
+		);
+		return completion.outcome;
+	}
+
+	async enqueueRetryableSync(
+		target: SyncTarget,
+		error: Error,
+	): Promise<SyncCompletionOutcome> {
+		const completion = await this.admitForRetry(
+			createWorkRequest(target, "converge", "retry"),
+			error,
+		);
+		return completion.outcome;
+	}
+
+	/**
+	 * Enqueue a local-authoritative upload before markUploaded(). For documents,
+	 * this seeds remoteDoc from the enrolled local CRDT before provider sync
+	 * resolves; other file types use their normal sync mechanics.
+	 *
+	 * The resolved outcome tells the caller whether the transfer actually
+	 * completed: cancellation settles the completion (resolve, not reject)
+	 * so the pipeline behind it drains, but it resolves "cancelled" so the
+	 * caller's markUploaded can stand down instead of publishing membership
+	 * for content that only partially transferred.
+	 */
+	async enqueueUpload(
+		target: SyncTarget,
+		trigger = "upload",
+	): Promise<SyncCompletionOutcome> {
+		const completion = await this.admit(
+			createWorkRequest(target, "upload", trigger),
+		);
+		return completion.outcome;
+	}
+
+	/**
+	 * Transfer the server's full state for a file down to the local copy.
+	 * Resolves with the bytes applied, or undefined when the server held no
+	 * content (or the work was cancelled).
+	 */
+	async enqueueDownload(
+		target: SyncTarget,
+		userVisible = true,
+		trigger = "download",
+	): Promise<Uint8Array | undefined> {
+		const completion = await this.admit(
+			createWorkRequest(target, "download", trigger, { userVisible }),
+		);
+		return completion.bytes;
+	}
+
+	// =========================================================================
+	// Selection (folder sweeps and reconnect backfill)
+	// =========================================================================
+
+	/**
+	 * Enqueues all documents and canvases in a shared folder for synchronization
+	 *
+	 * This method starts a fresh progress pass for the folder and admits a
+	 * converge pass for every file the sweep selects.
+	 *
+	 * @param sharedFolder The shared folder to synchronize
+	 */
+	enqueueSharedFolderSync(sharedFolder: SharedFolder): void {
+		const docs = [...sharedFolder.files.values()].filter(isDocument);
+		const canvases = [...sharedFolder.files.values()].filter(isCanvas);
+		const syncFiles = [...sharedFolder.files.values()].filter(isSyncFile);
+		const allItems = [...docs, ...canvases, ...syncFiles].filter((item) =>
+			this.shouldEnqueueForSharedFolderSync(item),
+		);
+
+		this.beginFolderPass(sharedFolder);
+		if (allItems.length === 0) return;
+
+		this.admitAll(
+			allItems.map((item) => createWorkRequest(item, "converge", "sweep")),
+		);
+	}
+
+	enqueueLCABackfill(sharedFolder: SharedFolder): number {
+		if (!sharedFolder.connected) return 0;
+
+		const docs = [...sharedFolder.files.values()]
+			.filter(isDocument)
+			.filter((doc) => this.shouldEnqueueForLCABackfill(doc))
+			.filter((doc) => !this.lanes.session.isClaimed(doc.guid));
+
+		if (docs.length === 0) return 0;
+
+		this.admitAll(
+			docs.map((doc) => createWorkRequest(doc, "backfill", "reconnect")),
+		);
+		return docs.length;
+	}
+
+	private shouldEnqueueForSharedFolderSync(item: SyncTarget): boolean {
+		if (
+			isSyncFile(item) &&
+			item.sharedFolder.shouldDeferPendingPublication(item.path)
+		) {
 			return false;
 		}
-
-		const delayMs = Math.min(30_000, 1000 * 2 ** Math.min(retries - 1, 5));
-		const reason = this.retryReason(error);
-		item.status = "pending";
-		item.nextAttemptAt = this.timeProvider.now() + delayMs;
-		item.retryReason = reason;
-		metrics.recordBgSyncRetry("sync", reason, retries, delayMs / 1000);
-
-		this.clearFailure(this.failureKey("sync", item.guid));
-		if (!this.syncQueue.some((queued) => queued.guid === item.guid)) {
-			this.syncQueue.push(item);
-			this.sortQueueByPath(this.syncQueue, "sync", "retry");
+		if (isCanvas(item)) {
+			// The machine compares its retained server head against its own
+			// basis, warm or cold; a canvas provably current needs no session.
+			return item.hsm.compareRetainedServerHead() !== "current";
 		}
-		this.debug(
-			`[sync] retryable sync failure for ${item.path}: ${error.message}; retrying in ${delayMs}ms`,
-		);
-		metrics.setBgSyncQueueLength("sync", this.syncQueue.length);
-		this.queueStatusChanged.notifyListeners();
-		return true;
+		if (!isDocument(item)) return true;
+
+		const hsm = item.hsm;
+		if (!hsm) return true;
+		if (hsm.getSyncStatus().status === "conflict") return false;
+		if (!hsm.state.lca) return true;
+		if (hsm.getSyncStatus().status !== "synced") return true;
+
+		return hsm.compareRetainedServerHead() !== "current";
 	}
 
-	private requeueRetryableDownload(
-		item: QueueItem,
-		error: Error,
-	): boolean {
-		const retries = (item.retryAttempts ?? 0) + 1;
-		item.retryAttempts = retries;
-		if (retries > MAX_PROVIDER_SYNC_RETRIES) {
-			item.nextAttemptAt = undefined;
-			item.retryReason = undefined;
-			this.warn(
-				`[download] retryable download failed after ${MAX_PROVIDER_SYNC_RETRIES} retries for ${item.path}: ${error.message}`,
-			);
-			return false;
-		}
-
-		const delayMs = Math.min(30_000, 1000 * 2 ** Math.min(retries - 1, 5));
-		const reason = this.retryReason(error);
-		item.status = "pending";
-		item.nextAttemptAt = this.timeProvider.now() + delayMs;
-		item.retryReason = reason;
-		metrics.recordBgSyncRetry("download", reason, retries, delayMs / 1000);
-
-		this.clearFailure(this.failureKey("download", item.guid));
-		if (!this.downloadQueue.some((queued) => queued.guid === item.guid)) {
-			this.downloadQueue.push(item);
-			this.sortQueueByPath(this.downloadQueue, "download", "retry");
-		}
-		this.debug(
-			`[download] retryable download failure for ${item.path}: ${error.message}; retrying in ${delayMs}ms`,
-		);
-		metrics.setBgSyncQueueLength("download", this.downloadQueue.length);
-		this.queueStatusChanged.notifyListeners();
-		return true;
+	private shouldEnqueueForLCABackfill(doc: Document): boolean {
+		const hsm = doc.hsm;
+		if (!hsm) return false;
+		if (doc.sharedFolder.isPendingUpload(doc.path)) return false;
+		if (hsm.isActive()) return false;
+		if (hsm.state.lca) return false;
+		if (hsm.hasFork()) return false;
+		if (hsm.getSyncStatus().status === "pending") return true;
+		return hsm.compareRetainedServerHead() === "ahead";
 	}
 
-	private retryReason(error: Error): "provider" | "s3" {
+	// =========================================================================
+	// Retry, reclaim, deadlines
+	// =========================================================================
+
+	private retryReason(error: Error): RetryReason {
 		return isRetryableProviderSyncError(error) ? "provider" : "s3";
 	}
 
 	/**
-	 * A file transfer that exhausted its queue retries must stay claimable:
-	 * nothing else re-enqueues an unchanged file within a session (the folder
-	 * poll covers documents and canvases; membership deltas only fire when
-	 * metadata changes), so without this pass one outage lasting longer than
-	 * the backoff window strands the file until plugin reload. Re-enqueue
-	 * transient failures once the reclaim interval has elapsed. Permanent
-	 * classes stay parked: retrying cannot heal an auth or permission
-	 * refusal, and re-driving them would ping the server forever.
+	 * A parked failure must stay claimable: nothing else re-admits an
+	 * unchanged file within a session once its lane retries are spent, so
+	 * without this pass one outage lasting longer than the backoff window
+	 * strands the file until plugin reload. Re-admit transient failures once
+	 * the reclaim interval has elapsed. Permanent classes stay parked:
+	 * retrying cannot heal an auth or permission refusal, and re-driving them
+	 * would ping the server forever.
 	 */
-	reclaimStalledSyncFiles(): void {
+	reclaimParkedFailures(): void {
 		const now = this.timeProvider.now();
 		for (const failure of this.failures.values()) {
 			if (failure.kind === "local" || !failure.retryable) continue;
-			if (now - failure.recordedAt < SYNC_FILE_RECLAIM_INTERVAL_MS) continue;
-			const file = failure.sharedFolder.files.get(failure.guid);
-			if (!isSyncFile(file) || file.destroyed) continue;
+			if (!failure.request) continue;
+			if (now - failure.recordedAt < FAILURE_RECLAIM_INTERVAL_MS) continue;
+			const target = failure.sharedFolder.files.get(failure.guid) as
+				| WorkTarget
+				| undefined;
+			if (!target || target !== failure.request.target || target.destroyed) {
+				continue;
+			}
 			if (
 				!failure.sharedFolder.connected ||
 				failure.sharedFolder.intent === "disconnected"
@@ -702,24 +893,24 @@ export class BackgroundSync extends HasLogging {
 				continue;
 			}
 			if (
-				this.inProgressSyncs.has(failure.guid) ||
-				this.inProgressDownloads.has(failure.guid)
+				this.lanes.session.isClaimed(failure.guid) ||
+				this.lanes.transfer.isClaimed(failure.guid)
 			) {
 				continue;
 			}
-			this.debug(
-				`[reclaim] re-enqueueing stalled file transfer for ${failure.path}`,
-			);
-			if (failure.kind === "download") {
-				this.enqueueDownload(file, false).catch(() => {
-					// The failure is re-recorded by the queue; the next reclaim
-					// pass paces itself from the fresh record.
-				});
-			} else {
-				this.enqueueSync(file).catch(() => {
-					// Same: the queue re-records the failure on rejection.
-				});
-			}
+			this.debug(`[reclaim] re-admitting parked ${failure.kind} for ${failure.path}`);
+			// A reclaimed session re-runs as a plain converge pass: the caller
+			// that wanted the stronger intent already saw its failure and owns
+			// any follow-up; transfers re-run as themselves.
+			const request: WorkRequest = {
+				...failure.request,
+				intent: failure.request.scope === "transfer" ? "download" : "converge",
+				trigger: "reclaim",
+			};
+			this.admit(request).catch(() => {
+				// The failure is re-recorded by the lane; the next reclaim
+				// pass paces itself from the fresh record.
+			});
 		}
 	}
 
@@ -733,298 +924,6 @@ export class BackgroundSync extends HasLogging {
 		metrics.observeBgSyncTickDelay(tick, delayMs / 1000);
 	}
 
-	private sortByPath<T extends { path: string }>(
-		items: T[],
-		operation: BackgroundSyncOperation,
-		reason: BackgroundSyncSortReason,
-		reverse = false,
-	): T[] {
-		if (items.length < 2) return items;
-		const sortStart = performance.now();
-		items.sort(reverse ? (a, b) => compareFilePaths(b, a) : compareFilePaths);
-		metrics.observeBgSyncSort(
-			operation,
-			reason,
-			items.length,
-			(performance.now() - sortStart) / 1000,
-		);
-		return items;
-	}
-
-	/**
-	 * Queue items are stored in reverse path order so the next item normally
-	 * sits at the array tail. Draining a ready queue can then use pop() without
-	 * shifting or filtering every remaining item.
-	 */
-	private sortQueueByPath(
-		items: QueueItem[],
-		operation: BackgroundSyncOperation,
-		reason: BackgroundSyncSortReason,
-	): QueueItem[] {
-		return this.sortByPath(items, operation, reason, true);
-	}
-
-	private flushSyncQueue(reason: BackgroundSyncSortReason): void {
-		this.sortQueueByPath(this.syncQueue, "sync", reason);
-		this.queueStatusChanged.notifyListeners();
-		this.processSyncQueue();
-	}
-
-	private removeQueueItemAt(queue: QueueItem[], index: number): QueueItem {
-		if (index === queue.length - 1) {
-			return queue.pop()!;
-		}
-		return queue.splice(index, 1)[0];
-	}
-
-	private discardDestroyedQueueItem(
-		item: QueueItem,
-		operation: BackgroundSyncOperation,
-	): void {
-		if (operation === "sync") {
-			this.markSyncTerminal(item.sharedFolder, "skipped");
-			this.inProgressSyncs.delete(item.guid);
-			const callback = this.syncCompletionCallbacks.get(item.guid);
-			if (callback) callback.reject(new Error("Document destroyed"));
-			this.syncCompletionCallbacks.delete(item.guid);
-			this.syncPromises.delete(item.guid);
-			return;
-		}
-
-		this.markDownloadTerminal(item, "skipped");
-		this.inProgressDownloads.delete(item.guid);
-		const callback = this.downloadCompletionCallbacks.get(item.guid);
-		if (callback) callback.reject(new Error("Document destroyed"));
-		this.downloadCompletionCallbacks.delete(item.guid);
-		this.downloadPromises.delete(item.guid);
-	}
-
-	private takeNextQueueItem(
-		queue: QueueItem[],
-		operation: BackgroundSyncOperation,
-		now: number,
-	): QueueItem | undefined {
-		for (let index = queue.length - 1; index >= 0; index--) {
-			const item = queue[index];
-			if (item.doc.destroyed) {
-				this.removeQueueItemAt(queue, index);
-				this.discardDestroyedQueueItem(item, operation);
-				continue;
-			}
-			if (
-				this.isDrainable(item) &&
-				(item.nextAttemptAt === undefined || item.nextAttemptAt <= now)
-			) {
-				return this.removeQueueItemAt(queue, index);
-			}
-		}
-		return undefined;
-	}
-
-	private recordDrain(
-		operation: BackgroundSyncOperation,
-		startedAt: number,
-		itemsStarted: number,
-	): void {
-		metrics.observeBgSyncDrain(
-			operation,
-			(performance.now() - startedAt) / 1000,
-			itemsStarted,
-			BACKGROUND_SYNC_DRAIN_BUDGET_MS,
-		);
-	}
-
-	private observeItemStart(
-		operation: BackgroundSyncOperation,
-		item: QueueItem,
-		now: number,
-	): void {
-		const intent = operation === "download"
-			? "download"
-			: item.syncIntent ?? "sync";
-		metrics.observeBgSyncItemAge(
-			operation,
-			intent,
-			Math.max(0, now - item.enqueuedAt) / 1000,
-		);
-		if (item.nextAttemptAt !== undefined && item.retryReason) {
-			metrics.observeBgSyncRetryLateness(
-				operation,
-				item.retryReason,
-				Math.max(0, now - item.nextAttemptAt) / 1000,
-			);
-		}
-	}
-
-	getFolderPillProgress(sharedFolder: SharedFolder): GroupProgress | null {
-		const group = this.syncGroups.get(sharedFolder);
-		if (!group) return null;
-
-		const snapshot = this.getFolderSyncSnapshot(sharedFolder);
-		return {
-			percent: snapshot.percent,
-			syncPercent: snapshot.syncPercent,
-			downloadPercent: snapshot.downloadPercent,
-			sharedFolder,
-			status: snapshot.progressStatus,
-		};
-	}
-
-	getFolderSyncSnapshot(sharedFolder: SharedFolder): FolderSyncSnapshot {
-		const activeDownloads = this.activeDownloads.filter(
-			(item) => item.sharedFolder === sharedFolder,
-		);
-		const activeSync = this.activeSync.filter(
-			(item) => item.sharedFolder === sharedFolder,
-		);
-		const queuedDownloads = this.downloadQueue.filter(
-			(item) => item.sharedFolder === sharedFolder,
-		);
-		const queuedSyncs = this.syncQueue.filter(
-			(item) => item.sharedFolder === sharedFolder,
-		);
-		const folderResyncActive = this.folderResyncs.has(sharedFolder) ? 1 : 0;
-		const activeItem = this.activeItemForSnapshot(activeDownloads, activeSync);
-		const queuedReason = this.queuedReasonForSnapshot(
-			sharedFolder,
-			activeDownloads.length + activeSync.length,
-			queuedDownloads.length + queuedSyncs.length,
-		);
-
-		return buildFolderSyncSnapshot({
-			group: this.syncGroups.get(sharedFolder) ?? null,
-			queued: queuedDownloads.length + queuedSyncs.length,
-			active: activeDownloads.length + activeSync.length + folderResyncActive,
-			isPaused: this.isPaused,
-			failureCount: this.getFailures(sharedFolder).length,
-			canResync: sharedFolder.connected && !sharedFolder.localOnly,
-			folderActivity: folderResyncActive ? "checking" : null,
-			activeItem,
-			queuedReason,
-		});
-	}
-
-	private activeItemForSnapshot(
-		activeDownloads: QueueItem[],
-		activeSync: QueueItem[],
-	): FolderSyncWorkItemInput | null {
-		const download = activeDownloads[0];
-		if (download) return { kind: "download", path: download.path };
-		const sync = activeSync[0];
-		if (sync) return { kind: "sync", path: sync.path };
-		return null;
-	}
-
-	private queuedReasonForSnapshot(
-		sharedFolder: SharedFolder,
-		active: number,
-		queued: number,
-	): "connection" | "reconnecting" | null {
-		if (active > 0 || queued === 0) return null;
-		if (!sharedFolder.connected) {
-			return sharedFolder.state.status === "connecting"
-				? "reconnecting"
-				: "connection";
-		}
-		return null;
-	}
-
-	getFailures(sharedFolder: SharedFolder): BackgroundSyncFailure[] {
-		this.clearVanishedFailures(sharedFolder);
-		return this.failures
-			.values()
-			.filter((failure) => failure.sharedFolder === sharedFolder)
-			.sort((a, b) => a.path.localeCompare(b.path));
-	}
-
-	/**
-	 * A failure survives only while its document is still registered. An
-	 * external atomic write's temp file can register, fail a queued op with
-	 * ENOENT, then unregister when the rename removes it — stranding a failure
-	 * row for a path that resolves to no doc. Such a row is stale the moment its
-	 * target is gone: drop it rather than let it hold the folder's "Sync issue"
-	 * badge until a manual clear.
-	 */
-	private clearVanishedFailures(sharedFolder: SharedFolder): void {
-		for (const failure of this.failures.values()) {
-			if (failure.sharedFolder !== sharedFolder) continue;
-			if (this.failureTargetVanished(failure)) {
-				this.clearFailure(failure.id);
-			}
-		}
-	}
-
-	private failureTargetVanished(failure: BackgroundSyncFailure): boolean {
-		const { sharedFolder, guid, path } = failure;
-		return (
-			!sharedFolder.files.has(guid) &&
-			!sharedFolder.syncStore.getCommittedMeta(path)
-		);
-	}
-
-	clearFailure(id: string): void {
-		this.failures.delete(id);
-	}
-
-	clearFailuresForFolder(sharedFolder: SharedFolder): void {
-		for (const failure of this.failures.values()) {
-			if (failure.sharedFolder === sharedFolder) {
-				this.clearFailure(failure.id);
-			}
-		}
-	}
-
-	beginFolderResync(sharedFolder: SharedFolder): Unsubscriber {
-		this.clearFailuresForFolder(sharedFolder);
-		this.folderResyncs.add(sharedFolder);
-		return () => {
-			this.folderResyncs.delete(sharedFolder);
-		};
-	}
-
-	getAllGroupsProgress(): GroupProgress[] {
-		const progress: GroupProgress[] = [];
-		this.syncGroups.forEach((group, sharedFolder) => {
-			const groupProgress = this.getGroupProgress(sharedFolder);
-			if (groupProgress) {
-				progress.push(groupProgress);
-			}
-		});
-		return progress;
-	}
-
-	private updateFolderQueueWakeups(): void {
-		const currentFolders = new Set(this.sharedFolders.items());
-
-		for (const [folder, unsubscribe] of this.folderQueueWakeups) {
-			if (!currentFolders.has(folder)) {
-				unsubscribe();
-				this.folderQueueWakeups.delete(folder);
-			}
-		}
-
-		for (const folder of currentFolders) {
-			if (this.folderQueueWakeups.has(folder)) continue;
-
-			const subscriptionKey = {
-				type: "background-sync-queue-wakeup",
-				folder,
-			};
-			const unsubscribe = folder.subscribe(subscriptionKey, () => {
-				this.wakeQueues();
-			});
-			this.folderQueueWakeups.set(folder, unsubscribe);
-		}
-
-		this.wakeQueues();
-	}
-
-	private wakeQueues(): void {
-		if (!this.timeProvider) return;
-		this.processSyncQueue();
-		this.processDownloadQueue();
-	}
-
 	// Warm-lease releases held by in-flight provider-bound operations, keyed
 	// by the operation's own token. A deadlined operation is abandoned with
 	// its finally blocks suspended behind the hung await, so its lease release
@@ -1033,7 +932,7 @@ export class BackgroundSync extends HasLogging {
 	// eventually settles double-releases as a no-op.
 	private heldLeaseReleases = new Map<ProviderOperationToken, Set<() => void>>();
 
-	private registerHeldLease(
+	registerHeldLease(
 		token: ProviderOperationToken,
 		release: () => void,
 	): () => void {
@@ -1079,16 +978,16 @@ export class BackgroundSync extends HasLogging {
 	// and registers any warm-lease releases against it. The op races a
 	// deadline timer on the injected TimeProvider (deterministic under test);
 	// on expiry the returned promise rejects with a retryable
-	// ProviderTimeoutError, which the queue's existing catch classifies as a
-	// provider failure, frees the slot, and reschedules. A settled op clears
-	// the timer; a genuinely hung underlying promise is left to be
+	// ProviderTimeoutError, which the lane's catch classifies as a provider
+	// failure, frees the slot, and reschedules. A settled op clears the
+	// timer; a genuinely hung underlying promise is left to be
 	// garbage-collected once its references drop, and any warm leases its
 	// operation registered are released through the token so the abandoned
 	// work cannot pin its document against hibernation for the rest of the
 	// session.
 	private withProviderDeadline<T>(
 		work: (token: ProviderOperationToken) => Promise<T>,
-		operation: BackgroundSyncOperation,
+		operation: LaneOperation,
 		awaited: string,
 		guid: string,
 	): Promise<T> {
@@ -1128,922 +1027,237 @@ export class BackgroundSync extends HasLogging {
 		});
 	}
 
-	private async processSyncQueue() {
-		if (this.isPaused || this.isProcessingSync) return;
+	// =========================================================================
+	// Draining and execution
+	// =========================================================================
+
+	private drainAll(): void {
+		void this.drain("session");
+		void this.drain("transfer");
+	}
+
+	private wakeQueues(): void {
+		if (!this.timeProvider) return;
+		this.drainAll();
+	}
+
+	private updateFolderQueueWakeups(): void {
+		const currentFolders = new Set(this.sharedFolders.items());
+
+		for (const [folder, unsubscribe] of this.folderQueueWakeups) {
+			if (!currentFolders.has(folder)) {
+				unsubscribe();
+				this.folderQueueWakeups.delete(folder);
+			}
+		}
+
+		for (const folder of currentFolders) {
+			if (this.folderQueueWakeups.has(folder)) continue;
+
+			const subscriptionKey = {
+				type: "background-sync-queue-wakeup",
+				folder,
+			};
+			const unsubscribe = folder.subscribe(subscriptionKey, () => {
+				this.wakeQueues();
+			});
+			this.folderQueueWakeups.set(folder, unsubscribe);
+		}
+
+		this.wakeQueues();
+	}
+
+	private recordDrain(
+		operation: LaneOperation,
+		startedAt: number,
+		itemsStarted: number,
+	): void {
+		metrics.observeBgSyncDrain(
+			operation,
+			(performance.now() - startedAt) / 1000,
+			itemsStarted,
+			BACKGROUND_SYNC_DRAIN_BUDGET_MS,
+		);
+	}
+
+	private observeItemStart(item: QueueItem, now: number): void {
+		const operation = laneOperationFor(item);
+		const intent = item.scope === "transfer" ? "download" : legacyIntent(item);
+		metrics.observeBgSyncItemAge(
+			operation,
+			intent,
+			Math.max(0, now - item.enqueuedAt) / 1000,
+		);
+		if (item.nextAttemptAt !== undefined && item.retryReason) {
+			metrics.observeBgSyncRetryLateness(
+				operation,
+				item.retryReason,
+				Math.max(0, now - item.nextAttemptAt) / 1000,
+			);
+		}
+	}
+
+	/**
+	 * Start as many ready items in a lane as the concurrency allows. Each
+	 * started item runs its operation under the provider deadline and settles
+	 * through the lane: completion resolves the shared claim, a retryable
+	 * failure parks the item for another attempt, and anything else fails the
+	 * claim and records a failure row. Cancellation raised while the work
+	 * runs settles it as cancelled (skipped in the pass accounting).
+	 */
+	private async drain(scope: WorkScope): Promise<void> {
+		if (this.isPaused || this.draining[scope]) return;
+		const lane = this.lanes[scope];
 		const drainStart = performance.now();
 		let itemsStarted = 0;
-		this.isProcessingSync = true;
+		this.draining[scope] = true;
 		try {
-			metrics.setBgSyncQueueLength("sync", this.syncQueue.length);
+			metrics.setBgSyncQueueLength(lane.operation, lane.queuedCount);
 
 			const now = this.timeProvider.now();
-			while (this.activeSync.size < this.concurrency) {
-				const item = this.takeNextQueueItem(this.syncQueue, "sync", now);
+			while (lane.active.size < this.concurrency) {
+				const item = lane.takeNext(now);
 				if (!item) break;
 
-				this.observeItemStart("sync", item, this.timeProvider.now());
-				item.nextAttemptAt = undefined;
-				item.retryReason = undefined;
+				this.observeItemStart(item, this.timeProvider.now());
 				itemsStarted++;
-				item.status = "running";
 				const opStart = performance.now();
-				this.activeSync.add(item);
-				metrics.setBgSyncActive("sync", this.activeSync.size);
-				metrics.setBgSyncQueueLength("sync", this.syncQueue.length);
+				lane.start(item);
+				metrics.setBgSyncActive(lane.operation, lane.active.size);
+				metrics.setBgSyncQueueLength(lane.operation, lane.queuedCount);
 
+				let work: Promise<WorkCompletion>;
 				try {
-					const doc = item.doc;
-					let syncWork: (token: ProviderOperationToken) => Promise<any>;
-					let awaited: string;
-
-					if (doc instanceof SyncFile) {
-						syncWork = () => this.syncFile(doc);
-						awaited = "file sync";
-					} else if (item.syncIntent === "upload") {
-						syncWork = (token) => this.syncDocumentUpload(doc, token);
-						awaited = "upload ack";
-					} else if (item.syncIntent === "lca-backfill" && isDocument(doc)) {
-						syncWork = (token) => this.syncDocumentLCABackfill(doc, token);
-						awaited = "lca-backfill sync";
-					} else {
-						syncWork = (token) => this.syncDocument(doc, token);
-						awaited = "provider sync";
-					}
-					const syncPromise: Promise<any> = this.withProviderDeadline(
-						syncWork,
-						"sync",
-						awaited,
-						item.guid,
-					);
-
-					syncPromise
-						.then(() => {
-							item.status = "completed";
-							metrics.incBgSyncOps("sync", "completed");
-							const callback = this.syncCompletionCallbacks.get(item.guid);
-							if (callback) {
-								// A cancellation raised while the work was active
-								// usually settles here, not in the catch: the
-								// pipeline consults the cancellation flag at its
-								// stage boundaries and returns cleanly. The clean
-								// resolution must still carry the cancelled
-								// outcome — the transfer did not complete.
-								callback.resolve(
-									this.isSyncCancelled(item) ? "cancelled" : "completed",
-								);
-								this.syncCompletionCallbacks.delete(item.guid);
-								this.syncPromises.delete(item.guid);
-							}
-
-							this.markSyncTerminal(item.sharedFolder, "completed");
-						})
-						.catch((error) => {
-							if (this.isSyncCancelled(item)) {
-								item.status = "completed";
-								this.markSyncTerminal(item.sharedFolder, "skipped");
-								this.resolveSyncCancellation(item.guid);
-								return;
-							}
-
-							if (
-								isRetryableSyncError(error) &&
-								this.requeueRetryableSync(item, error)
-							) {
-								return;
-							}
-
-							item.status = "failed";
-							metrics.incBgSyncOps("sync", "failed");
-
-							const callback = this.syncCompletionCallbacks.get(item.guid);
-							if (callback) {
-								callback.reject(errorFromUnknown(error));
-								this.syncCompletionCallbacks.delete(item.guid);
-								this.syncPromises.delete(item.guid);
-							}
-
-							this.logError("[Sync Failed]", error);
-							this.recordFailure("sync", item, error);
-							this.markSyncTerminal(item.sharedFolder, "failed");
-						})
-						.finally(() => {
-							metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
-							this.activeSync.delete(item);
-							metrics.setBgSyncActive("sync", this.activeSync.size);
-							if (item.status !== "pending") {
-								this.inProgressSyncs.delete(item.guid);
-								this.cancelledSyncs.delete(item.guid);
-							}
-
-							// Continue queue draining without relying on throttled timers.
-							queueMicrotask(() => {
-								if (!this.timeProvider) return;
-								this.processSyncQueue();
-							});
-						});
+					work = this.execute(item);
 				} catch (error) {
-					if (this.isSyncCancelled(item)) {
-						item.status = "completed";
-						metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
-						this.markSyncTerminal(item.sharedFolder, "skipped");
-						this.resolveSyncCancellation(item.guid);
-						this.activeSync.delete(item);
-						metrics.setBgSyncActive("sync", this.activeSync.size);
-						this.inProgressSyncs.delete(item.guid);
-						this.cancelledSyncs.delete(item.guid);
-						continue;
-					}
-
-					if (
-						isRetryableSyncError(error) &&
-						this.requeueRetryableSync(item, error)
-					) {
-						metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
-						this.activeSync.delete(item);
-						metrics.setBgSyncActive("sync", this.activeSync.size);
-						continue;
-					}
-
-					item.status = "failed";
-					metrics.incBgSyncOps("sync", "failed");
-					metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
-
-					const callback = this.syncCompletionCallbacks.get(item.guid);
-					if (callback) {
-						callback.reject(errorFromUnknown(error));
-						this.syncCompletionCallbacks.delete(item.guid);
-						this.syncPromises.delete(item.guid);
-					}
-
-					this.logError("[Sync Startup Failed]", error);
-					this.recordFailure("sync", item, error);
-					this.markSyncTerminal(item.sharedFolder, "failed");
-
-					this.activeSync.delete(item);
-					metrics.setBgSyncActive("sync", this.activeSync.size);
-					this.inProgressSyncs.delete(item.guid);
+					work = Promise.reject(error);
 				}
-			}
 
-		} finally {
-			this.isProcessingSync = false;
-			metrics.setBgSyncQueueLength("sync", this.syncQueue.length);
-			this.recordDrain("sync", drainStart, itemsStarted);
-		}
-	}
+				work
+					.then((completion) => {
+						metrics.incBgSyncOps(lane.operation, "completed");
+						this.markTerminal(item, "completed");
+						lane.settle(item, completion);
+					})
+					.catch((error) => {
+						if (lane.isCancelled(item) || this.targetDeleted(item)) {
+							// A cancellation raised while the work was active
+							// usually settles cleanly; one that surfaces as an
+							// error is still a cancellation, not a failure.
+							this.markTerminal(item, "skipped");
+							lane.settle(item, { outcome: "cancelled" });
+							return;
+						}
 
-	private async processDownloadQueue() {
-		if (this.isPaused || this.isProcessingDownloads) return;
-		const drainStart = performance.now();
-		let itemsStarted = 0;
-		this.isProcessingDownloads = true;
-		try {
-			metrics.setBgSyncQueueLength("download", this.downloadQueue.length);
+						if (
+							isRetryableSyncError(error) &&
+							lane.scheduleRetry(item, this.retryReason(error), MAX_PROVIDER_SYNC_RETRIES)
+						) {
+							this.clearFailure(this.failureKey(laneFailureKind(scope), item.guid));
+							this.debug(
+								`[${lane.operation}] retryable failure for ${item.path}: ${error.message}; retrying at ${item.nextAttemptAt}`,
+							);
+							return;
+						}
+						if (isRetryableSyncError(error)) {
+							this.warn(
+								`[${lane.operation}] retryable failure exhausted ${MAX_PROVIDER_SYNC_RETRIES} retries for ${item.path}: ${error.message}`,
+							);
+						}
 
-			const now = this.timeProvider.now();
-			while (this.activeDownloads.size < this.concurrency) {
-				const item = this.takeNextQueueItem(this.downloadQueue, "download", now);
-				if (!item) break;
-
-				this.observeItemStart("download", item, this.timeProvider.now());
-				item.nextAttemptAt = undefined;
-				item.retryReason = undefined;
-				itemsStarted++;
-				item.status = "running";
-				const opStart = performance.now();
-				this.activeDownloads.add(item);
-				metrics.setBgSyncActive("download", this.activeDownloads.size);
-				metrics.setBgSyncQueueLength("download", this.downloadQueue.length);
-
-				try {
-					const doc = item.doc;
-					let downloadWork: (token: ProviderOperationToken) => Promise<any>;
-
-					// Choose the appropriate download method based on the document type
-					if (doc instanceof Canvas) {
-						downloadWork = () => this.getCanvas(doc);
-					} else if (doc instanceof SyncFile) {
-						downloadWork = () => this.getSyncFile(doc);
-					} else {
-						downloadWork = (token) => this.getDocument(doc, token);
-					}
-					const downloadPromise: Promise<any> = this.withProviderDeadline(
-						downloadWork,
-						"download",
-						"download delivery",
-						item.guid,
-					);
-
-					downloadPromise
-						.then((result) => {
-							item.status = "completed";
-							metrics.incBgSyncOps("download", "completed");
-
-							const callback = this.downloadCompletionCallbacks.get(item.guid);
-							if (callback) {
-								callback.resolve(result as Uint8Array | undefined);
-								this.downloadCompletionCallbacks.delete(item.guid);
-								this.downloadPromises.delete(item.guid);
-							}
-
-							this.markDownloadTerminal(item, "completed");
-						})
-						.catch((error) => {
-							if (this.isDownloadCancelled(item) || this.downloadTargetDeleted(item)) {
-								item.status = "completed";
-								this.markDownloadTerminal(item, "skipped");
-								this.resolveDownloadCancellation(item.guid);
-								return;
-							}
-
-							if (
-								isRetryableSyncError(error) &&
-								this.requeueRetryableDownload(item, error)
-							) {
-								return;
-							}
-
-							item.status = "failed";
-							metrics.incBgSyncOps("download", "failed");
-
-							const callback = this.downloadCompletionCallbacks.get(item.guid);
-							if (callback) {
-								callback.reject(errorFromUnknown(error));
-								this.downloadCompletionCallbacks.delete(item.guid);
-								this.downloadPromises.delete(item.guid);
-							}
-
-							this.recordFailure("download", item, error);
-							this.logError("[processDownloadQueue]", error);
-							this.markDownloadTerminal(item, "failed");
-						})
-						.finally(() => {
-							metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
-							this.activeDownloads.delete(item);
-							metrics.setBgSyncActive("download", this.activeDownloads.size);
-							// A requeued retry keeps its in-progress entry so callers
-							// sharing the completion promise stay attached to it.
-							if (item.status !== "pending") {
-								this.inProgressDownloads.delete(item.guid);
-								this.cancelledDownloads.delete(item.guid);
-							}
-
-							// Continue queue draining without relying on throttled timers.
-							queueMicrotask(() => {
-								if (!this.timeProvider) return;
-								this.processDownloadQueue();
-							});
+						metrics.incBgSyncOps(lane.operation, "failed");
+						this.logError(
+							scope === "transfer" ? "[Download Failed]" : "[Sync Failed]",
+							error,
+						);
+						this.recordFailure(item, error);
+						this.markTerminal(item, "failed");
+						lane.fail(item, errorFromUnknown(error));
+					})
+					.finally(() => {
+						metrics.observeBgSyncOp(
+							lane.operation,
+							(performance.now() - opStart) / 1000,
+						);
+						metrics.setBgSyncActive(lane.operation, lane.active.size);
+						// Continue draining without relying on throttled timers.
+						queueMicrotask(() => {
+							if (!this.timeProvider) return;
+							void this.drain(scope);
 						});
-				} catch (error) {
-					if (this.isDownloadCancelled(item) || this.downloadTargetDeleted(item)) {
-						item.status = "completed";
-						metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
-						this.markDownloadTerminal(item, "skipped");
-						this.resolveDownloadCancellation(item.guid);
-						this.activeDownloads.delete(item);
-						metrics.setBgSyncActive("download", this.activeDownloads.size);
-						this.inProgressDownloads.delete(item.guid);
-						this.cancelledDownloads.delete(item.guid);
-						continue;
-					}
-
-					if (
-						isRetryableSyncError(error) &&
-						this.requeueRetryableDownload(item, error)
-					) {
-						metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
-						this.activeDownloads.delete(item);
-						metrics.setBgSyncActive("download", this.activeDownloads.size);
-						continue;
-					}
-
-					item.status = "failed";
-					metrics.incBgSyncOps("download", "failed");
-					metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
-
-					const callback = this.downloadCompletionCallbacks.get(item.guid);
-					if (callback) {
-						callback.reject(errorFromUnknown(error));
-						this.downloadCompletionCallbacks.delete(item.guid);
-						this.downloadPromises.delete(item.guid);
-					}
-
-					this.logError("[Download Startup Failed]", error);
-					this.recordFailure("download", item, error);
-					this.markDownloadTerminal(item, "failed");
-
-					this.activeDownloads.delete(item);
-					metrics.setBgSyncActive("download", this.activeDownloads.size);
-					this.inProgressDownloads.delete(item.guid);
-				}
+					});
 			}
-
 		} finally {
-			this.isProcessingDownloads = false;
-			metrics.setBgSyncQueueLength("download", this.downloadQueue.length);
-			this.recordDrain("download", drainStart, itemsStarted);
+			this.draining[scope] = false;
+			metrics.setBgSyncQueueLength(lane.operation, lane.queuedCount);
+			this.recordDrain(lane.operation, drainStart, itemsStarted);
 		}
 	}
 
 	/**
-	 * Enqueues a document for synchronization
-	 *
-	 * This method adds a document to the sync queue and creates/updates
-	 * the associated sync group to track progress.
-	 *
-	 * @param item The document to synchronize
-	 * @param deferQueueFlush Batch callers set this while adding all items, then
-	 * flush the queue once after the batch is complete.
-	 * @returns A promise that resolves when the sync completes
+	 * A deletion landing while work is queued or in flight makes the op
+	 * moot, not failed. The membership delta is the deletion's trigger, so
+	 * committed-meta absence is the earliest signal; the target's destroyed
+	 * flag and folder registration lag it — the file can vanish from disk
+	 * mid-op, before teardown finishes.
 	 */
-	async enqueueSync(
-		item: SyncFile | Document | Canvas,
-		deferQueueFlush = false,
-	): Promise<SyncCompletionOutcome> {
-		if (this.shouldSkipDocumentSync(item)) {
-			this.clearFailure(this.failureKey("sync", item.guid));
-			return Promise.resolve("completed");
-		}
-
-		// Skip if already in progress — return the same promise all callers share
-		if (this.inProgressSyncs.has(item.guid)) {
-			this.debug(
-				`[enqueueSync] Item ${item.guid} already in progress, sharing promise`,
-			);
-			return this.syncPromises.get(item.guid) ?? Promise.resolve("completed");
-		}
-
-		const sharedFolder = item.sharedFolder;
-		const queueItem: QueueItem = {
-			guid: item.guid,
-			path: sharedFolder.getPath(item.path),
-			doc: item,
-			status: "pending",
-			sharedFolder,
-			userVisible: false,
-			enqueuedAt: this.timeProvider.now(),
-		};
-		this.clearFailure(this.failureKey("sync", item.guid));
-
-		// Get or create the sync group
-		let group = this.syncGroups.get(sharedFolder);
-		if (!group) {
-			group = {
-				sharedFolder,
-				total: 0,
-				completed: 0,
-				status: "pending",
-				downloads: 0,
-				syncs: 0,
-				completedDownloads: 0,
-				completedSyncs: 0,
-				failedDownloads: 0,
-				failedSyncs: 0,
-				skippedDownloads: 0,
-				skippedSyncs: 0,
-				userDownloads: 0,
-				completedUserDownloads: 0,
-				failedUserDownloads: 0,
-				skippedUserDownloads: 0,
-			};
-		}
-		group.total++;
-		group.syncs++;
-		group.status = "running";
-		this.syncGroups.set(sharedFolder, group);
-
-		this.inProgressSyncs.add(item.guid);
-
-		const syncPromise = new Promise<SyncCompletionOutcome>(
-			(resolve, reject) => {
-				this.syncCompletionCallbacks.set(item.guid, {
-					resolve,
-					reject,
-				});
-			},
-		);
-		this.syncPromises.set(item.guid, syncPromise);
-
-		this.syncQueue.push(queueItem);
-		if (!deferQueueFlush) {
-			this.flushSyncQueue("enqueue");
-		}
-
-		return syncPromise;
+	private targetDeleted(item: QueueItem): boolean {
+		if (item.scope !== "transfer") return false;
+		if (item.target.destroyed) return true;
+		if (!item.sharedFolder.files.has(item.guid)) return true;
+		return !item.sharedFolder.syncStore.getCommittedMeta(item.target.path);
 	}
 
-	async enqueueRetryableSync(
-		item: SyncFile | Document | Canvas,
-		error: Error,
-	): Promise<SyncCompletionOutcome> {
-		if (this.shouldSkipDocumentSync(item)) {
-			this.clearFailure(this.failureKey("sync", item.guid));
-			return Promise.resolve("completed");
-		}
-
-		if (this.inProgressSyncs.has(item.guid)) {
-			return this.syncPromises.get(item.guid) ?? Promise.resolve("completed");
-		}
-
-		const sharedFolder = item.sharedFolder;
-		const queueItem: QueueItem = {
-			guid: item.guid,
-			path: sharedFolder.getPath(item.path),
-			doc: item,
-			status: "pending",
-			sharedFolder,
-			userVisible: false,
-			enqueuedAt: this.timeProvider.now(),
-		};
-
-		let group = this.syncGroups.get(sharedFolder);
-		if (!group) {
-			group = {
-				sharedFolder,
-				total: 0,
-				completed: 0,
-				status: "pending",
-				downloads: 0,
-				syncs: 0,
-				completedDownloads: 0,
-				completedSyncs: 0,
-				failedDownloads: 0,
-				failedSyncs: 0,
-				skippedDownloads: 0,
-				skippedSyncs: 0,
-				userDownloads: 0,
-				completedUserDownloads: 0,
-				failedUserDownloads: 0,
-				skippedUserDownloads: 0,
-			};
-		}
-		group.total++;
-		group.syncs++;
-		group.status = "running";
-		this.syncGroups.set(sharedFolder, group);
-
-		this.inProgressSyncs.add(item.guid);
-		const syncPromise = new Promise<SyncCompletionOutcome>(
-			(resolve, reject) => {
-				this.syncCompletionCallbacks.set(item.guid, {
-					resolve,
-					reject,
-				});
-			},
-		);
-		this.syncPromises.set(item.guid, syncPromise);
-
-		if (!this.requeueRetryableSync(queueItem, error)) {
-			this.inProgressSyncs.delete(item.guid);
-			this.syncCompletionCallbacks.delete(item.guid);
-			this.syncPromises.delete(item.guid);
-			return Promise.reject(error);
-		}
-
-		return syncPromise;
-	}
-
-	/**
-	 * Enqueue a local-authoritative upload before markUploaded(). For documents,
-	 * this seeds remoteDoc from the enrolled local CRDT before provider sync
-	 * resolves; other file types use their normal sync mechanics.
-	 *
-	 * The resolved outcome tells the caller whether the transfer actually
-	 * completed: cancellation settles the completion (resolve, not reject)
-	 * so the pipeline behind it drains, but it resolves "cancelled" so the
-	 * caller's markUploaded can stand down instead of publishing membership
-	 * for content that only partially transferred.
-	 */
-	async enqueueUpload(
-		item: SyncFile | Document | Canvas,
-	): Promise<SyncCompletionOutcome> {
-		if (this.shouldSkipDocumentSync(item)) {
-			this.clearFailure(this.failureKey("sync", item.guid));
-			return Promise.resolve("completed");
-		}
-
-		if (this.inProgressSyncs.has(item.guid)) {
-			const queued = this.syncQueue.find((queued) => queued.guid === item.guid);
-			if (queued) {
-				queued.syncIntent = "upload";
-				return this.syncPromises.get(item.guid) ?? Promise.resolve("completed");
+	/** Run one item's operation under the provider deadline. */
+	private execute(item: QueueItem): Promise<WorkCompletion> {
+		const target = item.target as SyncTarget;
+		if (item.scope === "transfer") {
+			let downloadWork: (token: ProviderOperationToken) => Promise<Uint8Array | undefined | void>;
+			if (target instanceof Canvas) {
+				downloadWork = () => this.getCanvas(target);
+			} else if (target instanceof SyncFile) {
+				downloadWork = () => this.getSyncFile(target);
+			} else {
+				downloadWork = (token) => this.getDocument(target, token);
 			}
-
-			const active = this.activeSync.find((active) => active.guid === item.guid);
-			if (active?.syncIntent === "upload") {
-				return this.syncPromises.get(item.guid) ?? Promise.resolve("completed");
-			}
-
-			return this.enqueueUploadAfterCurrentSync(item);
+			return this.withProviderDeadline(
+				downloadWork,
+				"download",
+				"download delivery",
+				item.guid,
+			).then((bytes) => ({
+				outcome: "completed" as const,
+				bytes: bytes ?? undefined,
+			}));
 		}
 
-		const sharedFolder = item.sharedFolder;
-		const queueItem: QueueItem = {
-			guid: item.guid,
-			path: sharedFolder.getPath(item.path),
-			doc: item,
-			status: "pending",
-			sharedFolder,
-			userVisible: false,
-			enqueuedAt: this.timeProvider.now(),
-			syncIntent: "upload",
-		};
-		this.clearFailure(this.failureKey("sync", item.guid));
-
-		let group = this.syncGroups.get(sharedFolder);
-		if (!group) {
-			group = {
-				sharedFolder,
-				total: 0,
-				completed: 0,
-				status: "pending",
-				downloads: 0,
-				syncs: 0,
-				completedDownloads: 0,
-				completedSyncs: 0,
-				failedDownloads: 0,
-				failedSyncs: 0,
-				skippedDownloads: 0,
-				skippedSyncs: 0,
-				userDownloads: 0,
-				completedUserDownloads: 0,
-				failedUserDownloads: 0,
-				skippedUserDownloads: 0,
-			};
+		let syncWork: (token: ProviderOperationToken) => Promise<unknown>;
+		let awaited: string;
+		if (target instanceof SyncFile) {
+			syncWork = () => this.syncFile(target);
+			awaited = "file sync";
+		} else if (item.intent === "upload") {
+			syncWork = (token) => this.syncDocumentUpload(target, token);
+			awaited = "upload ack";
+		} else if (item.intent === "backfill" && isDocument(target)) {
+			syncWork = (token) => this.syncDocumentLCABackfill(target, token);
+			awaited = "lca-backfill sync";
+		} else {
+			syncWork = (token) => this.syncDocument(target, token);
+			awaited = "provider sync";
 		}
-		group.total++;
-		group.syncs++;
-		group.status = "running";
-		this.syncGroups.set(sharedFolder, group);
-
-		this.inProgressSyncs.add(item.guid);
-
-		const syncPromise = new Promise<SyncCompletionOutcome>(
-			(resolve, reject) => {
-				this.syncCompletionCallbacks.set(item.guid, {
-					resolve,
-					reject,
-				});
-			},
+		return this.withProviderDeadline(syncWork, "sync", awaited, item.guid).then(
+			() => ({ outcome: "completed" as const }),
 		);
-		this.syncPromises.set(item.guid, syncPromise);
-
-		this.syncQueue.push(queueItem);
-		this.sortQueueByPath(this.syncQueue, "sync", "enqueue");
-		this.queueStatusChanged.notifyListeners();
-		this.processSyncQueue();
-
-		return syncPromise;
 	}
 
-	private async enqueueUploadAfterCurrentSync(
-		item: SyncFile | Document | Canvas,
-	): Promise<SyncCompletionOutcome> {
-		try {
-			await (this.syncPromises.get(item.guid) ?? Promise.resolve());
-		} catch {
-			// The upload request is the stronger follow-up operation. Let it run
-			// even if the weaker sync attempt failed.
-		}
-		await new Promise<void>((resolve) => queueMicrotask(resolve));
-		// Teardown while waiting: no transfer ran, so nothing may publish.
-		if (!this.timeProvider) return "cancelled";
-		return this.enqueueUpload(item);
+	private isSyncCancelledForDoc(doc: SyncTarget): boolean {
+		return this.lanes.session.isCancelledGuid(doc.guid, doc.destroyed);
 	}
 
-	/**
-	 * Enqueues a document for download
-	 *
-	 * This method adds a document to the download queue and creates/updates
-	 * the associated sync group to track progress.
-	 *
-	 * @param item The document to download
-	 * @returns A promise that resolves when the download completes
-	 */
-	enqueueDownload(
-		item: SyncFile | Document | Canvas,
-		userVisible = true,
-	): Promise<Uint8Array | undefined> {
-		// Skip if already in progress — return the same promise all callers share
-		if (this.inProgressDownloads.has(item.guid)) {
-			this.debug(
-				`[enqueueDownload] Item ${item.guid} already in progress, sharing promise`,
-			);
-			return this.downloadPromises.get(item.guid) ?? Promise.resolve(undefined);
-		}
-
-		const sharedFolder = item.sharedFolder;
-
-		// Get or create the sync group for this folder
-		let group = this.syncGroups.get(sharedFolder);
-		if (!group) {
-			group = {
-				sharedFolder,
-				total: 0,
-				completed: 0,
-				status: "pending",
-				downloads: 0,
-				syncs: 0,
-				completedDownloads: 0,
-				completedSyncs: 0,
-				failedDownloads: 0,
-				failedSyncs: 0,
-				skippedDownloads: 0,
-				skippedSyncs: 0,
-				userDownloads: 0,
-				completedUserDownloads: 0,
-				failedUserDownloads: 0,
-				skippedUserDownloads: 0,
-			};
-		}
-
-		// Update the counters for individual document download
-		group.downloads++;
-		group.total++;
-		if (userVisible) {
-			group.userDownloads++;
-		}
-		group.status = "running";
-		this.syncGroups.set(sharedFolder, group);
-
-		// Create the queue item
-		const queueItem: QueueItem = {
-			guid: item.guid,
-			path: sharedFolder.getPath(item.path),
-			doc: item,
-			status: "pending",
-			sharedFolder,
-			userVisible,
-			enqueuedAt: this.timeProvider.now(),
-		};
-		this.clearFailure(this.failureKey("download", item.guid));
-
-		// Mark as in progress
-		this.inProgressDownloads.add(item.guid);
-
-		// Create a promise that will resolve when the download completes
-		const downloadPromise = new Promise<Uint8Array | undefined>(
-			(resolve, reject) => {
-				this.downloadCompletionCallbacks.set(item.guid, { resolve, reject });
-			},
-		);
-		this.downloadPromises.set(item.guid, downloadPromise);
-
-		// Add to the queue and start processing
-		this.downloadQueue.push(queueItem);
-		this.sortQueueByPath(this.downloadQueue, "download", "enqueue");
-		this.queueStatusChanged.notifyListeners();
-		this.processDownloadQueue();
-
-		return downloadPromise;
-	}
-
-	/**
-	 * Enqueues all documents and canvases in a shared folder for synchronization
-	 *
-	 * This method creates a sync group to track the progress of synchronizing
-	 * all documents and canvases in a shared folder, then enqueues each item for sync.
-	 * It handles counter initialization correctly to avoid double-counting.
-	 *
-	 * @param sharedFolder The shared folder to synchronize
-	 */
-	enqueueSharedFolderSync(sharedFolder: SharedFolder): void {
-		// Get all documents and canvases in the shared folder
-		const docs = [...sharedFolder.files.values()].filter(isDocument);
-		const canvases = [...sharedFolder.files.values()].filter(isCanvas);
-		const syncFiles = [...sharedFolder.files.values()].filter(isSyncFile);
-		const allItems = [...docs, ...canvases, ...syncFiles].filter((item) =>
-			this.shouldEnqueueForSharedFolderSync(item),
-		);
-
-		// Create sync group with properly initialized counters
-		const group: SyncGroup = {
-			sharedFolder,
-			total: allItems.length,
-			completed: 0,
-			status: allItems.length > 0 ? "pending" : "completed",
-			downloads: 0,
-			syncs: allItems.length,
-			completedDownloads: 0,
-			completedSyncs: 0,
-			failedDownloads: 0,
-			failedSyncs: 0,
-			skippedDownloads: 0,
-			skippedSyncs: 0,
-			userDownloads: 0,
-			completedUserDownloads: 0,
-			failedUserDownloads: 0,
-			skippedUserDownloads: 0,
-		};
-
-		// Register the group before enqueueing items
-		this.syncGroups.set(sharedFolder, group);
-		if (allItems.length === 0) return;
-
-		// Sort items by path for consistent sync order
-		const sortedDocs = this.sortByPath(allItems, "sync", "group");
-		const queueLengthBefore = this.syncQueue.length;
-
-		for (const doc of sortedDocs) {
-			this.enqueueForGroupSync(doc);
-		}
-
-		if (this.syncQueue.length > queueLengthBefore) {
-			this.sortQueueByPath(this.syncQueue, "sync", "group");
-			this.queueStatusChanged.notifyListeners();
-			this.processSyncQueue();
-		}
-
-		this.updateGroupTerminalStatus(group);
-		this.syncGroups.set(sharedFolder, group);
-	}
-
-	enqueueLCABackfill(sharedFolder: SharedFolder): number {
-		if (!sharedFolder.connected) return 0;
-
-		const docs = [...sharedFolder.files.values()]
-			.filter(isDocument)
-			.filter((doc) => this.shouldEnqueueForLCABackfill(doc))
-			.filter((doc) => !this.inProgressSyncs.has(doc.guid));
-
-		if (docs.length === 0) return 0;
-
-		const queueLengthBefore = this.syncQueue.length;
-		for (const doc of docs) {
-			void this.enqueueLCABackfillDoc(doc, true);
-		}
-		if (this.syncQueue.length > queueLengthBefore) {
-			this.flushSyncQueue("batch");
-		}
-		return docs.length;
-	}
-
-	private async enqueueLCABackfillDoc(
-		doc: Document,
-		deferQueueFlush = false,
-	): Promise<SyncCompletionOutcome> {
-		if (this.shouldSkipDocumentSync(doc)) {
-			this.clearFailure(this.failureKey("sync", doc.guid));
-			return Promise.resolve("completed");
-		}
-
-		if (this.inProgressSyncs.has(doc.guid)) {
-			this.debug(
-				`[enqueueLCABackfillDoc] Item ${doc.guid} already in progress, sharing promise`,
-			);
-			return this.syncPromises.get(doc.guid) ?? Promise.resolve("completed");
-		}
-
-		const sharedFolder = doc.sharedFolder;
-		const queueItem: QueueItem = {
-			guid: doc.guid,
-			path: sharedFolder.getPath(doc.path),
-			doc,
-			status: "pending",
-			sharedFolder,
-			userVisible: false,
-			enqueuedAt: this.timeProvider.now(),
-			syncIntent: "lca-backfill",
-		};
-		this.clearFailure(this.failureKey("sync", doc.guid));
-
-		let group = this.syncGroups.get(sharedFolder);
-		if (!group) {
-			group = {
-				sharedFolder,
-				total: 0,
-				completed: 0,
-				status: "pending",
-				downloads: 0,
-				syncs: 0,
-				completedDownloads: 0,
-				completedSyncs: 0,
-				failedDownloads: 0,
-				failedSyncs: 0,
-				skippedDownloads: 0,
-				skippedSyncs: 0,
-				userDownloads: 0,
-				completedUserDownloads: 0,
-				failedUserDownloads: 0,
-				skippedUserDownloads: 0,
-			};
-		}
-		group.total++;
-		group.syncs++;
-		group.status = "running";
-		this.syncGroups.set(sharedFolder, group);
-
-		this.inProgressSyncs.add(doc.guid);
-
-		const syncPromise = new Promise<SyncCompletionOutcome>(
-			(resolve, reject) => {
-				this.syncCompletionCallbacks.set(doc.guid, {
-					resolve,
-					reject,
-				});
-			},
-		);
-		this.syncPromises.set(doc.guid, syncPromise);
-
-		this.syncQueue.push(queueItem);
-		if (!deferQueueFlush) {
-			this.flushSyncQueue("enqueue");
-		}
-
-		return syncPromise;
-	}
-
-	private shouldEnqueueForSharedFolderSync(
-		item: Document | Canvas | SyncFile,
-	): boolean {
-		if (
-			isSyncFile(item) &&
-			item.sharedFolder.shouldDeferPendingPublication(item.path)
-		) {
-			return false;
-		}
-		if (isCanvas(item)) {
-			// The machine compares its retained server head against its own
-			// basis, warm or cold; a canvas provably current needs no session.
-			return item.hsm.compareRetainedServerHead() !== "current";
-		}
-		if (!isDocument(item)) return true;
-
-		const hsm = item.hsm;
-		if (!hsm) return true;
-		if (hsm.getSyncStatus().status === "conflict") return false;
-		if (!hsm.state.lca) return true;
-		if (hsm.getSyncStatus().status !== "synced") return true;
-
-		return hsm.compareRetainedServerHead() !== "current";
-	}
-
-	private shouldEnqueueForLCABackfill(doc: Document): boolean {
-		const hsm = doc.hsm;
-		if (!hsm) return false;
-		if (doc.sharedFolder.isPendingUpload(doc.path)) return false;
-		if (hsm.isActive()) return false;
-		if (hsm.state.lca) return false;
-		if (hsm.hasFork()) return false;
-		if (hsm.getSyncStatus().status === "pending") return true;
-		return hsm.compareRetainedServerHead() === "ahead";
-	}
-
-	/**
-	 * Enqueues an item for synchronization as part of a group sync operation
-	 *
-	 * This method is similar to enqueueSync() but doesn't increment any counters
-	 * since they're already properly initialized in enqueueSharedFolderSync().
-	 * This prevents double-counting of operations in progress tracking.
-	 *
-	 * @param item The item to synchronize (Document, Canvas, or SyncFile)
-	 * @returns A promise that resolves when the sync completes
-	 * @private Used internally by enqueueSharedFolderSync
-	 */
-	private async enqueueForGroupSync(
-		item: Document | Canvas | SyncFile,
-	): Promise<SyncCompletionOutcome> {
-		if (this.shouldSkipDocumentSync(item)) {
-			this.clearFailure(this.failureKey("sync", item.guid));
-			return Promise.resolve("completed");
-		}
-
-		// Skip if already in progress — return the same promise all callers share
-		if (this.inProgressSyncs.has(item.guid)) {
-			this.debug(
-				`[enqueueForGroupSync] Item ${item.guid} already in progress, sharing promise`,
-			);
-			return this.syncPromises.get(item.guid) ?? Promise.resolve("completed");
-		}
-
-		const sharedFolder = item.sharedFolder;
-		const queueItem: QueueItem = {
-			guid: item.guid,
-			path: sharedFolder.getPath(item.path),
-			doc: item,
-			status: "pending",
-			sharedFolder,
-			userVisible: false,
-			enqueuedAt: this.timeProvider.now(),
-		};
-		this.clearFailure(this.failureKey("sync", item.guid));
-
-		this.inProgressSyncs.add(item.guid);
-
-		const syncPromise = new Promise<SyncCompletionOutcome>(
-			(resolve, reject) => {
-				this.syncCompletionCallbacks.set(item.guid, {
-					resolve,
-					reject,
-				});
-			},
-		);
-		this.syncPromises.set(item.guid, syncPromise);
-
-		this.syncQueue.push(queueItem);
-
-		return syncPromise;
-	}
+	// =========================================================================
+	// Transport
+	// =========================================================================
 
 	private getAuthHeader(clientToken: ClientToken) {
 		return {
@@ -2118,8 +1332,8 @@ export class BackgroundSync extends HasLogging {
 	 * the server's content must be fetched *before* the old Document is
 	 * destroyed — a failure here leaves old state intact and retriable.
 	 *
-	 * Does not participate in the download queue, syncGroups, or
-	 * in-progress tracking. It is a bare HTTP fetch.
+	 * Does not participate in the lanes, syncGroups, or claim tracking. It
+	 * is a bare HTTP fetch.
 	 *
 	 * Returns undefined if the server has the guid registered but no
 	 * peer has uploaded content yet (empty contents, empty users map).
@@ -2184,6 +1398,11 @@ export class BackgroundSync extends HasLogging {
 		}
 		return updateBytes;
 	}
+
+	// =========================================================================
+	// Operations (per file type, pending their move behind the machine
+	// surface)
+	// =========================================================================
 
 	async syncDocumentWebsocket(
 		doc: Document | Canvas,
@@ -2309,25 +1528,13 @@ export class BackgroundSync extends HasLogging {
 		return true;
 	}
 
-	/**
-	 * Enqueues a document to be downloaded from the server
-	 * @param canvas The canvas to download
-	 * @returns A promise that resolves when the download completes
-	 */
-	enqueueCanvasDownload(
-		canvas: Canvas,
-		userVisible = true,
-	): Promise<Uint8Array | undefined> {
-		return this.enqueueDownload(canvas, userVisible);
-	}
-
-	async getCanvas(canvas: Canvas, retry = 3, wait = 3000) {
+	async getCanvas(canvas: Canvas): Promise<Uint8Array | undefined> {
 		if (canvas.sharedFolder.serverEmptyTerminal(canvas.guid)) {
 			this.debug(
 				`[getCanvas] skipped ${canvas.path}: server has no content for guid; awaiting server evidence`,
 			);
 			canvas.hsm.send({ type: "DOWNLOAD_FAILED" });
-			return;
+			return undefined;
 		}
 		try {
 			const response = await this.downloadItem(canvas);
@@ -2349,7 +1556,7 @@ export class BackgroundSync extends HasLogging {
 					canvas.path,
 				);
 				canvas.hsm.send({ type: "DOWNLOAD_FAILED" });
-				return;
+				return undefined;
 			}
 
 			this.log("[getCanvas] applying content from server");
@@ -2369,6 +1576,7 @@ export class BackgroundSync extends HasLogging {
 				updateBytes,
 			);
 			canvas.hsm.send({ type: "DOWNLOAD_COMPLETE" });
+			return updateBytes;
 		} catch (e) {
 			this.logError("[getCanvas] failed", e);
 			canvas.hsm.send({ type: "DOWNLOAD_FAILED" });
@@ -2401,7 +1609,7 @@ export class BackgroundSync extends HasLogging {
 					this.log(
 						"[getDocument] server CRDT empty, local has content — uploading",
 					);
-					this.enqueueSync(doc);
+					void this.enqueueSync(doc, false, "download-empty");
 					doc.hsm?.send({ type: "DOWNLOAD_FAILED" });
 					return undefined;
 				}
@@ -2679,6 +1887,136 @@ export class BackgroundSync extends HasLogging {
 		}
 	}
 
+	// =========================================================================
+	// Folder status surfaces
+	// =========================================================================
+
+	getFolderPillProgress(sharedFolder: SharedFolder): GroupProgress | null {
+		const group = this.syncGroups.get(sharedFolder);
+		if (!group) return null;
+
+		const snapshot = this.getFolderSyncSnapshot(sharedFolder);
+		return {
+			percent: snapshot.percent,
+			syncPercent: snapshot.syncPercent,
+			downloadPercent: snapshot.downloadPercent,
+			sharedFolder,
+			status: snapshot.progressStatus,
+		};
+	}
+
+	getFolderSyncSnapshot(sharedFolder: SharedFolder): FolderSyncSnapshot {
+		const activeDownloads = this.activeDownloads.filter(
+			(item) => item.sharedFolder === sharedFolder,
+		);
+		const activeSync = this.activeSync.filter(
+			(item) => item.sharedFolder === sharedFolder,
+		);
+		const queuedDownloads = this.pendingDownloads.filter(
+			(item) => item.sharedFolder === sharedFolder,
+		);
+		const queuedSyncs = this.pendingSyncs.filter(
+			(item) => item.sharedFolder === sharedFolder,
+		);
+		const folderResyncActive = this.folderResyncs.has(sharedFolder) ? 1 : 0;
+		const activeItem = this.activeItemForSnapshot(activeDownloads, activeSync);
+		const queuedReason = this.queuedReasonForSnapshot(
+			sharedFolder,
+			activeDownloads.length + activeSync.length,
+			queuedDownloads.length + queuedSyncs.length,
+		);
+
+		return buildFolderSyncSnapshot({
+			group: this.syncGroups.get(sharedFolder) ?? null,
+			queued: queuedDownloads.length + queuedSyncs.length,
+			active: activeDownloads.length + activeSync.length + folderResyncActive,
+			isPaused: this.isPaused,
+			failureCount: this.getFailures(sharedFolder).length,
+			canResync: sharedFolder.connected && !sharedFolder.localOnly,
+			folderActivity: folderResyncActive ? "checking" : null,
+			activeItem,
+			queuedReason,
+		});
+	}
+
+	private activeItemForSnapshot(
+		activeDownloads: QueueItem[],
+		activeSync: QueueItem[],
+	): FolderSyncWorkItemInput | null {
+		const download = activeDownloads[0];
+		if (download) return { kind: "download", path: download.path };
+		const sync = activeSync[0];
+		if (sync) return { kind: "sync", path: sync.path };
+		return null;
+	}
+
+	private queuedReasonForSnapshot(
+		sharedFolder: SharedFolder,
+		active: number,
+		queued: number,
+	): "connection" | "reconnecting" | null {
+		if (active > 0 || queued === 0) return null;
+		if (!sharedFolder.connected) {
+			return sharedFolder.state.status === "connecting"
+				? "reconnecting"
+				: "connection";
+		}
+		return null;
+	}
+
+	getFailures(sharedFolder: SharedFolder): BackgroundSyncFailure[] {
+		this.clearVanishedFailures(sharedFolder);
+		return this.failures
+			.values()
+			.filter((failure) => failure.sharedFolder === sharedFolder)
+			.sort((a, b) => a.path.localeCompare(b.path));
+	}
+
+	/**
+	 * A failure survives only while its document is still registered. An
+	 * external atomic write's temp file can register, fail a queued op with
+	 * ENOENT, then unregister when the rename removes it — stranding a failure
+	 * row for a path that resolves to no doc. Such a row is stale the moment its
+	 * target is gone: drop it rather than let it hold the folder's "Sync issue"
+	 * badge until a manual clear.
+	 */
+	private clearVanishedFailures(sharedFolder: SharedFolder): void {
+		for (const failure of this.failures.values()) {
+			if (failure.sharedFolder !== sharedFolder) continue;
+			if (this.failureTargetVanished(failure)) {
+				this.clearFailure(failure.id);
+			}
+		}
+	}
+
+	private failureTargetVanished(failure: BackgroundSyncFailure): boolean {
+		const { sharedFolder, guid, path } = failure;
+		return (
+			!sharedFolder.files.has(guid) &&
+			!sharedFolder.syncStore.getCommittedMeta(path)
+		);
+	}
+
+	clearFailure(id: string): void {
+		this.failures.delete(id);
+	}
+
+	clearFailuresForFolder(sharedFolder: SharedFolder): void {
+		for (const failure of this.failures.values()) {
+			if (failure.sharedFolder === sharedFolder) {
+				this.clearFailure(failure.id);
+			}
+		}
+	}
+
+	beginFolderResync(sharedFolder: SharedFolder): Unsubscriber {
+		this.clearFailuresForFolder(sharedFolder);
+		this.folderResyncs.add(sharedFolder);
+		return () => {
+			this.folderResyncs.delete(sharedFolder);
+		};
+	}
+
 	subscribeToSync(
 		callback: Subscriber<ObservableSet<QueueItem>>,
 	): Unsubscriber {
@@ -2798,10 +2136,8 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	/**
-	 * Pauses all sync and download queue processing
-	 *
-	 * This method temporarily halts processing of sync and download queues.
-	 * The queues can be resumed by calling resume().
+	 * Pauses all lane processing. The lanes can be resumed by calling
+	 * resume().
 	 */
 	pause(): void {
 		this.isPaused = true;
@@ -2809,31 +2145,27 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	/**
-	 * Resumes sync and download queue processing
-	 *
-	 * This method resumes processing of sync and download queues after
-	 * they have been paused.
+	 * Resumes lane processing after pause().
 	 */
 	resume(): void {
 		this.debug("starting");
 		this.isPaused = false;
 		this.queueStatusChanged.notifyListeners();
-		this.processSyncQueue();
-		this.processDownloadQueue();
+		this.drainAll();
 	}
 	start = this.resume;
 
 	/**
-	 * Gets the current status of sync and download queues
+	 * Gets the current status of the lanes
 	 *
 	 * @returns An object with queue statistics
 	 */
 	getQueueStatus(): QueueStatus {
 		return {
-			syncsQueued: this.syncQueue.length,
-			syncsActive: this.activeSync.size,
-			downloadsQueued: this.downloadQueue.length,
-			downloadsActive: this.activeDownloads.size,
+			syncsQueued: this.lanes.session.queuedCount,
+			syncsActive: this.lanes.session.active.size,
+			downloadsQueued: this.lanes.transfer.queuedCount,
+			downloadsActive: this.lanes.transfer.active.size,
 			isPaused: this.isPaused,
 		};
 	}
@@ -2857,22 +2189,10 @@ export class BackgroundSync extends HasLogging {
 	 * Destroys this instance and cleans up all resources
 	 *
 	 * This method cleans up all resources used by this instance,
-	 * including rejecting pending promises, destroying observable
-	 * collections, and clearing queues.
+	 * including rejecting pending claims, destroying observable
+	 * collections, and clearing the lanes.
 	 */
 	destroy(): void {
-		// Reject all pending sync promises
-		for (const [guid, callback] of this.syncCompletionCallbacks) {
-			callback.reject(new Error("BackgroundSync destroyed"));
-			this.syncCompletionCallbacks.delete(guid);
-		}
-
-		// Reject all pending download promises
-		for (const [guid, callback] of this.downloadCompletionCallbacks) {
-			callback.reject(new Error("BackgroundSync destroyed"));
-			this.downloadCompletionCallbacks.delete(guid);
-		}
-
 		for (const [sharedFolder, state] of [
 			...this.folderSyncSnapshotSubscriptions.entries(),
 		]) {
@@ -2893,22 +2213,17 @@ export class BackgroundSync extends HasLogging {
 		}
 		this.heldLeaseReleases.clear();
 
+		// Reject every pending claim and drop the lanes.
+		const destroyed = new Error("BackgroundSync destroyed");
+		for (const lane of Object.values(this.lanes)) {
+			lane.destroy(destroyed);
+		}
+
 		// Destroy observable collections
-		this.activeSync.destroy();
-		this.activeDownloads.destroy();
 		this.folderResyncs.destroy();
 		this.syncGroups.destroy();
 		this.failures.destroy();
 		this.queueStatusChanged.destroy();
-
-		// Clear queues and tracking
-		this.syncQueue = [];
-		this.downloadQueue = [];
-		this.inProgressSyncs.clear();
-		this.inProgressDownloads.clear();
-		this.syncPromises.clear();
-		this.downloadPromises.clear();
-		this.loggedItems.clear();
 
 		// Clean up references
 		this.loginManager = null as any;
@@ -2918,21 +2233,19 @@ export class BackgroundSync extends HasLogging {
 		this.subscriptions.forEach((off) => off());
 	}
 
-	private recordFailure(
-		kind: BackgroundSyncFailure["kind"],
-		item: QueueItem,
-		error: unknown,
-	): void {
+	private recordFailure(item: QueueItem, error: unknown): void {
+		const kind = laneFailureKind(item.scope);
 		const id = this.failureKey(kind, item.guid);
 		this.setFailure({
 			id,
 			guid: item.guid,
-			path: item.doc.path,
+			path: item.target.path,
 			kind,
 			message: this.errorMessage(error),
 			sharedFolder: item.sharedFolder,
 			retryable: isRetryableSyncError(error),
 			recordedAt: this.timeProvider.now(),
+			request: requestOf(item),
 		});
 	}
 
@@ -2970,5 +2283,32 @@ export class BackgroundSync extends HasLogging {
 		const normalized = path.replace(/\\/g, "/");
 		const parts = normalized.split("/").filter(Boolean);
 		return parts[parts.length - 1] || "file";
+	}
+}
+
+/** The request an admitted item carries, without the lane's bookkeeping. */
+function requestOf(item: QueueItem): WorkRequest {
+	const { guid, path, target, sharedFolder, scope, intent, trigger, userVisible } =
+		item;
+	return { guid, path, target, sharedFolder, scope, intent, trigger, userVisible };
+}
+
+function laneFailureKind(scope: WorkScope): "sync" | "download" {
+	return scope === "transfer" ? "download" : "sync";
+}
+
+function laneOperationFor(item: QueueItem): LaneOperation {
+	return item.scope === "transfer" ? "download" : "sync";
+}
+
+/** Metric label for a session-scope item's intent (historical names). */
+function legacyIntent(item: QueueItem): "sync" | "upload" | "lca-backfill" {
+	switch (item.intent) {
+		case "upload":
+			return "upload";
+		case "backfill":
+			return "lca-backfill";
+		default:
+			return "sync";
 	}
 }
