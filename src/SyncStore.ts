@@ -189,7 +189,7 @@ export class SyncStore extends Observable<SyncStore> {
 
 	/** A move alias is only a fallback while its source remains unoccupied. */
 	private resolveLookupPath(vpath: string): string {
-		if (!this.hasRaw(vpath) && this.renames.has(vpath)) {
+		if (this.renames.has(vpath) && !this.hasRaw(vpath)) {
 			return this.renames.get(vpath)!;
 		}
 		return vpath;

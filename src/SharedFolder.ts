@@ -2851,7 +2851,7 @@ export class SharedFolder extends HasProvider {
 		const newVPath = this.getVirtualPath(file.path);
 		this.cancelPendingCreate(oldVPath);
 		this.cancelPendingCreate(newVPath);
-		if (this.syncStore.has(oldVPath)) {
+		if (this.syncStore.hasRaw(oldVPath)) {
 			this.renameFile(file, oldPath);
 			return;
 		}
@@ -3674,6 +3674,13 @@ export class SharedFolder extends HasProvider {
 			if (knownFile) {
 				return knownFile;
 			}
+		}
+
+		// A fresh TFile at a retained move source is not the moved file. Let its
+		// settling create establish independent membership instead of caching
+		// the moved guid against this new Obsidian identity.
+		if (this.syncStore.hasMoveAlias(vpath)) {
+			return null;
 		}
 
 		const guid = this.syncStore.get(vpath);
@@ -4769,6 +4776,10 @@ export class SharedFolder extends HasProvider {
 			this.placeHold([tfile]);
 			this.uploadFile(tfile);
 		} else {
+			// A retained source claim is not live membership. This can be reached
+			// directly for moves out of the shared folder, so keep the guard here
+			// as well as in notifyVaultRename.
+			if (this.syncStore.hasMoveAlias(oldVPath)) return;
 			// live doc exists
 			const guid = this.syncStore.get(oldVPath);
 			if (!guid) return;
