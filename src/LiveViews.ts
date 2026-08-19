@@ -23,6 +23,7 @@ import { curryLog, HasLogging, RelayInstances, metrics } from "./debug";
 import { Banner } from "./ui/Banner";
 import { HSMEditorPlugin } from "./merge-hsm/integration/HSMEditorPlugin";
 import { authorizeWholeDocumentEditor } from "./merge-hsm/integration/editorBindingAuthority";
+import { recordEditorIdentity } from "./merge-hsm/integration/editorIdentityDiagnostic";
 import {
 	yRemoteSelections,
 	yRemoteSelectionsTheme,
@@ -849,6 +850,7 @@ export class LiveView<ViewType extends TextFileView>
 		if (!cm) {
 			return;
 		}
+		recordEditorIdentity(cm, "LiveView.attach");
 		authorizeWholeDocumentEditor(
 			cm,
 			this.view,

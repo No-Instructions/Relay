@@ -1,4 +1,5 @@
 import type { EditorView } from "@codemirror/view";
+import { diagnosticObjectId, recordEditorIdentity } from "./editorIdentityDiagnostic";
 
 export type WholeDocumentEditorKind =
 	| "workspace-markdown-view"
@@ -35,12 +36,21 @@ export function authorizeWholeDocumentEditor(
 	kind: WholeDocumentEditorKind,
 ): EditorBindingAuthority {
 	const current = authorities.get(editor);
+	recordEditorIdentity(editor, "authority-grant-attempt", {
+		kind,
+		ownerId: diagnosticObjectId(owner),
+		reused: current?.owner === owner && current.kind === kind,
+	});
 	if (current?.owner === owner && current.kind === kind) {
 		return current;
 	}
 
 	const authority = Object.freeze({ kind, owner });
 	authorities.set(editor, authority);
+	recordEditorIdentity(editor, "authority-grant", {
+		kind,
+		ownerId: diagnosticObjectId(owner),
+	});
 	notifyAuthorityChange(editor);
 	return authority;
 }
@@ -105,6 +115,12 @@ export function revokeWholeDocumentEditor(
 ): boolean {
 	if (authorities.get(editor) !== authority) return false;
 	const deleted = authorities.delete(editor);
-	if (deleted) notifyAuthorityChange(editor);
+	if (deleted) {
+		recordEditorIdentity(editor, "authority-revoke", {
+			kind: authority.kind,
+			ownerId: diagnosticObjectId(authority.owner),
+		});
+		notifyAuthorityChange(editor);
+	}
 	return deleted;
 }

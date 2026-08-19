@@ -28,6 +28,9 @@ import {
 import type { FolderSyncSnapshot } from './BackgroundSyncProgress';
 import { Canvas, isCanvas } from './Canvas';
 import { areCanvasDataEqual } from './CanvasData';
+import type { EditorView } from '@codemirror/view';
+import { editorBindingAuthority } from './merge-hsm/integration/editorBindingAuthority';
+import { diagnosticObjectId, recordEditorIdentity } from './merge-hsm/integration/editorIdentityDiagnostic';
 
 export type { ConflictHunkInfo, ConflictInfoSnapshot } from './merge-hsm/conflict';
 
@@ -268,6 +271,8 @@ export type SetEditorContentResult =
   | { success: false; error: string };
 
 export interface RelayDebugGlobal {
+	/** Throwaway editor-identity trace used by the rapid-editor diagnostic build. */
+	traceEditorIdentity: (editor: EditorView, stage: string, details?: Record<string, unknown>) => object;
   /** Open PATH in an editor leaf. Pass `{ newLeaf: true }` to force a new tab. */
   openEditor: (path: string, opts?: { newLeaf?: boolean }) => Promise<OpenEditorResult>;
   /** Close the exact leaf identified by HANDLE. No-op if already gone. */
@@ -558,6 +563,14 @@ export class RelayDebugAPI {
       getBootEntries: () => getHSMBootEntries(),
       flushRecording: () => flushHSMRecording(),
       getRecentEntries: (guid, limit) => getRecentEntries(guid, limit),
+	  traceEditorIdentity: (editor, stage, details) => {
+		const authority = editorBindingAuthority(editor);
+		return recordEditorIdentity(editor, stage, {
+			authorityKind: authority?.kind ?? null,
+			authorityOwnerId: diagnosticObjectId(authority?.owner),
+			...(details ?? {}),
+		});
+	  },
       readIdbContent: readIdbContent,
       getSessionLogs: (options) => getSessionLogs(options),
       openEditor: (path, opts) => this.openEditor(path, opts),

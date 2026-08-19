@@ -37,6 +37,7 @@ import {
   onEditorBindingAuthorityChange,
   type EditorBindingAuthority,
 } from "./editorBindingAuthority";
+import { diagnosticObjectId, recordEditorIdentity } from "./editorIdentityDiagnostic";
 
 type EditorConnectionManager = {
   sharedFolders: { lookup(path: string): any };
@@ -168,6 +169,8 @@ export class HSMEditorPluginValue implements PluginValue {
     this.editor = editor;
     this.log = curryLog("[HSMEditorPlugin]", "log");
     this.debug = curryLog("[HSMEditorPlugin]", "debug");
+
+    recordEditorIdentity(editor, "plugin-construction");
 
     this.authorityUnsubscribe = onEditorBindingAuthorityChange(
       editor,
@@ -578,6 +581,18 @@ export class HSMEditorPluginValue implements PluginValue {
   update(update: ViewUpdate): void {
     if (this.destroyed) return;
     const authority = editorBindingAuthority(this.editor);
+    if (update.docChanged) {
+      recordEditorIdentity(this.editor, "plugin-doc-change", {
+        authorityKind: authority?.kind ?? null,
+        authorityOwnerId: diagnosticObjectId(authority?.owner),
+        bindingAuthorityKind: this.bindingAuthority?.kind ?? null,
+        bindingAuthorityOwnerId: diagnosticObjectId(this.bindingAuthority?.owner),
+        integrationActive: this.cm6Integration !== null,
+        userEvents: update.transactions.map((tr) =>
+          tr.annotation(Transaction.userEvent) ?? null
+        ),
+      });
+    }
     if (!authority) {
       // A legitimate host grant can arrive after the EditorView is already
       // configured and accepting input. Preserve a bounded delta from the
