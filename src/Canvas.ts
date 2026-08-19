@@ -339,7 +339,7 @@ export class Canvas
 					);
 					this._persistenceInstance?.set("appId", this.sharedFolder.appId);
 					this._persistenceInstance?.set("s3rn", S3RN.encode(this.s3rn));
-				} catch (e) {
+				} catch {
 					// pass
 				}
 

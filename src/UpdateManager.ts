@@ -59,7 +59,7 @@ function updateAvailable(versionTag: string, pluginTag: string): boolean {
 				return true;
 			}
 		}
-	} catch (e) {
+	} catch {
 		// pass
 	}
 	return false;

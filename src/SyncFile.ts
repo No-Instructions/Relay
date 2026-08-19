@@ -689,7 +689,7 @@ export class SyncFile
 						this.warn("file in metadata, but not on the server!");
 						await this.push();
 					}
-				} catch (err) {
+				} catch {
 					// pass
 				}
 			}
