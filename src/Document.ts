@@ -28,8 +28,10 @@ import { trackPromise } from "./trackPromise";
 import { DocumentDestroyedError } from "./DocumentDestroyedError";
 import type {
 	PlanContext,
+	ServerUpdateSink,
 	SyncParticipant,
 } from "./background-sync/SyncParticipant";
+import { metrics } from "./debug";
 import {
 	createWorkRequest,
 	type WorkRequest,
@@ -52,7 +54,7 @@ type EngineWriteIdentity = {
 
 export class Document
 	extends HasProvider
-	implements IFile, HasMimeType, SyncParticipant
+	implements IFile, HasMimeType, SyncParticipant, ServerUpdateSink
 {
 	private _parent: SharedFolder;
 	private _persistence: IndexeddbPersistence | null = null;
@@ -328,6 +330,86 @@ export class Document
 			default:
 				return [];
 		}
+	}
+
+	/**
+	 * A live update for this document arrived on the folder's event stream.
+	 * An active document converges through its own provider session and
+	 * ignores the stream. Otherwise each update is classified against the
+	 * applied-remote baseline: what follows on is applied, what is already
+	 * covered is dropped, and a dependency gap is healed by fetching a
+	 * keyframe — updates arriving while the fetch is in flight are buffered
+	 * and replayed behind it.
+	 */
+	onServerUpdate(update: Uint8Array): void {
+		if (this.destroyed) return;
+		const mergeManager = this.sharedFolder.mergeManager;
+		if (!mergeManager) return;
+		if (mergeManager.isActive(this.guid)) return;
+
+		if (this._pendingKeyframeUpdates) {
+			metrics.recordDocumentUpdateEvent("catchup", this.sharedFolder.guid);
+			this._pendingKeyframeUpdates.push(update);
+			return;
+		}
+
+		switch (mergeManager.classifyUpdate(this.guid, update)) {
+			case "apply":
+				mergeManager.handleRemoteUpdate(this.guid, update);
+				metrics.recordDocumentUpdateEvent("applied", this.sharedFolder.guid);
+				mergeManager.advanceAppliedRemoteUpdate(this.guid, update);
+				break;
+			case "stale":
+				break; // already covered by the applied remote baseline
+			case "gap":
+				metrics.recordDocumentUpdateEvent("catchup", this.sharedFolder.guid);
+				this.fetchKeyframeAndDeliver([update]);
+				break;
+		}
+	}
+
+	/** Updates buffered behind an in-flight keyframe fetch, if one is. */
+	private _pendingKeyframeUpdates: Uint8Array[] | null = null;
+
+	/**
+	 * Fetch a full-state keyframe through the background engine, then deliver
+	 * it and every update buffered behind it.
+	 */
+	private fetchKeyframeAndDeliver(pending: Uint8Array[]): void {
+		this._pendingKeyframeUpdates = pending;
+		this.sharedFolder.backgroundSync
+			.enqueueDownload(this, false, "keyframe")
+			.then((keyframe) => {
+				// The longest window in the document: a network round trip,
+				// after which every branch below reaches for the merge manager
+				// that teardown released.
+				if (this.destroyed) return;
+				const buffered = this._pendingKeyframeUpdates;
+				this._pendingKeyframeUpdates = null;
+				if (!buffered || buffered.length === 0) return;
+				const mergeManager = this.sharedFolder.mergeManager;
+				if (!mergeManager) return;
+
+				if (keyframe) {
+					mergeManager.handleRemoteUpdate(this.guid, keyframe);
+					mergeManager.seedAppliedRemoteUpdate(this.guid, keyframe);
+				}
+
+				for (const update of buffered) {
+					if (mergeManager.classifyUpdate(this.guid, update) === "apply") {
+						mergeManager.handleRemoteUpdate(this.guid, update);
+						mergeManager.advanceAppliedRemoteUpdate(this.guid, update);
+					}
+					// 'stale' → subsumed by the keyframe. 'gap' should not
+					// happen after a keyframe; if it does the update is
+					// dropped — the keyframe is the best we have.
+				}
+			})
+			.catch((e) => {
+				if (this.destroyed) return;
+				this._pendingKeyframeUpdates = null;
+				this.warn("[onServerUpdate] keyframe fetch failed", e);
+			});
 	}
 
 	private wantsConverge(): boolean {

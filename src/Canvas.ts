@@ -27,7 +27,18 @@ import {
 	CANVAS_BRIDGE_IN_ORIGIN,
 } from "./canvas-hsm";
 import type { CanvasEffect } from "./canvas-hsm";
-import type { ManagedFile } from "./merge-hsm/types";
+import type { ManagedFile, YjsSnapshot } from "./merge-hsm/types";
+import { snapshotMetaFromUpdate } from "./merge-hsm/snapshots";
+import { metrics } from "./debug";
+import type {
+	PlanContext,
+	ServerUpdateSink,
+	SyncParticipant,
+} from "./background-sync/SyncParticipant";
+import {
+	createWorkRequest,
+	type WorkRequest,
+} from "./background-sync/WorkRequest";
 
 export function isCanvas(file?: IFile | null): file is Canvas {
 	return file instanceof Canvas;
@@ -96,7 +107,7 @@ function copyDefined<T>(value: T): T {
 
 export class Canvas
 	extends HasProvider
-	implements IFile, HasMimeType, ManagedFile
+	implements IFile, HasMimeType, ManagedFile, SyncParticipant, ServerUpdateSink
 {
 	private _parent: SharedFolder;
 	private _persistenceInstance: IndexeddbPersistence | null = null;
@@ -787,6 +798,77 @@ export class Canvas
 	public get sharedFolder(): SharedFolder {
 		return this._parent;
 	}
+
+	/**
+	 * Plan this canvas's background work. A sweep converges the canvas
+	 * unless its machine can prove, warm or cold, that it is current with
+	 * the newest server head it has heard; a server head is reacted to on
+	 * the spot and plans no request of its own — the machine asks for the
+	 * download it needs.
+	 */
+	planSyncWork(context: PlanContext): WorkRequest[] {
+		if (this.destroyed) return [];
+		switch (context.occasion.kind) {
+			case "sweep":
+				return this.hsm.compareRetainedServerHead() !== "current"
+					? [createWorkRequest(this, "converge", "sweep")]
+					: [];
+			case "server-head":
+				this.onServerHead(context.occasion.head);
+				return [];
+			default:
+				return [];
+		}
+	}
+
+	/**
+	 * The server reported a head for this canvas. That is fresh evidence the
+	 * server holds content, so downloads parked as server-empty reopen; the
+	 * head then routes through the merge layer, which compares it against
+	 * the machine's basis (cold when it can), signals the machine when the
+	 * server is ahead, and wakes a machine that could only pocket the
+	 * signal.
+	 */
+	onServerHead(head: YjsSnapshot): void {
+		if (this.destroyed) return;
+		this._parent.clearServerEmpty(this.guid);
+		this._parent.mergeManager?.serverHeadsReceived([
+			{ guid: this.guid, snapshot: head.snapshot },
+		]);
+	}
+
+	/**
+	 * A live update for this canvas arrived on the folder's event stream.
+	 * Updates land on the provider-facing remoteDoc through the merge
+	 * manager; the bridge merges them into the localDoc, where the machine
+	 * observes the change and decides whether disk follows. The stream is
+	 * lossy — the server coalesces events per sender, and a dropped batch
+	 * leaves a dependency gap Yjs would buffer silently forever — so each
+	 * update is classified against the applied-remote baseline, and a gap
+	 * heals through the machine's full-state download: the update's own
+	 * snapshot meta names the state the server minimally holds.
+	 */
+	onServerUpdate(update: Uint8Array): void {
+		if (this.destroyed) return;
+		const mergeManager = this._parent.mergeManager;
+		if (!mergeManager) return;
+		switch (mergeManager.classifyUpdate(this.guid, update)) {
+			case "apply":
+				mergeManager.handleRemoteUpdate(this.guid, update);
+				metrics.recordDocumentUpdateEvent("applied", this._parent.guid);
+				mergeManager.advanceAppliedRemoteUpdate(this.guid, update);
+				break;
+			case "stale":
+				break;
+			case "gap":
+				metrics.recordDocumentUpdateEvent("catchup", this._parent.guid);
+				this.onServerHead({
+					snapshot: snapshotMetaFromUpdate(update).snapshot,
+				});
+				break;
+		}
+	}
+
 	public get tfile(): TFile | null {
 		if (!this._tfile) {
 			this._tfile = this._parent.getTFile(this);

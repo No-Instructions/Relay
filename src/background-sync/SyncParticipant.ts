@@ -44,3 +44,21 @@ export function isSyncParticipant(
 		typeof (file as SyncParticipant).planSyncWork === "function"
 	);
 }
+
+/**
+ * A synced file type that consumes the server's live update stream for its
+ * own guid: classifying each update against what it has already applied,
+ * applying what follows on, and turning a dependency gap into a server-head
+ * reaction of its own. The folder routes; the file decides.
+ */
+export interface ServerUpdateSink {
+	onServerUpdate(update: Uint8Array): void;
+}
+
+export function isServerUpdateSink(file: unknown): file is ServerUpdateSink {
+	return (
+		typeof file === "object" &&
+		file !== null &&
+		typeof (file as ServerUpdateSink).onServerUpdate === "function"
+	);
+}

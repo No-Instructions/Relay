@@ -71,7 +71,7 @@ import {
 import { recordHSMEntry } from "./debug";
 import { trackAsyncCleanup } from "./reloadUtils";
 import { DestroyedError, isDestroyedError } from "./DestroyedError";
-import { snapshotMetaFromUpdate } from "./merge-hsm/snapshots";
+import { isServerUpdateSink } from "./background-sync/SyncParticipant";
 import { readNoteText } from "./diskText";
 import {
 	HSMStore,
@@ -266,7 +266,6 @@ export class SharedFolder extends HasProvider {
 	syncSettingsManager: SyncSettingsManager;
 	mergeManager: MergeManager;
 	private recordingBridge: E2ERecordingBridge;
-	private _pendingKeyframeUpdates: Map<string, Uint8Array[]> = new Map();
 	private _pendingRemaps: Set<string> = new Set();
 	/**
 	 * Paths whose download stepped aside for an in-flight reconciliation. The
@@ -846,64 +845,8 @@ export class SharedFolder extends HasProvider {
 		const file = this.files.get(guid);
 		if (!file) return;
 
-		if (isCanvas(file)) {
-			// A live update event is fresh evidence the server has content.
-			this.clearServerEmpty(guid);
-			if (!event.update) return;
-			const update =
-				event.update instanceof Uint8Array
-					? event.update
-					: new Uint8Array(event.update);
-			// Folder-routed canvas updates land on the provider-facing
-			// remoteDoc; the CanvasDocBridge merges them into the localDoc,
-			// where the CanvasHSM observes the change and decides whether
-			// disk follows. The manager buffers bytes for hibernated
-			// canvases and wakes them through the shared queue.
-			if (!this.mergeManager) {
-				Y.applyUpdate(file.ydoc, update, this);
-				return;
-			}
-			// The event stream is lossy — the server coalesces events per
-			// sender and a dropped batch leaves a dependency gap that Yjs
-			// buffers silently forever. Classify against the applied-remote
-			// baseline the way documents do; a gap heals through the
-			// machine's full-state download instead of a blind apply.
-			const canvasClassification = this.mergeManager.classifyUpdate(
-				guid,
-				update,
-			);
-			switch (canvasClassification) {
-				case "apply":
-					this.mergeManager.handleRemoteUpdate(guid, update);
-					metrics.recordDocumentUpdateEvent("applied", this.guid);
-					this.mergeManager.advanceAppliedRemoteUpdate(guid, update);
-					break;
-				case "stale":
-					break;
-				case "gap":
-					metrics.recordDocumentUpdateEvent("catchup", this.guid);
-					// A dependency gap names the state the server minimally
-					// holds — the update's own snapshot meta. The routing
-					// compares it, signals the machine, and wakes it if it
-					// could only pocket the signal.
-					this.mergeManager.serverHeadsReceived([
-						{
-							guid,
-							snapshot: snapshotMetaFromUpdate(update).snapshot,
-						},
-					]);
-					break;
-			}
-			return;
-		}
-
-		if (!isDocument(file)) return;
-
-		// Active documents: ProviderIntegration handles sync via y-protocols
-		if (this.mergeManager.isActive(guid)) {
-			return;
-		}
-
+		// A live update event is fresh evidence the server has content.
+		this.clearServerEmpty(guid);
 		if (!event.update) return;
 
 		// Normalize update bytes (CBOR decoding may return Buffer or plain object)
@@ -912,27 +855,10 @@ export class SharedFolder extends HasProvider {
 				? event.update
 				: new Uint8Array(event.update);
 
-		// If a keyframe fetch is in progress, buffer the update
-		const buf = this._pendingKeyframeUpdates.get(guid);
-		if (buf) {
-			metrics.recordDocumentUpdateEvent("catchup", this.guid);
-			buf.push(update);
-			return;
-		}
-
-		const classification = this.mergeManager.classifyUpdate(guid, update);
-		switch (classification) {
-			case 'apply':
-				this.mergeManager.handleRemoteUpdate(guid, update);
-				metrics.recordDocumentUpdateEvent("applied", this.guid);
-				this.mergeManager.advanceAppliedRemoteUpdate(guid, update);
-				break;
-			case 'stale':
-				break; // already covered by the applied remote baseline
-			case 'gap':
-				metrics.recordDocumentUpdateEvent("catchup", this.guid);
-				this._fetchKeyframeAndDeliver(file, guid, [update]);
-				break;
+		// The file decides what the update means for it: the folder only
+		// routes the stream.
+		if (isServerUpdateSink(file)) {
+			file.onServerUpdate(update);
 		}
 	}
 
@@ -1172,43 +1098,6 @@ export class SharedFolder extends HasProvider {
 				this._pendingDownloads.delete(path);
 			});
 		return true;
-	}
-
-	/**
-	 * Fetch an HTTP keyframe, then deliver it and the buffered updates.
-	 */
-	private _fetchKeyframeAndDeliver(
-		file: Document,
-		guid: string,
-		pending: Uint8Array[],
-	): void {
-		this._pendingKeyframeUpdates.set(guid, pending);
-		this.backgroundSync.enqueueDownload(file, false).then((keyframe) => {
-			// The longest window in the folder: a network round trip, after
-			// which every branch below reaches for the merge manager that
-			// teardown released. This callback has no rejection handler, so
-			// a download that lands after teardown escapes unreported.
-			if (this.destroyed) return;
-			const buf = this._pendingKeyframeUpdates.get(guid);
-			this._pendingKeyframeUpdates.delete(guid);
-			if (!buf || buf.length === 0) return;
-
-			if (keyframe) {
-				this.mergeManager.handleRemoteUpdate(guid, keyframe);
-				this.mergeManager.seedAppliedRemoteUpdate(guid, keyframe);
-			}
-
-			for (const u of buf) {
-				const c = this.mergeManager.classifyUpdate(guid, u);
-				if (c === 'apply') {
-					this.mergeManager.handleRemoteUpdate(guid, u);
-					this.mergeManager.advanceAppliedRemoteUpdate(guid, u);
-				}
-				// 'stale' → drop (subsumed by keyframe)
-				// 'gap' shouldn't happen after a keyframe, but if it does
-				// the update is dropped — the keyframe is the best we have
-			}
-		});
 	}
 
 	/**

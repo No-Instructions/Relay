@@ -823,18 +823,7 @@ export class BackgroundSync extends HasLogging {
 	 */
 	enqueueSharedFolderSync(sharedFolder: SharedFolder): void {
 		this.beginFolderPass(sharedFolder);
-		const files = [...sharedFolder.files.values()];
-		this.admitPlannedWork(files, { kind: "sweep" });
-		// Canvases plan behind the machine surface once they participate;
-		// until then the sweep selects them here.
-		const canvases = files
-			.filter(isCanvas)
-			.filter((canvas) => canvas.hsm.compareRetainedServerHead() !== "current");
-		if (canvases.length > 0) {
-			this.admitAll(
-				canvases.map((canvas) => createWorkRequest(canvas, "converge", "sweep")),
-			);
-		}
+		this.admitPlannedWork(sharedFolder.files.values(), { kind: "sweep" });
 	}
 
 	/** The provider reconnected: let every file plan its recovery work. */
