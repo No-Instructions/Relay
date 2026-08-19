@@ -11,6 +11,10 @@ export type EditorBindingAuthority = Readonly<{
 
 const authorities = new WeakMap<EditorView, EditorBindingAuthority>();
 const authorityListeners = new WeakMap<EditorView, Set<() => void>>();
+const ownerAuthorities = new WeakMap<
+	object,
+	{ editor: EditorView; authority: EditorBindingAuthority }
+>();
 
 function notifyAuthorityChange(editor: EditorView): void {
 	for (const listener of authorityListeners.get(editor) ?? []) {
@@ -38,6 +42,28 @@ export function authorizeWholeDocumentEditor(
 	const authority = Object.freeze({ kind, owner });
 	authorities.set(editor, authority);
 	notifyAuthorityChange(editor);
+	return authority;
+}
+
+/**
+ * Move a host surface's authority to its current CodeMirror view.
+ *
+ * Obsidian can replace `view.editor.cm` while populating a Markdown view. The
+ * host must call this after that population step so the outgoing EditorView is
+ * revoked and the exact instance that can next receive input is authorized.
+ */
+export function authorizeOwnedWholeDocumentEditor(
+	editor: EditorView,
+	owner: object,
+	kind: WholeDocumentEditorKind,
+): EditorBindingAuthority {
+	const previous = ownerAuthorities.get(owner);
+	if (previous && previous.editor !== editor) {
+		revokeWholeDocumentEditor(previous.editor, previous.authority);
+	}
+
+	const authority = authorizeWholeDocumentEditor(editor, owner, kind);
+	ownerAuthorities.set(owner, { editor, authority });
 	return authority;
 }
 

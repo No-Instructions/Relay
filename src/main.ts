@@ -104,7 +104,7 @@ import {
 	type PluginRegistrationSettings,
 } from "./TextViewRegistry";
 import { HSMEditorPlugin } from "./merge-hsm/integration/HSMEditorPlugin";
-import { authorizeWholeDocumentEditor } from "./merge-hsm/integration/editorBindingAuthority";
+import { authorizeOwnedWholeDocumentEditor } from "./merge-hsm/integration/editorBindingAuthority";
 
 type SettingsController = {
 	open(): void | Promise<void>;
@@ -1546,6 +1546,10 @@ export default class Live extends Plugin {
 		getPatcher().patch(TextFileViewPrototype, {
 			setViewData(old: any) {
 				return function (this: any, data: string, clear: boolean) {
+					// Obsidian may replace `this.editor.cm` while populating the view.
+					// Authorize only after that synchronous replacement so the exact
+					// EditorView that can receive the next input owns the grant.
+					const result = old.call(this, data, clear);
 					// Only workspace-owned Markdown views may bind the editor extension.
 					// Editable embeds can share this prototype, file, and app while their
 					// buffers contain only a footnote, heading, block, or other fragment.
@@ -1557,7 +1561,7 @@ export default class Live extends Plugin {
 							? (this.editor as { cm?: import("@codemirror/view").EditorView } | undefined)?.cm
 							: undefined;
 						if (cm) {
-							authorizeWholeDocumentEditor(
+							authorizeOwnedWholeDocumentEditor(
 								cm,
 								this,
 								"workspace-markdown-view",
@@ -1605,7 +1609,7 @@ export default class Live extends Plugin {
 							plugin.debug('Error in setViewData patch:', e);
 						}
 					}
-					return old.call(this, data, clear);
+					return result;
 				};
 			},
 			loadFileInternal(old: any) {
