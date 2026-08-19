@@ -15,6 +15,14 @@ import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
 import { flags } from "./flagManager";
 import { errorFromUnknown, formatUserFacingError } from "./UserFacingError";
+import type {
+	PlanContext,
+	SyncParticipant,
+} from "./background-sync/SyncParticipant";
+import {
+	createWorkRequest,
+	type WorkRequest,
+} from "./background-sync/WorkRequest";
 
 export function isSyncFile(file: IFile | undefined): file is SyncFile {
 	return !!file && file instanceof SyncFile;
@@ -386,7 +394,7 @@ export class ContentAddressedFile extends HasLogging {
 
 export class SyncFile
 	extends Observable<SyncFile>
-	implements TFile, IFile, HasMimeType
+	implements TFile, IFile, HasMimeType, SyncParticipant
 {
 	private _parent: SharedFolder;
 	meta: FileMetas | undefined;
@@ -883,6 +891,18 @@ export class SyncFile
 
 	public get sharedFolder(): SharedFolder {
 		return this._parent;
+	}
+
+	/**
+	 * Plan this file's background work. A sweep re-runs the file's own
+	 * content reconciliation unless its publication is being held back by
+	 * the folder; nothing else asks a file to plan.
+	 */
+	planSyncWork(context: PlanContext): WorkRequest[] {
+		if (this.destroyed) return [];
+		if (context.occasion.kind !== "sweep") return [];
+		if (this.sharedFolder.shouldDeferPendingPublication(this.path)) return [];
+		return [createWorkRequest(this, "converge", "sweep")];
 	}
 
 	async connect(): Promise<boolean> {

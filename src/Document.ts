@@ -26,6 +26,14 @@ import { readNoteText } from "./diskText";
 import { trackAsyncCleanup } from "./reloadUtils";
 import { trackPromise } from "./trackPromise";
 import { DocumentDestroyedError } from "./DocumentDestroyedError";
+import type {
+	PlanContext,
+	SyncParticipant,
+} from "./background-sync/SyncParticipant";
+import {
+	createWorkRequest,
+	type WorkRequest,
+} from "./background-sync/WorkRequest";
 
 export function isDocument(file: unknown): file is Document {
 	return file instanceof Document;
@@ -42,7 +50,10 @@ type EngineWriteIdentity = {
 	mtime: number | null;
 };
 
-export class Document extends HasProvider implements IFile, HasMimeType {
+export class Document
+	extends HasProvider
+	implements IFile, HasMimeType, SyncParticipant
+{
 	private _parent: SharedFolder;
 	private _persistence: IndexeddbPersistence | null = null;
 	whenSyncedPromise: Dependency<void> | null = null;
@@ -293,6 +304,50 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 */
 	public get hsm(): MergeHSM | null {
 		return this._hsm;
+	}
+
+	/**
+	 * Plan this document's background work for an occasion, answering from
+	 * the machine's own state — cold where the machine allows it.
+	 *
+	 * A sweep converges every document that is not provably current: no
+	 * machine yet, no merge base, an unsettled status, or a retained server
+	 * head the machine cannot match. A document in conflict is left to its
+	 * resolution surface. A reconnect recovers the merge base for documents
+	 * that never established one and are not otherwise busy.
+	 */
+	planSyncWork(context: PlanContext): WorkRequest[] {
+		if (this.destroyed) return [];
+		switch (context.occasion.kind) {
+			case "sweep":
+				return this.wantsConverge() ? [createWorkRequest(this, "converge", "sweep")] : [];
+			case "reconnect":
+				return this.wantsBackfill() && !context.inFlight(this.guid, "session")
+					? [createWorkRequest(this, "backfill", "reconnect")]
+					: [];
+			default:
+				return [];
+		}
+	}
+
+	private wantsConverge(): boolean {
+		const hsm = this._hsm;
+		if (!hsm) return true;
+		if (hsm.getSyncStatus().status === "conflict") return false;
+		if (!hsm.state.lca) return true;
+		if (hsm.getSyncStatus().status !== "synced") return true;
+		return hsm.compareRetainedServerHead() !== "current";
+	}
+
+	private wantsBackfill(): boolean {
+		const hsm = this._hsm;
+		if (!hsm) return false;
+		if (this.sharedFolder.isPendingUpload(this.path)) return false;
+		if (hsm.isActive()) return false;
+		if (hsm.state.lca) return false;
+		if (hsm.hasFork()) return false;
+		if (hsm.getSyncStatus().status === "pending") return true;
+		return hsm.compareRetainedServerHead() === "ahead";
 	}
 
 	/**

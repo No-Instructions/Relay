@@ -16,7 +16,7 @@ import { ObservableMap } from "./observable/ObservableMap";
 import type { SharedFolder, SharedFolders } from "./SharedFolder";
 import type { ClientToken } from "./client/types";
 import { Canvas } from "./Canvas";
-import { SyncFile, isSyncFile } from "./SyncFile";
+import { SyncFile } from "./SyncFile";
 import { isEmptyDoc } from "./merge-hsm/snapshots";
 import {
 	buildFolderSyncSnapshot,
@@ -42,6 +42,11 @@ import {
 	type LaneOperation,
 	type LaneSortReason,
 } from "./background-sync/WorkLane";
+import {
+	isSyncParticipant,
+	type PlanContext,
+	type PlanOccasion,
+} from "./background-sync/SyncParticipant";
 
 export type {
 	QueueItem,
@@ -52,6 +57,11 @@ export type {
 	WorkScope,
 } from "./background-sync/WorkRequest";
 export { createWorkRequest } from "./background-sync/WorkRequest";
+export type {
+	PlanContext,
+	PlanOccasion,
+	SyncParticipant,
+} from "./background-sync/SyncParticipant";
 
 /** The file types the engine can currently drive. */
 export type SyncTarget = Document | Canvas | SyncFile;
@@ -780,81 +790,59 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	// =========================================================================
-	// Selection (folder sweeps and reconnect backfill)
+	// Planning occasions (folder sweeps and reconnect backfill)
 	// =========================================================================
 
 	/**
-	 * Enqueues all documents and canvases in a shared folder for synchronization
-	 *
-	 * This method starts a fresh progress pass for the folder and admits a
-	 * converge pass for every file the sweep selects.
+	 * Ask every participant in a folder to plan for an occasion and admit the
+	 * concatenation as one batch. Returns how many requests were admitted.
+	 */
+	admitPlannedWork(
+		participants: Iterable<unknown>,
+		occasion: PlanOccasion,
+	): number {
+		const context: PlanContext = {
+			occasion,
+			now: this.timeProvider.now(),
+			inFlight: (guid, scope) => this.lanes[scope].isClaimed(guid),
+		};
+		const requests: WorkRequest[] = [];
+		for (const file of participants) {
+			if (!isSyncParticipant(file)) continue;
+			requests.push(...file.planSyncWork(context));
+		}
+		if (requests.length > 0) this.admitAll(requests);
+		return requests.length;
+	}
+
+	/**
+	 * Sweep a shared folder: a fresh progress pass, then a converge request
+	 * for every file that plans one.
 	 *
 	 * @param sharedFolder The shared folder to synchronize
 	 */
 	enqueueSharedFolderSync(sharedFolder: SharedFolder): void {
-		const docs = [...sharedFolder.files.values()].filter(isDocument);
-		const canvases = [...sharedFolder.files.values()].filter(isCanvas);
-		const syncFiles = [...sharedFolder.files.values()].filter(isSyncFile);
-		const allItems = [...docs, ...canvases, ...syncFiles].filter((item) =>
-			this.shouldEnqueueForSharedFolderSync(item),
-		);
-
 		this.beginFolderPass(sharedFolder);
-		if (allItems.length === 0) return;
-
-		this.admitAll(
-			allItems.map((item) => createWorkRequest(item, "converge", "sweep")),
-		);
+		const files = [...sharedFolder.files.values()];
+		this.admitPlannedWork(files, { kind: "sweep" });
+		// Canvases plan behind the machine surface once they participate;
+		// until then the sweep selects them here.
+		const canvases = files
+			.filter(isCanvas)
+			.filter((canvas) => canvas.hsm.compareRetainedServerHead() !== "current");
+		if (canvases.length > 0) {
+			this.admitAll(
+				canvases.map((canvas) => createWorkRequest(canvas, "converge", "sweep")),
+			);
+		}
 	}
 
+	/** The provider reconnected: let every file plan its recovery work. */
 	enqueueLCABackfill(sharedFolder: SharedFolder): number {
 		if (!sharedFolder.connected) return 0;
-
-		const docs = [...sharedFolder.files.values()]
-			.filter(isDocument)
-			.filter((doc) => this.shouldEnqueueForLCABackfill(doc))
-			.filter((doc) => !this.lanes.session.isClaimed(doc.guid));
-
-		if (docs.length === 0) return 0;
-
-		this.admitAll(
-			docs.map((doc) => createWorkRequest(doc, "backfill", "reconnect")),
-		);
-		return docs.length;
-	}
-
-	private shouldEnqueueForSharedFolderSync(item: SyncTarget): boolean {
-		if (
-			isSyncFile(item) &&
-			item.sharedFolder.shouldDeferPendingPublication(item.path)
-		) {
-			return false;
-		}
-		if (isCanvas(item)) {
-			// The machine compares its retained server head against its own
-			// basis, warm or cold; a canvas provably current needs no session.
-			return item.hsm.compareRetainedServerHead() !== "current";
-		}
-		if (!isDocument(item)) return true;
-
-		const hsm = item.hsm;
-		if (!hsm) return true;
-		if (hsm.getSyncStatus().status === "conflict") return false;
-		if (!hsm.state.lca) return true;
-		if (hsm.getSyncStatus().status !== "synced") return true;
-
-		return hsm.compareRetainedServerHead() !== "current";
-	}
-
-	private shouldEnqueueForLCABackfill(doc: Document): boolean {
-		const hsm = doc.hsm;
-		if (!hsm) return false;
-		if (doc.sharedFolder.isPendingUpload(doc.path)) return false;
-		if (hsm.isActive()) return false;
-		if (hsm.state.lca) return false;
-		if (hsm.hasFork()) return false;
-		if (hsm.getSyncStatus().status === "pending") return true;
-		return hsm.compareRetainedServerHead() === "ahead";
+		return this.admitPlannedWork(sharedFolder.files.values(), {
+			kind: "reconnect",
+		});
 	}
 
 	// =========================================================================
