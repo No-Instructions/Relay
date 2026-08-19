@@ -18,6 +18,7 @@ export interface FeatureFlags {
 	enableSavingFlagPolyfill: boolean;
 	enableFrontmatterDuplicateRecovery: boolean;
 	enableSingleUserHistory: boolean;
+	enableStreamerMode: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -27,6 +28,7 @@ export interface FeatureFlagSchemaEntry {
 	category: FeatureFlagCategory;
 	title: string;
 	description: string;
+	requiresReload?: boolean;
 }
 
 /**
@@ -181,6 +183,14 @@ export const FeatureFlagSchema: {
 		title: "Limit undo to edits made here",
 		description:
 			"Keep synchronization-origin changes out of each editor's undo history, so undo only reverts edits made in that editor.",
+	},
+	enableStreamerMode: {
+		default: false,
+		category: "labs",
+		title: "Streamer mode",
+		description:
+			"Show only chosen display names and uploaded avatars; hide account names, profile pictures, and email addresses.",
+		requiresReload: false,
 	},
 };
 

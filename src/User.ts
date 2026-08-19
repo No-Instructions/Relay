@@ -17,6 +17,27 @@ export const usercolors: UserColor[] = [
 	{ color: "#1be7ff", light: "#1be7ff33" },
 ];
 
+export const PROFILE_AVATAR_THUMBNAIL = "100x100";
+export const ANONYMOUS_PROFILE_NAME = "Anonymous";
+
+interface ProfileRecord extends Record<string, unknown> {
+	avatar?: string;
+	displayName?: string;
+	email?: string;
+	name?: string;
+	picture?: string;
+}
+
+interface ProfileFileOptions {
+	thumb: string;
+}
+
+export type ProfileFileUrl = (
+	record: Record<string, unknown>,
+	filename: string,
+	options: ProfileFileOptions,
+) => string;
+
 export function preferredProfileField(
 	preferred: string | undefined,
 	fallback: string,
@@ -24,22 +45,62 @@ export function preferredProfileField(
 	return preferred || fallback;
 }
 
+export function resolveProfileName(
+	record: ProfileRecord | null | undefined,
+	fallback: string,
+	streamerMode = false,
+): string {
+	return preferredProfileField(
+		record?.displayName,
+		streamerMode
+			? ANONYMOUS_PROFILE_NAME
+			: preferredProfileField(record?.name, fallback),
+	);
+}
+
+export function resolveProfileEmail(
+	record: ProfileRecord | null | undefined,
+	fallback: string,
+	streamerMode = false,
+): string {
+	return streamerMode ? "" : preferredProfileField(record?.email, fallback);
+}
+
+export function resolveProfileAvatar(
+	record: ProfileRecord | null | undefined,
+	getFileUrl?: ProfileFileUrl,
+): string {
+	if (!record?.avatar || !getFileUrl) {
+		return "";
+	}
+	return getFileUrl(record, record.avatar, {
+		thumb: PROFILE_AVATAR_THUMBNAIL,
+	});
+}
+
+export function resolveProfilePicture(
+	record: ProfileRecord | null | undefined,
+	fallback: string,
+	getFileUrl?: ProfileFileUrl,
+	streamerMode = false,
+): string {
+	const avatarUrl = resolveProfileAvatar(record, getFileUrl);
+	if (avatarUrl) {
+		return avatarUrl;
+	}
+	return streamerMode ? "" : preferredProfileField(record?.picture, fallback);
+}
+
 export class User {
 	color: UserColor;
-	name: string;
-	picture: string;
 
 	constructor(
 		public id: string,
-		name: string,
+		public name: string,
 		public email: string,
-		picture: string,
+		public picture: string,
 		public token: string,
-		displayName?: string,
-		avatar?: string,
 	) {
-		this.name = preferredProfileField(displayName, name);
-		this.picture = preferredProfileField(avatar, picture);
 		this.color = usercolors[random.uint32() % usercolors.length];
 	}
 }

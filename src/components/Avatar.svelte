@@ -5,10 +5,10 @@
 	export let alt = "Profile picture";
 	export let size = "40px";
 
-	let imageError = false;
+	let failedPicture: string | null = null;
 
 	function handleError() {
-		imageError = true;
+		failedPicture = user.picture;
 	}
 
 	function extractUnit(value: string) {
@@ -21,7 +21,7 @@
 </script>
 
 <div class="avatar" style:width={size} style:height={size}>
-	{#if !imageError && user.picture}
+	{#if user.picture && failedPicture !== user.picture}
 		<img
 			src={user.picture}
 			{alt}

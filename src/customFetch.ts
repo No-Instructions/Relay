@@ -297,6 +297,7 @@ export const customFetch = async (
 	});
 
 	if (flags().enableNetworkLogging) {
+		const streamerMode = flags().enableStreamerMode;
 		const level =
 			response.status >= 500
 				? "error"
@@ -307,7 +308,7 @@ export const customFetch = async (
 
 		let response_json;
 		const contentType = response.headers["content-type"] || "";
-		if (contentType.includes("application/json")) {
+		if (!streamerMode && contentType.includes("application/json")) {
 			try {
 				response_json = JSON.parse(response_text);
 			} catch (e) {
@@ -319,12 +320,18 @@ export const customFetch = async (
 			response.status.toString(),
 			method,
 			urlString,
-			response_json || response_text,
+			streamerMode
+				? "Response body hidden by Streamer mode"
+				: response_json || response_text,
 		);
 	}
 
 	if (response.status >= 500) {
-		throw new Error(response.text);
+		throw new Error(
+			flags().enableStreamerMode
+				? `Request failed with status ${response.status}`
+				: response.text,
+		);
 	}
 
 	return fetchResponse;

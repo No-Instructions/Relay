@@ -30,7 +30,7 @@
 	const flagManager = FeatureFlagManager.getInstance();
 	const debugging = isDebugging();
 	let activeTab: FeatureFlagCategory = "labs";
-	let hasChanges = false;
+	let requiresReload = false;
 
 	$: settings = { ...$flagManager.flags };
 	$: tabs = (Object.keys(tabInfo) as FeatureFlagCategory[])
@@ -54,11 +54,11 @@
 	function toggleFlag(flagName: keyof FeatureFlags) {
 		const next = !(settings[flagName] ?? FeatureFlagSchema[flagName].default);
 		flagManager.setFlag(flagName, next);
-		hasChanges = true;
+		requiresReload ||= FeatureFlagSchema[flagName].requiresReload !== false;
 	}
 
 	function finish() {
-		if (hasChanges) {
+		if (requiresReload) {
 			new Notice("Reload the Relay plugin to apply feature flag changes.", 8000);
 		}
 		close();
@@ -151,7 +151,7 @@
 	</div>
 
 	<div class="modal-button-container relay-feature-flag-footer">
-		{#if hasChanges}
+		{#if requiresReload}
 			<span class="relay-feature-flag-reload-note">
 				Reload the Relay plugin to apply changes.
 			</span>
