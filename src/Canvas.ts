@@ -3,7 +3,7 @@ import { HasProvider } from "./HasProvider";
 import type { HasMimeType, IFile } from "./IFile";
 import type { LoginManager } from "./LoginManager";
 import { S3Canvas, S3Folder, S3RN, S3RemoteCanvas } from "./S3RN";
-import { snapshotFromDoc } from "./merge-hsm/snapshots";
+import { isEmptyDoc, snapshotFromDoc } from "./merge-hsm/snapshots";
 import * as Y from "yjs";
 import type { SharedFolder } from "./SharedFolder";
 import { getMimeType } from "./mimetypes";
@@ -37,7 +37,9 @@ import type {
 	SyncOperationContext,
 	SyncParticipant,
 } from "./background-sync/SyncParticipant";
-import { CanvasSyncAdapter } from "./background-sync/CanvasSyncAdapter";
+import { fileName, isRetryableSyncError } from "./background-sync/errors";
+import { formatUserFacingError } from "./UserFacingError";
+import { awaitProviderSession } from "./background-sync/providerSession";
 import {
 	createWorkRequest,
 	type WorkRequest,
@@ -824,31 +826,132 @@ export class Canvas
 		}
 	}
 
-	private _syncAdapter: CanvasSyncAdapter | null = null;
-
-	/** How this canvas performs its background work. */
-	private get syncAdapter(): CanvasSyncAdapter {
-		if (!this._syncAdapter) {
-			this._syncAdapter = new CanvasSyncAdapter(this);
-		}
-		return this._syncAdapter;
-	}
-
 	acceptsSession(): boolean {
-		return this.syncAdapter.acceptsSession();
+		return true;
 	}
 
-	runSyncSession(
-		intent: SessionIntent,
+	async runSyncSession(
+		_intent: SessionIntent,
 		context: SyncOperationContext,
 	): Promise<void> {
-		return this.syncAdapter.runSession(intent, context);
+				if (this.destroyed) return;
+		try {
+			const synced = await this.runProviderSession(context);
+			if (!synced) {
+				if (context.isCancelled()) return;
+				throw new Error(`Unable to sync ${fileName(this.path)}`);
+			}
+		} catch (e) {
+			if (!isRetryableSyncError(e)) {
+				this.logSyncError("[session] failed", e);
+			}
+			throw e;
+		}
 	}
 
-	transferFromServer(
+	/**
+	 * Drive the canvas's provider session to synced and deliver
+	 * PROVIDER_SYNCED. Canvas activeness is the view lock alone: a session
+	 * no view holds is released on the way out, whether this operation
+	 * opened it or found it open. Resolves false when the work was cancelled.
+	 */
+	private async runProviderSession(
 		context: SyncOperationContext,
+	): Promise<boolean> {
+				if (this.destroyed) return false;
+		this.log(
+			`[session] start: ${this.path} guid=${this.guid} intent=${this.intent} connected=${this.connected}`,
+		);
+		if (context.isCancelled()) return false;
+		const sharedFolder = this.sharedFolder;
+		const shouldReleaseSession = () =>
+			!(this.userLock || sharedFolder?.mergeManager?.isActive(this.guid));
+
+		let outcome: "synced" | "cancelled";
+		try {
+			outcome = await awaitProviderSession(this, {
+				timeProvider: context.timeProvider,
+				isCancelled: () => context.isCancelled(),
+				warn: (message) => this.warn(message),
+				errorMessage: (error) => this.syncErrorMessage(error),
+			});
+			if (outcome === "synced") {
+				// A session reaching synced means the same thing to every
+				// machine.
+				this.hsm.send({ type: "PROVIDER_SYNCED" });
+			}
+		} finally {
+			if (shouldReleaseSession()) {
+				this.releaseIdleSession();
+			}
+		}
+		return outcome === "synced";
+	}
+
+	async transferFromServer(
+		_context: SyncOperationContext,
 	): Promise<Uint8Array | undefined> {
-		return this.syncAdapter.transfer(context);
+				if (this.sharedFolder.serverEmptyTerminal(this.guid)) {
+			this.debug(
+				`[transfer] skipped ${this.path}: server has no content for guid; awaiting server evidence`,
+			);
+			this.hsm.send({ type: "DOWNLOAD_FAILED" });
+			return undefined;
+		}
+		try {
+			const response = await this.sharedFolder.backgroundSync.downloadItem(this);
+			const rawUpdate = response.arrayBuffer;
+			const updateBytes = new Uint8Array(rawUpdate);
+
+			// A guid that is registered but never uploaded downloads as an
+			// empty doc; defer instead of reporting a contentless download
+			// as complete. Enrolled canvases always carry the header op, so
+			// only truly never-uploaded content defers.
+			const peekDoc = new Y.Doc();
+			Y.applyUpdate(peekDoc, updateBytes);
+			const serverEmpty = isEmptyDoc(peekDoc);
+			peekDoc.destroy();
+			if (serverEmpty) {
+				this.sharedFolder.recordServerEmpty(this.guid);
+				this.log(
+					"[transfer] server has guid registered but no content",
+					this.path,
+				);
+				this.hsm.send({ type: "DOWNLOAD_FAILED" });
+				return undefined;
+			}
+
+			this.log("[transfer] applying content from server");
+			// Server content lands on the provider-facing remoteDoc; the
+			// CanvasDocBridge merges it into the localDoc, and the canvas's
+			// machine decides whether disk follows. The canvas must be warm
+			// first — on a hibernated canvas the update would land on a
+			// bridge-less remoteDoc, and a later re-download of the same ops
+			// produces no update events to recover it.
+			this.wake();
+			Y.applyUpdate(this.ydoc, updateBytes);
+			// A full-state download is the canvas keyframe: seed the
+			// applied-remote baseline so later folder events classify
+			// against it instead of gapping once per session.
+			this.sharedFolder.mergeManager?.seedAppliedRemoteUpdate(
+				this.guid,
+				updateBytes,
+			);
+			this.hsm.send({ type: "DOWNLOAD_COMPLETE" });
+			return updateBytes;
+		} catch (e) {
+			this.logSyncError("[transfer] failed", e);
+			this.hsm.send({ type: "DOWNLOAD_FAILED" });
+			throw e;
+		}
+	}
+
+	private syncErrorMessage(error: unknown): string {
+		return formatUserFacingError(error);
+	}
+
+	private logSyncError(context: string, error: unknown): void {
+		this.error(`${context}: ${this.syncErrorMessage(error)}`, error);
 	}
 
 	/**

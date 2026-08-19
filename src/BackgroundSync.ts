@@ -86,6 +86,8 @@ export interface BackgroundSyncFailure {
 	recordedAt: number;
 	/** The request that failed, so a reclaim re-admits the same work. */
 	request?: WorkRequest;
+	/** How many times the periodic pass has already re-admitted this row. */
+	reclaims: number;
 }
 
 export interface SyncGroup {
@@ -144,6 +146,11 @@ const BACKGROUND_SYNC_DRAIN_BUDGET_MS = 8;
 // backoff retries; this interval is the long-tail self-heal for outages that
 // outlast them, so it can be generous without stranding files until reload.
 const FAILURE_RECLAIM_INTERVAL_MS = 5 * 60_000;
+// Each reclaim of the same row waits twice as long as the last, and after
+// this many the row stays parked until a sweep, a server event, or the user
+// re-admits the file: a file whose every attempt wedges must not hold a lane
+// slot at a steady rate for the rest of the session.
+const MAX_FAILURE_RECLAIMS = 3;
 // A provider-bound operation that has not settled in this long is treated as
 // timed out. Generous by design — a healthy but slow transfer must never trip
 // it — because the deadline only detects a wedged await (a dead or stranded
@@ -151,18 +158,6 @@ const FAILURE_RECLAIM_INTERVAL_MS = 5 * 60_000;
 // retryable failure. It never schedules recovery: reconnection and the lane's
 // own retry/backoff do that.
 const PROVIDER_OP_DEADLINE_MS = 5 * 60_000;
-
-// Identity for a single in-flight provider-bound operation, minted by
-// withProviderDeadline and threaded through the operation's call chain. Warm
-// leases acquired inside the operation register their releases against the
-// token, so a deadline sweep can only ever release what its own operation
-// holds — never a concurrent operation's lease on the same document. The
-// sweep marks the token abandoned; a lease registered afterwards (an
-// abandoned operation resuming on a late settle) is released immediately
-// instead of parking with no deadline left to watch it.
-export interface ProviderOperationToken {
-	abandoned: boolean;
-}
 
 // Identity for a single in-flight provider-bound operation, minted by
 // withProviderDeadline and threaded through the operation's call chain. Warm
@@ -789,7 +784,9 @@ export class BackgroundSync extends HasLogging {
 		for (const failure of this.failures.values()) {
 			if (failure.kind === "local" || !failure.retryable) continue;
 			if (!failure.request) continue;
-			if (now - failure.recordedAt < FAILURE_RECLAIM_INTERVAL_MS) continue;
+			if (failure.reclaims >= MAX_FAILURE_RECLAIMS) continue;
+			const interval = FAILURE_RECLAIM_INTERVAL_MS * 2 ** failure.reclaims;
+			if (now - failure.recordedAt < interval) continue;
 			const target = failure.sharedFolder.files.get(failure.guid) as
 				| WorkTarget
 				| undefined;
@@ -808,7 +805,9 @@ export class BackgroundSync extends HasLogging {
 			) {
 				continue;
 			}
-			this.debug(`[reclaim] re-admitting parked ${failure.kind} for ${failure.path}`);
+			this.debug(
+				`[reclaim] re-admitting parked ${failure.kind} for ${failure.path} (reclaim ${failure.reclaims + 1}/${MAX_FAILURE_RECLAIMS})`,
+			);
 			// A reclaimed session re-runs as a plain converge pass: the caller
 			// that wanted the stronger intent already saw its failure and owns
 			// any follow-up; transfers re-run as themselves.
@@ -821,8 +820,17 @@ export class BackgroundSync extends HasLogging {
 				// The failure is re-recorded by the lane; the next reclaim
 				// pass paces itself from the fresh record.
 			});
+			// Admission cleared the row (and with it this id's history); the
+			// count carries forward so a repeat of the failure re-records
+			// onto it rather than starting the budget over.
+			this.reclaimHistory.set(failure.id, failure.reclaims + 1);
 		}
 	}
+
+	// How many times each failure id has been reclaimed. Survives the row
+	// being cleared by the reclaim's own admission; any other admission of
+	// the file (a sweep, a server event, the user) clears it with the row.
+	private reclaimHistory = new Map<string, number>();
 
 	private recordTickDelay(
 		tick: "queue" | "folder_poll",
@@ -1063,7 +1071,10 @@ export class BackgroundSync extends HasLogging {
 							isRetryableSyncError(error) &&
 							lane.scheduleRetry(item, this.retryReason(error), MAX_PROVIDER_SYNC_RETRIES)
 						) {
-							this.clearFailure(this.failureKey(laneFailureKind(scope), item.guid));
+							// The row is withdrawn while the lane re-drives the
+							// item; the reclaim history stays, since this is
+							// the same unit of work still failing.
+							this.failures.delete(this.failureKey(laneFailureKind(scope), item.guid));
 							this.debug(
 								`[${lane.operation}] retryable failure for ${item.path}: ${error.message}; retrying at ${item.nextAttemptAt}`,
 							);
@@ -1407,6 +1418,7 @@ export class BackgroundSync extends HasLogging {
 
 	clearFailure(id: string): void {
 		this.failures.delete(id);
+		this.reclaimHistory.delete(id);
 	}
 
 	clearFailuresForFolder(sharedFolder: SharedFolder): void {
@@ -1627,6 +1639,8 @@ export class BackgroundSync extends HasLogging {
 			lane.destroy(destroyed);
 		}
 
+		this.reclaimHistory.clear();
+
 		// Destroy observable collections
 		this.folderResyncs.destroy();
 		this.syncGroups.destroy();
@@ -1654,6 +1668,7 @@ export class BackgroundSync extends HasLogging {
 			retryable: isRetryableSyncError(error),
 			recordedAt: this.timeProvider.now(),
 			request: requestOf(item),
+			reclaims: this.reclaimHistory.get(id) ?? 0,
 		});
 	}
 

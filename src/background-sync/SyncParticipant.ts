@@ -60,9 +60,9 @@ export interface SyncOperationContext {
 export interface SyncParticipant extends WorkTarget {
 	planSyncWork(context: PlanContext): WorkRequest<SyncParticipant>[];
 	/**
-	 * Whether a session can be taken now. A file that cannot (a document
-	 * parked in conflict, which only its resolution surface may move) has the
-	 * request settle as completed with no work; the engine never queues it.
+	 * Whether a session can be taken now. A file that cannot (one parked in
+	 * a state only its own resolution surface may move) has the request
+	 * settle as completed with no work; the engine never queues it.
 	 */
 	acceptsSession(): boolean;
 	/**

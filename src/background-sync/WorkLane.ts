@@ -111,15 +111,6 @@ export class WorkLane {
 		return this.claims.has(guid);
 	}
 
-	completionFor(guid: string): Promise<WorkCompletion> | undefined {
-		return this.claims.get(guid)?.completion;
-	}
-
-	/** The queued-or-running item for a guid, if any. */
-	itemFor(guid: string): QueueItem | undefined {
-		return this.claims.get(guid)?.item;
-	}
-
 	// =========================================================================
 	// Admission
 	// =========================================================================
@@ -143,7 +134,16 @@ export class WorkLane {
 			}
 			if (held.item.status === "pending") {
 				const index = this.queue.indexOf(held.item);
-				const upgraded = this.queuedItem(request, held.item.enqueuedAt);
+				// The stronger request takes over the queued work's place in
+				// line AND its retry bookkeeping: a parked backoff window and
+				// the attempts already spent carry over, so an upgrade never
+				// jumps a backoff or refreshes the retry budget.
+				const upgraded: QueueItem = {
+					...this.queuedItem(request, held.item.enqueuedAt),
+					retryAttempts: held.item.retryAttempts,
+					nextAttemptAt: held.item.nextAttemptAt,
+					retryReason: held.item.retryReason,
+				};
 				if (index >= 0) {
 					this.queue[index] = upgraded;
 				} else {
@@ -275,7 +275,7 @@ export class WorkLane {
 		const claim = this.claims.get(item.guid);
 		if (claim?.item === item) {
 			this.claims.delete(item.guid);
-			claim.reject(new Error("Document destroyed"));
+			claim.reject(new Error("Target destroyed"));
 		}
 		this.cancelled.delete(item.guid);
 		this.deps.onDiscarded(item);
@@ -389,10 +389,6 @@ export class WorkLane {
 
 	isCancelled(item: QueueItem): boolean {
 		return item.target.destroyed || this.cancelled.has(item.guid);
-	}
-
-	isCancelledGuid(guid: string, destroyed: boolean): boolean {
-		return destroyed || this.cancelled.has(guid);
 	}
 
 	// =========================================================================
