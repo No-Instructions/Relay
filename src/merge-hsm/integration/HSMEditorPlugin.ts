@@ -353,24 +353,20 @@ export class HSMEditorPluginValue implements PluginValue {
     // expected document GUID and the current editor identity. This detects
     // same-file editor replacement where the old EditorView still resolves to
     // the same document but is no longer the active editor instance. For a
-    // born-attached view that LiveViews has not adopted yet, validity is keyed
-    // off file identity instead; once LiveViews has adopted the editor, the
-    // stricter identity check owns validity permanently.
+    // born-attached view, validity may be keyed off file identity while the
+    // LiveViews registry is between refresh snapshots. The exact authority
+    // identity still makes editor replacement fail closed: transfer revokes
+    // the outgoing EditorView before authorizing its replacement.
     const expectedFile = editorFile;
     const expectedAuthority = authority;
-    let adoptedByLiveView = false;
     this.cm6Integration = new CM6Integration(hsm, this.editor, () => {
       if (editorBindingAuthority(this.editor) !== expectedAuthority) return false;
       // Until the born-attached render replaces the stale buffer, the editor
       // is not a valid dispatch target: document-side changes arriving in
       // this window are already part of the text the render will install.
       if (this.bornAttachedRenderPending) return false;
-      if (this.isCurrentEditorInstance(expectedGuid)) {
-        adoptedByLiveView = true;
-        return true;
-      }
-      if (!bornAttached || adoptedByLiveView) return false;
-      return this.isEditorShowingFile(expectedGuid, expectedFile);
+      if (this.isCurrentEditorInstance(expectedGuid)) return true;
+      return bornAttached && this.isEditorShowingFile(expectedGuid, expectedFile);
     });
     this.debug(`Initialized for ${this.document.guid} (embed: ${this.embed})`);
 
