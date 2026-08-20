@@ -15,6 +15,24 @@ export function diagnosticObjectId(value: object | null | undefined): string | n
 	return id;
 }
 
+export function diagnosticTextSummary(text: string | null | undefined): {
+	length: number | null;
+	hash: string | null;
+	suffix: string | null;
+} {
+	if (text == null) return { length: null, hash: null, suffix: null };
+	let hash = 0x811c9dc5;
+	for (let index = 0; index < text.length; index++) {
+		hash ^= text.charCodeAt(index);
+		hash = Math.imul(hash, 0x01000193);
+	}
+	return {
+		length: text.length,
+		hash: (hash >>> 0).toString(16).padStart(8, "0"),
+		suffix: text.slice(-48),
+	};
+}
+
 export function recordEditorIdentity(
 	editor: EditorView,
 	stage: string,

@@ -37,7 +37,11 @@ import {
   onEditorBindingAuthorityChange,
   type EditorBindingAuthority,
 } from "./editorBindingAuthority";
-import { diagnosticObjectId, recordEditorIdentity } from "./editorIdentityDiagnostic";
+import {
+  diagnosticObjectId,
+  diagnosticTextSummary,
+  recordEditorIdentity,
+} from "./editorIdentityDiagnostic";
 
 type EditorConnectionManager = {
   sharedFolders: { lookup(path: string): any };
@@ -340,6 +344,14 @@ export class HSMEditorPluginValue implements PluginValue {
     // and locked binds immediately, keyed off file identity; every other
     // view keeps the LiveView-gated path below.
     const bornAttached = this.probeBornAttached();
+    recordEditorIdentity(this.editor, "grant-reconciliation", {
+      authorityKind: authority.kind,
+      pendingEditCount: this.pendingEdits.length,
+      pendingBase: diagnosticTextSummary(this.pendingEditBaseText),
+      pendingEdited: diagnosticTextSummary(this.pendingEdits.at(-1)?.docText),
+      bornAttached,
+      hsmActiveTracking: hsm.matches("active.tracking"),
+    });
 
     // LiveViews attaches after Obsidian creates and populates the EditorView.
     // Registering with the HSM before that attachment makes bootstrap dispatches
@@ -431,14 +443,28 @@ export class HSMEditorPluginValue implements PluginValue {
     this.bornAttachedRenderPending = true;
     const integration = this.cm6Integration;
     const epoch = this.bindingEpoch;
+    recordEditorIdentity(this.editor, "born-attached-render-scheduled", {
+      epoch,
+      pendingEditCount: this.pendingEdits.length,
+      pendingBase: diagnosticTextSummary(this.pendingEditBaseText),
+      pendingEdited: diagnosticTextSummary(this.pendingEdits.at(-1)?.docText),
+    });
 
     queueMicrotask(() => {
       // A queued render belongs to exactly one binding. Same-task view reuse
       // must not clear or consume the next binding's pending input.
-      if (epoch !== this.bindingEpoch || integration !== this.cm6Integration) return;
+      if (epoch !== this.bindingEpoch || integration !== this.cm6Integration) {
+        recordEditorIdentity(this.editor, "born-attached-render-stale", {
+          scheduledEpoch: epoch,
+          currentEpoch: this.bindingEpoch,
+          integrationMatches: integration === this.cm6Integration,
+        });
+        return;
+      }
       this.bornAttachedRenderPending = false;
       const abort = (reason: string): void => {
         this.log(`Aborting born-attached render for ${expectedGuid}: ${reason}`);
+        recordEditorIdentity(this.editor, "born-attached-render-abort", { reason });
       };
       if (editorBindingAuthority(this.editor) !== expectedAuthority) {
         abort("whole-document authority changed");
@@ -452,6 +478,11 @@ export class HSMEditorPluginValue implements PluginValue {
       const restores = this.pendingRestores;
       const baseText = this.pendingEditBaseText;
       const editedText = this.pendingEdits.at(-1)?.docText;
+      recordEditorIdentity(this.editor, "born-attached-delta-consumed", {
+        pendingEditCount: this.pendingEdits.length,
+        base: diagnosticTextSummary(baseText),
+        edited: diagnosticTextSummary(editedText),
+      });
       this.clearPendingEdits();
       if (this.destroyed || !this.cm6Integration) {
         abort("integration destroyed");
@@ -480,6 +511,13 @@ export class HSMEditorPluginValue implements PluginValue {
 
       const localText = localDoc.getText("contents").toString();
       const currentText = this.editor.state.doc.toString();
+      recordEditorIdentity(this.editor, "born-attached-render-decision", {
+        local: diagnosticTextSummary(localText),
+        current: diagnosticTextSummary(currentText),
+        willReplace: currentText !== localText,
+        restoreCount: restores.length,
+        ingestedReplacementCount: hsm.getRecentIngestedEditorReplacementTexts().length,
+      });
 
       // Do not replace the HSM's legitimate sibling view reference until
       // every late born-attached check has passed. In particular, a nested
@@ -494,13 +532,25 @@ export class HSMEditorPluginValue implements PluginValue {
       // Replace whatever the buffer holds — stale disk load, a save echo,
       // pre-bind typing — with the document text.
       if (currentText !== localText) {
-        this.editor.dispatch({
-          changes: [{ from: 0, to: currentText.length, insert: localText }],
-          annotations: syncDispatchAnnotations(
-            this.editor,
-            flags().enableSingleUserHistory,
-          ),
-        });
+        try {
+          this.editor.dispatch({
+            changes: [{ from: 0, to: currentText.length, insert: localText }],
+            annotations: syncDispatchAnnotations(
+              this.editor,
+              flags().enableSingleUserHistory,
+            ),
+          });
+          recordEditorIdentity(this.editor, "born-attached-render-dispatch", {
+            outcome: "success",
+            result: diagnosticTextSummary(this.editor.state.doc.toString()),
+          });
+        } catch (error) {
+          recordEditorIdentity(this.editor, "born-attached-render-dispatch", {
+            outcome: "error",
+            error: formatUserFacingError(error),
+          });
+          throw error;
+        }
       }
 
       // Re-enter pre-bind typing rebased onto the rendered text, oldest
@@ -529,13 +579,44 @@ export class HSMEditorPluginValue implements PluginValue {
           );
           continue;
         }
+        recordEditorIdentity(this.editor, "born-attached-delta-rebased", {
+          base: diagnosticTextSummary(layer.baseText),
+          edited: diagnosticTextSummary(layer.editedText),
+          targetBefore: diagnosticTextSummary(targetText),
+          targetAfter: diagnosticTextSummary(rebased),
+        });
         targetText = rebased;
       }
-      if (targetText === localText) return;
-      this.editor.dispatch({
-        changes: buildTextChanges(localText, targetText),
-        annotations: [Transaction.userEvent.of("input.type")],
-      });
+      if (targetText === localText) {
+        recordEditorIdentity(this.editor, "born-attached-input-dispatch", {
+          outcome: "no-op",
+          target: diagnosticTextSummary(targetText),
+        });
+        return;
+      }
+      const changes = buildTextChanges(localText, targetText);
+      try {
+        this.editor.dispatch({
+          changes,
+          annotations: [Transaction.userEvent.of("input.type")],
+        });
+        recordEditorIdentity(this.editor, "born-attached-input-dispatch", {
+          outcome: "success",
+          changeCount: changes.length,
+          source: diagnosticTextSummary(localText),
+          target: diagnosticTextSummary(targetText),
+          result: diagnosticTextSummary(this.editor.state.doc.toString()),
+        });
+      } catch (error) {
+        recordEditorIdentity(this.editor, "born-attached-input-dispatch", {
+          outcome: "error",
+          changeCount: changes.length,
+          source: diagnosticTextSummary(localText),
+          target: diagnosticTextSummary(targetText),
+          error: formatUserFacingError(error),
+        });
+        throw error;
+      }
     });
   }
 
@@ -624,6 +705,12 @@ export class HSMEditorPluginValue implements PluginValue {
           this.pendingEdits = changes.length > 0
             ? [{ changes, docText: editedText, userEvent }]
             : [];
+          recordEditorIdentity(this.editor, "pre-grant-delta-captured", {
+            userEvent: userEvent ?? null,
+            changeCount: changes.length,
+            base: diagnosticTextSummary(this.pendingEditBaseText),
+            edited: diagnosticTextSummary(editedText),
+          });
         }
       }
       return;
