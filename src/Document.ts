@@ -26,6 +26,26 @@ import { readNoteText } from "./diskText";
 import { trackAsyncCleanup } from "./reloadUtils";
 import { trackPromise } from "./trackPromise";
 import { DocumentDestroyedError } from "./DocumentDestroyedError";
+import type {
+	PlanContext,
+	ServerUpdateSink,
+	SessionIntent,
+	SyncOperationContext,
+	SyncParticipant,
+} from "./background-sync/SyncParticipant";
+import {
+	fileName,
+	isRetryableSyncError,
+	RetryableProviderSyncError,
+} from "./background-sync/errors";
+import { awaitProviderSession } from "./background-sync/providerSession";
+import { formatUserFacingError } from "./UserFacingError";
+import { isEmptyDoc } from "./merge-hsm/snapshots";
+import { metrics } from "./debug";
+import {
+	createWorkRequest,
+	type WorkRequest,
+} from "./background-sync/WorkRequest";
 
 export function isDocument(file: unknown): file is Document {
 	return file instanceof Document;
@@ -42,7 +62,10 @@ type EngineWriteIdentity = {
 	mtime: number | null;
 };
 
-export class Document extends HasProvider implements IFile, HasMimeType {
+export class Document
+	extends HasProvider
+	implements IFile, HasMimeType, SyncParticipant, ServerUpdateSink
+{
 	private _parent: SharedFolder;
 	private _persistence: IndexeddbPersistence | null = null;
 	whenSyncedPromise: Dependency<void> | null = null;
@@ -293,6 +316,522 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 */
 	public get hsm(): MergeHSM | null {
 		return this._hsm;
+	}
+
+	/**
+	 * Plan this document's background work for an occasion, answering from
+	 * the machine's own state — cold where the machine allows it.
+	 *
+	 * A sweep converges every document that is not provably current: no
+	 * machine yet, no merge base, an unsettled status, or a retained server
+	 * head the machine cannot match. A document in conflict is left to its
+	 * resolution surface. A reconnect recovers the merge base for documents
+	 * that never established one and are not otherwise busy.
+	 */
+	planSyncWork(context: PlanContext): WorkRequest<SyncParticipant>[] {
+		if (this.destroyed) return [];
+		switch (context.occasion.kind) {
+			case "sweep":
+				return this.wantsConverge() ? [createWorkRequest(this, "converge", "sweep")] : [];
+			case "reconnect":
+				return this.wantsBackfill() && !context.inFlight(this.guid, "session")
+					? [createWorkRequest(this, "backfill", "reconnect")]
+					: [];
+			default:
+				return [];
+		}
+	}
+
+	/**
+	 * A live update for this document arrived on the folder's event stream.
+	 * An active document converges through its own provider session and
+	 * ignores the stream. Otherwise each update is classified against the
+	 * applied-remote baseline: what follows on is applied, what is already
+	 * covered is dropped, and a dependency gap is healed by fetching a
+	 * keyframe — updates arriving while the fetch is in flight are buffered
+	 * and replayed behind it.
+	 */
+	onServerUpdate(update: Uint8Array): void {
+		if (this.destroyed) return;
+		const mergeManager = this.sharedFolder.mergeManager;
+		if (!mergeManager) return;
+		if (mergeManager.isActive(this.guid)) return;
+
+		if (this._pendingKeyframeUpdates) {
+			metrics.recordDocumentUpdateEvent("catchup", this.sharedFolder.guid);
+			this._pendingKeyframeUpdates.push(update);
+			return;
+		}
+
+		switch (mergeManager.classifyUpdate(this.guid, update)) {
+			case "apply":
+				mergeManager.handleRemoteUpdate(this.guid, update);
+				metrics.recordDocumentUpdateEvent("applied", this.sharedFolder.guid);
+				mergeManager.advanceAppliedRemoteUpdate(this.guid, update);
+				break;
+			case "stale":
+				break; // already covered by the applied remote baseline
+			case "gap":
+				metrics.recordDocumentUpdateEvent("catchup", this.sharedFolder.guid);
+				this.fetchKeyframeAndDeliver([update]);
+				break;
+		}
+	}
+
+	/** Updates buffered behind an in-flight keyframe fetch, if one is. */
+	private _pendingKeyframeUpdates: Uint8Array[] | null = null;
+
+	/**
+	 * Fetch a full-state keyframe through the background engine, then deliver
+	 * it and every update buffered behind it.
+	 */
+	private fetchKeyframeAndDeliver(pending: Uint8Array[]): void {
+		this._pendingKeyframeUpdates = pending;
+		this.sharedFolder.backgroundSync
+			.enqueueDownload(this, false, "keyframe")
+			.then((keyframe) => {
+				// The longest window in the document: a network round trip,
+				// after which every branch below reaches for the merge manager
+				// that teardown released.
+				if (this.destroyed) return;
+				const buffered = this._pendingKeyframeUpdates;
+				this._pendingKeyframeUpdates = null;
+				if (!buffered || buffered.length === 0) return;
+				const mergeManager = this.sharedFolder.mergeManager;
+				if (!mergeManager) return;
+
+				if (keyframe) {
+					mergeManager.handleRemoteUpdate(this.guid, keyframe);
+					mergeManager.seedAppliedRemoteUpdate(this.guid, keyframe);
+				}
+
+				for (const update of buffered) {
+					if (mergeManager.classifyUpdate(this.guid, update) === "apply") {
+						mergeManager.handleRemoteUpdate(this.guid, update);
+						mergeManager.advanceAppliedRemoteUpdate(this.guid, update);
+					}
+					// 'stale' → subsumed by the keyframe. 'gap' should not
+					// happen after a keyframe; if it does the update is
+					// dropped — the keyframe is the best we have.
+				}
+			})
+			.catch((e) => {
+				if (this.destroyed) return;
+				this._pendingKeyframeUpdates = null;
+				this.warn("[onServerUpdate] keyframe fetch failed", e);
+			});
+	}
+
+	/** A document parked in conflict is moved only by its resolution surface. */
+	acceptsSession(): boolean {
+		return this.hsm?.getSyncStatus().status !== "conflict";
+	}
+
+	async runSyncSession(
+		intent: SessionIntent,
+		context: SyncOperationContext,
+	): Promise<void> {
+		switch (intent) {
+			case "upload":
+				return this.upload(context);
+			case "backfill":
+				return this.backfillMergeBase(context);
+			default:
+				return this.converge(context);
+		}
+	}
+
+	// =========================================================================
+	// Converge: a background provider session
+	// =========================================================================
+
+	private async converge(context: SyncOperationContext): Promise<void> {
+				if (this.destroyed) return;
+		if (!this.acceptsSession()) return;
+		try {
+			const synced = await this.runProviderSession(context);
+			if (!synced) {
+				if (context.isCancelled()) return;
+				throw new Error(`Unable to sync ${fileName(this.path)}`);
+			}
+		} catch (e) {
+			if (!isRetryableSyncError(e)) {
+				this.logSyncError("[converge] failed", e);
+			}
+			throw e;
+		}
+	}
+
+	/**
+	 * Open (or borrow) a provider session for the document, wait for it to
+	 * reach synced, establish the merge base if the document has none, and
+	 * deliver PROVIDER_SYNCED. A session this operation opened itself is
+	 * released on the way out unless a user surface took the document
+	 * meanwhile. Resolves false when the work was cancelled.
+	 */
+	private async runProviderSession(
+		context: SyncOperationContext,
+	): Promise<boolean> {
+				if (this.destroyed) return false;
+		this.log(
+			`[session] start: ${this.path} guid=${this.guid} intent=${this.intent} connected=${this.connected}`,
+		);
+		if (context.isCancelled()) return false;
+		const sharedFolder = this.sharedFolder;
+		const refreshQueueKey = S3RN.encode(this.s3rn);
+		const isActive =
+			this.userLock || sharedFolder?.mergeManager?.isActive(this.guid);
+		const startedDisconnected = this.intent === "disconnected";
+		const hadProviderIntegration = this.hasProviderIntegration();
+		const acquiredIdleIntegration = !isActive
+			? this.ensureIdleProviderIntegration({
+					freshRemoteDoc: !!this.hsm?.hasFork(),
+				})
+			: false;
+		const shouldCleanupIdleSession = () =>
+			startedDisconnected &&
+			!(this.userLock || sharedFolder?.mergeManager?.isActive(this.guid));
+		const cleanupIdleSession = () => {
+			if (acquiredIdleIntegration) {
+				this.destroyIdleProviderIntegration();
+				if (shouldCleanupIdleSession()) {
+					sharedFolder?.tokenStore.removeFromRefreshQueue(refreshQueueKey);
+				}
+				return;
+			}
+			if (!shouldCleanupIdleSession()) return;
+			if (hadProviderIntegration || this.hasProviderIntegration()) {
+				return;
+			}
+			this.releaseIdleSession();
+		};
+		if (this.destroyed) return false;
+
+		let outcome: "synced" | "cancelled";
+		try {
+			outcome = await awaitProviderSession(this, {
+				timeProvider: context.timeProvider,
+				isCancelled: () => context.isCancelled(),
+				warn: (message) => this.warn(message),
+				errorMessage: (error) => this.syncErrorMessage(error),
+			});
+			if (outcome === "synced") {
+				await this.maybeBootstrapMergeBase(context);
+				// A session reaching synced means the same thing to every
+				// machine; the send is idempotent for documents, whose
+				// provider integration already delivered it mid-session.
+				this.hsm?.send({ type: "PROVIDER_SYNCED" });
+			}
+		} finally {
+			if (shouldCleanupIdleSession()) {
+				cleanupIdleSession();
+			}
+		}
+		return outcome === "synced";
+	}
+
+	// =========================================================================
+	// Upload: local state is authoritative
+	// =========================================================================
+
+	private async upload(context: SyncOperationContext): Promise<void> {
+				// The lease from upload preparation must survive the provider session
+		// and the final content assert: hibernation mid-upload detaches the
+		// remoteDoc, which surfaces as an empty remote after preparation.
+		let releaseLease: () => void = () => {};
+		try {
+			if (this.hsm) {
+				releaseLease = await this.prepareUpload(context);
+			}
+			await this.converge(context);
+			if (this.hsm) {
+				this.assertUploadedRemoteHasContent();
+			}
+		} finally {
+			releaseLease();
+		}
+	}
+
+	/**
+	 * Wake the doc and encode its localDoc into the remoteDoc for upload.
+	 * Returns the warm-lease release; the caller holds it until the upload
+	 * resolves so hibernation cannot tear the doc down mid-pipeline.
+	 */
+	async prepareUpload(context: SyncOperationContext): Promise<() => void> {
+				const hsm = this.hsm;
+		if (!hsm) return () => {};
+		if (hsm.hasFork()) {
+			throw new Error(`Cannot upload ${fileName(this.path)} while a fork exists`);
+		}
+
+		const remoteDoc = this.ensureRemoteDoc();
+		const mergeManager = this.sharedFolder.mergeManager;
+		let releaseLease: () => void = () => {};
+		if (!this.userLock && !mergeManager?.isActive(this.guid)) {
+			if (mergeManager) {
+				const lease = mergeManager.wake(this.guid, remoteDoc, {
+					lease: true,
+				});
+				if (lease) {
+					releaseLease = context.holdLease(lease);
+				}
+			}
+		} else {
+			hsm.setRemoteDoc(remoteDoc);
+		}
+		try {
+			await hsm.awaitPersistenceReady();
+
+			if (hsm.hasFork()) {
+				throw new Error(`Cannot upload ${fileName(this.path)} while a fork exists`);
+			}
+			const localDoc = hsm.getLocalDoc();
+			if (!localDoc) {
+				throw new RetryableProviderSyncError(
+					`Local document is not ready for upload: ${fileName(this.path)}`,
+				);
+			}
+
+			Y.applyUpdate(remoteDoc, Y.encodeStateAsUpdate(localDoc), hsm);
+			hsm.setRemoteDoc(remoteDoc);
+			this.assertUploadedRemoteHasContent();
+			return releaseLease;
+		} catch (e) {
+			releaseLease();
+			throw e;
+		}
+	}
+
+	private assertUploadedRemoteHasContent(): void {
+				const remoteDoc = this.hsm?.getRemoteDoc() ?? this.remoteDocOrNull;
+		if (!remoteDoc || isEmptyDoc(remoteDoc)) {
+			throw new RetryableProviderSyncError(
+				`Remote document is empty after upload preparation: ${fileName(this.path)}`,
+			);
+		}
+	}
+
+	// =========================================================================
+	// Backfill: recover a missing merge base from the server's state
+	// =========================================================================
+
+	async backfillMergeBase(context: SyncOperationContext): Promise<void> {
+				if (this.destroyed || !this.acceptsSession()) {
+			return;
+		}
+
+		const hsm = this.hsm;
+		if (!hsm || hsm.state.lca || hsm.isActive() || hsm.hasFork()) {
+			return;
+		}
+
+		let updateBytes: Uint8Array | undefined;
+		try {
+			updateBytes = await this.sharedFolder.backgroundSync.downloadByGuid(
+				this.sharedFolder,
+				this.guid,
+				this.path,
+			);
+		} catch (error) {
+			throw new RetryableProviderSyncError(
+				`LCA backfill download failed for ${fileName(this.path)}: ${this.syncErrorMessage(error)}`,
+				error,
+			);
+		}
+		if (!updateBytes) {
+			throw new RetryableProviderSyncError(
+				`Remote document is empty while backfilling LCA: ${fileName(this.path)}`,
+			);
+		}
+
+		const validationDoc = new Y.Doc();
+		try {
+			Y.applyUpdate(validationDoc, updateBytes);
+			if (isEmptyDoc(validationDoc)) {
+				throw new RetryableProviderSyncError(
+					`Remote document is empty while backfilling LCA: ${fileName(this.path)}`,
+				);
+			}
+		} finally {
+			validationDoc.destroy();
+		}
+
+		const remoteDoc = this.ensureRemoteDoc();
+		Y.applyUpdate(remoteDoc, updateBytes, remoteDoc);
+		const mergeManager = this.sharedFolder.mergeManager;
+		let releaseLease: () => void = () => {};
+		if (mergeManager) {
+			const lease = mergeManager.wake(this.guid, remoteDoc, { lease: true });
+			if (lease) {
+				releaseLease = context.holdLease(lease);
+			}
+		} else {
+			hsm.setRemoteDoc(remoteDoc);
+		}
+		try {
+			const diskState = await this.readDiskContent();
+			const settled = await hsm.bootstrapLCAFromDisk(diskState);
+			if (!settled && hsm.getSyncStatus().status === "pending") {
+				if (!hsm.hasPersistenceUserData()) {
+					this.debug(
+						`[lca-backfill] deferred for ${this.path}: awaiting local enrollment`,
+					);
+					return;
+				}
+				this.debug(
+					`[lca-backfill] deferred for ${this.path}: local or remote state is not ready`,
+				);
+			}
+		} finally {
+			releaseLease();
+		}
+	}
+
+	// =========================================================================
+	// Transfer: the server's full state down to the local copy
+	// =========================================================================
+
+	async transferFromServer(
+		context: SyncOperationContext,
+	): Promise<Uint8Array | undefined> {
+				if (this.sharedFolder.serverEmptyTerminal(this.guid)) {
+			this.debug(
+				`[transfer] skipped ${this.path}: server has no content for guid; awaiting server evidence`,
+			);
+			this.hsm?.send({ type: "DOWNLOAD_FAILED" });
+			return undefined;
+		}
+		try {
+			const response = await this.sharedFolder.backgroundSync.downloadItem(this);
+			const rawUpdate = response.arrayBuffer;
+			const updateBytes = new Uint8Array(rawUpdate);
+
+			// Validate: reject uninitialized documents.
+			const newDoc = new Y.Doc();
+			Y.applyUpdate(newDoc, updateBytes);
+
+			if (isEmptyDoc(newDoc)) {
+				if (this.text) {
+					this.log(
+						"[transfer] server CRDT empty, local has content — uploading",
+					);
+					void this.sharedFolder.backgroundSync.enqueueSync(
+						this,
+						false,
+						"download-empty",
+					);
+					this.hsm?.send({ type: "DOWNLOAD_FAILED" });
+					return undefined;
+				}
+				// The server pushes a document.updated event once a peer
+				// uploads content, which re-enables downloads for the guid —
+				// no timer-based retry needed.
+				this.sharedFolder.recordServerEmpty(this.guid);
+				this.log(
+					"[transfer] Server contains uninitialized document. Waiting for peer to upload.",
+				);
+				this.hsm?.send({ type: "DOWNLOAD_FAILED" });
+				return undefined;
+			}
+
+			this.log("[transfer] applying content from server");
+			Y.applyUpdate(this.ydoc, updateBytes);
+			this.hsm?.setRemoteDoc(this.ydoc);
+			await this.maybeBootstrapMergeBase(context);
+			this.hsm?.send({ type: "DOWNLOAD_COMPLETE" });
+			return updateBytes;
+		} catch (e) {
+			this.logSyncError("[transfer] failed", e);
+			this.hsm?.send({ type: "DOWNLOAD_FAILED" });
+			throw e;
+		}
+	}
+
+	/**
+	 * Establish the merge base from disk for a document that has none and is
+	 * not active, waking it through the residency pool when it is cold.
+	 */
+	async maybeBootstrapMergeBase(context: SyncOperationContext): Promise<void> {
+				const hsm = this.hsm;
+		if (!hsm || hsm.state.lca || hsm.isActive()) return;
+
+		// A first download has not written the file yet — the applied server
+		// content materializes it through the WRITE_DISK effect. With no file
+		// on disk there is no on-disk content to reconcile, so there is no
+		// last-common-ancestor to recover from disk. Skip rather than read,
+		// which would throw for the absent TFile and fail the download for a
+		// doc that is simply arriving for the first time. The LCA is
+		// established once the file lands, through the idle-merge path.
+		if (!this.tfile) {
+			this.debug(
+				`[bootstrapLCA] skipped for ${this.path}: file not yet materialized`,
+			);
+			return;
+		}
+
+		let releaseLease: () => void = () => {};
+		try {
+			const mergeManager = this.sharedFolder.mergeManager;
+			if (mergeManager?.getHibernationState(this.guid) === "hibernated") {
+				const lease = mergeManager.wake(this.guid, this.ensureRemoteDoc(), {
+					lease: true,
+				});
+				if (lease) {
+					releaseLease = context.holdLease(lease);
+				}
+				await hsm.awaitPersistenceReady();
+			}
+
+			const diskState = await this.readDiskContent();
+			const repaired = await hsm.bootstrapLCAFromDisk(diskState);
+			if (!repaired && hsm.getSyncStatus().status === "pending") {
+				if (!hsm.hasPersistenceUserData()) {
+					this.debug(
+						`[bootstrapLCA] deferred for ${this.path}: awaiting local CRDT enrollment`,
+					);
+					return;
+				}
+				this.debug(
+					`[bootstrapLCA] skipped for ${this.path}: local CRDT is not enrolled or remote state is not ready`,
+				);
+			}
+		} catch (e) {
+			this.warn(
+				`[bootstrapLCA] failed for ${this.path}: ${this.syncErrorMessage(e)}`,
+				e,
+			);
+			throw e;
+		} finally {
+			releaseLease();
+		}
+	}
+
+	private syncErrorMessage(error: unknown): string {
+		return formatUserFacingError(error);
+	}
+
+	private logSyncError(context: string, error: unknown): void {
+		this.error(`${context}: ${this.syncErrorMessage(error)}`, error);
+	}
+
+	private wantsConverge(): boolean {
+		const hsm = this._hsm;
+		if (!hsm) return true;
+		if (hsm.getSyncStatus().status === "conflict") return false;
+		if (!hsm.state.lca) return true;
+		if (hsm.getSyncStatus().status !== "synced") return true;
+		return hsm.compareRetainedServerHead() !== "current";
+	}
+
+	private wantsBackfill(): boolean {
+		const hsm = this._hsm;
+		if (!hsm) return false;
+		if (this.sharedFolder.isPendingUpload(this.path)) return false;
+		if (hsm.isActive()) return false;
+		if (hsm.state.lca) return false;
+		if (hsm.hasFork()) return false;
+		if (hsm.getSyncStatus().status === "pending") return true;
+		return hsm.compareRetainedServerHead() === "ahead";
 	}
 
 	/**

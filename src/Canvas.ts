@@ -3,7 +3,7 @@ import { HasProvider } from "./HasProvider";
 import type { HasMimeType, IFile } from "./IFile";
 import type { LoginManager } from "./LoginManager";
 import { S3Canvas, S3Folder, S3RN, S3RemoteCanvas } from "./S3RN";
-import { snapshotFromDoc } from "./merge-hsm/snapshots";
+import { isEmptyDoc, snapshotFromDoc } from "./merge-hsm/snapshots";
 import * as Y from "yjs";
 import type { SharedFolder } from "./SharedFolder";
 import { getMimeType } from "./mimetypes";
@@ -27,7 +27,23 @@ import {
 	CANVAS_BRIDGE_IN_ORIGIN,
 } from "./canvas-hsm";
 import type { CanvasEffect } from "./canvas-hsm";
-import type { ManagedFile } from "./merge-hsm/types";
+import type { ManagedFile, YjsSnapshot } from "./merge-hsm/types";
+import { snapshotMetaFromUpdate } from "./merge-hsm/snapshots";
+import { metrics } from "./debug";
+import type {
+	PlanContext,
+	ServerUpdateSink,
+	SessionIntent,
+	SyncOperationContext,
+	SyncParticipant,
+} from "./background-sync/SyncParticipant";
+import { fileName, isRetryableSyncError } from "./background-sync/errors";
+import { formatUserFacingError } from "./UserFacingError";
+import { awaitProviderSession } from "./background-sync/providerSession";
+import {
+	createWorkRequest,
+	type WorkRequest,
+} from "./background-sync/WorkRequest";
 
 export function isCanvas(file?: IFile | null): file is Canvas {
 	return file instanceof Canvas;
@@ -96,7 +112,7 @@ function copyDefined<T>(value: T): T {
 
 export class Canvas
 	extends HasProvider
-	implements IFile, HasMimeType, ManagedFile
+	implements IFile, HasMimeType, ManagedFile, SyncParticipant, ServerUpdateSink
 {
 	private _parent: SharedFolder;
 	private _persistenceInstance: IndexeddbPersistence | null = null;
@@ -564,7 +580,7 @@ export class Canvas
 			}
 			case "ENQUEUE_DOWNLOAD": {
 				const p = this.sharedFolder.backgroundSync
-					.enqueueCanvasDownload(this, false)
+					.enqueueDownload(this, false)
 					.catch(() => {
 						this.hsm.send({ type: "DOWNLOAD_FAILED" });
 					});
@@ -787,6 +803,205 @@ export class Canvas
 	public get sharedFolder(): SharedFolder {
 		return this._parent;
 	}
+
+	/**
+	 * Plan this canvas's background work. A sweep converges the canvas
+	 * unless its machine can prove, warm or cold, that it is current with
+	 * the newest server head it has heard; a server head is reacted to on
+	 * the spot and plans no request of its own — the machine asks for the
+	 * download it needs.
+	 */
+	planSyncWork(context: PlanContext): WorkRequest<SyncParticipant>[] {
+		if (this.destroyed) return [];
+		switch (context.occasion.kind) {
+			case "sweep":
+				return this.hsm.compareRetainedServerHead() !== "current"
+					? [createWorkRequest(this, "converge", "sweep")]
+					: [];
+			case "server-head":
+				this.onServerHead(context.occasion.head);
+				return [];
+			default:
+				return [];
+		}
+	}
+
+	acceptsSession(): boolean {
+		return true;
+	}
+
+	async runSyncSession(
+		_intent: SessionIntent,
+		context: SyncOperationContext,
+	): Promise<void> {
+				if (this.destroyed) return;
+		try {
+			const synced = await this.runProviderSession(context);
+			if (!synced) {
+				if (context.isCancelled()) return;
+				throw new Error(`Unable to sync ${fileName(this.path)}`);
+			}
+		} catch (e) {
+			if (!isRetryableSyncError(e)) {
+				this.logSyncError("[session] failed", e);
+			}
+			throw e;
+		}
+	}
+
+	/**
+	 * Drive the canvas's provider session to synced and deliver
+	 * PROVIDER_SYNCED. Canvas activeness is the view lock alone: a session
+	 * no view holds is released on the way out, whether this operation
+	 * opened it or found it open. Resolves false when the work was cancelled.
+	 */
+	private async runProviderSession(
+		context: SyncOperationContext,
+	): Promise<boolean> {
+				if (this.destroyed) return false;
+		this.log(
+			`[session] start: ${this.path} guid=${this.guid} intent=${this.intent} connected=${this.connected}`,
+		);
+		if (context.isCancelled()) return false;
+		const sharedFolder = this.sharedFolder;
+		const shouldReleaseSession = () =>
+			!(this.userLock || sharedFolder?.mergeManager?.isActive(this.guid));
+
+		let outcome: "synced" | "cancelled";
+		try {
+			outcome = await awaitProviderSession(this, {
+				timeProvider: context.timeProvider,
+				isCancelled: () => context.isCancelled(),
+				warn: (message) => this.warn(message),
+				errorMessage: (error) => this.syncErrorMessage(error),
+			});
+			if (outcome === "synced") {
+				// A session reaching synced means the same thing to every
+				// machine.
+				this.hsm.send({ type: "PROVIDER_SYNCED" });
+			}
+		} finally {
+			if (shouldReleaseSession()) {
+				this.releaseIdleSession();
+			}
+		}
+		return outcome === "synced";
+	}
+
+	async transferFromServer(
+		_context: SyncOperationContext,
+	): Promise<Uint8Array | undefined> {
+				if (this.sharedFolder.serverEmptyTerminal(this.guid)) {
+			this.debug(
+				`[transfer] skipped ${this.path}: server has no content for guid; awaiting server evidence`,
+			);
+			this.hsm.send({ type: "DOWNLOAD_FAILED" });
+			return undefined;
+		}
+		try {
+			const response = await this.sharedFolder.backgroundSync.downloadItem(this);
+			const rawUpdate = response.arrayBuffer;
+			const updateBytes = new Uint8Array(rawUpdate);
+
+			// A guid that is registered but never uploaded downloads as an
+			// empty doc; defer instead of reporting a contentless download
+			// as complete. Enrolled canvases always carry the header op, so
+			// only truly never-uploaded content defers.
+			const peekDoc = new Y.Doc();
+			Y.applyUpdate(peekDoc, updateBytes);
+			const serverEmpty = isEmptyDoc(peekDoc);
+			peekDoc.destroy();
+			if (serverEmpty) {
+				this.sharedFolder.recordServerEmpty(this.guid);
+				this.log(
+					"[transfer] server has guid registered but no content",
+					this.path,
+				);
+				this.hsm.send({ type: "DOWNLOAD_FAILED" });
+				return undefined;
+			}
+
+			this.log("[transfer] applying content from server");
+			// Server content lands on the provider-facing remoteDoc; the
+			// CanvasDocBridge merges it into the localDoc, and the canvas's
+			// machine decides whether disk follows. The canvas must be warm
+			// first — on a hibernated canvas the update would land on a
+			// bridge-less remoteDoc, and a later re-download of the same ops
+			// produces no update events to recover it.
+			this.wake();
+			Y.applyUpdate(this.ydoc, updateBytes);
+			// A full-state download is the canvas keyframe: seed the
+			// applied-remote baseline so later folder events classify
+			// against it instead of gapping once per session.
+			this.sharedFolder.mergeManager?.seedAppliedRemoteUpdate(
+				this.guid,
+				updateBytes,
+			);
+			this.hsm.send({ type: "DOWNLOAD_COMPLETE" });
+			return updateBytes;
+		} catch (e) {
+			this.logSyncError("[transfer] failed", e);
+			this.hsm.send({ type: "DOWNLOAD_FAILED" });
+			throw e;
+		}
+	}
+
+	private syncErrorMessage(error: unknown): string {
+		return formatUserFacingError(error);
+	}
+
+	private logSyncError(context: string, error: unknown): void {
+		this.error(`${context}: ${this.syncErrorMessage(error)}`, error);
+	}
+
+	/**
+	 * The server reported a head for this canvas. That is fresh evidence the
+	 * server holds content, so downloads parked as server-empty reopen; the
+	 * head then routes through the merge layer, which compares it against
+	 * the machine's basis (cold when it can), signals the machine when the
+	 * server is ahead, and wakes a machine that could only pocket the
+	 * signal.
+	 */
+	onServerHead(head: YjsSnapshot): void {
+		if (this.destroyed) return;
+		this._parent.clearServerEmpty(this.guid);
+		this._parent.mergeManager?.serverHeadsReceived([
+			{ guid: this.guid, snapshot: head.snapshot },
+		]);
+	}
+
+	/**
+	 * A live update for this canvas arrived on the folder's event stream.
+	 * Updates land on the provider-facing remoteDoc through the merge
+	 * manager; the bridge merges them into the localDoc, where the machine
+	 * observes the change and decides whether disk follows. The stream is
+	 * lossy — the server coalesces events per sender, and a dropped batch
+	 * leaves a dependency gap Yjs would buffer silently forever — so each
+	 * update is classified against the applied-remote baseline, and a gap
+	 * heals through the machine's full-state download: the update's own
+	 * snapshot meta names the state the server minimally holds.
+	 */
+	onServerUpdate(update: Uint8Array): void {
+		if (this.destroyed) return;
+		const mergeManager = this._parent.mergeManager;
+		if (!mergeManager) return;
+		switch (mergeManager.classifyUpdate(this.guid, update)) {
+			case "apply":
+				mergeManager.handleRemoteUpdate(this.guid, update);
+				metrics.recordDocumentUpdateEvent("applied", this._parent.guid);
+				mergeManager.advanceAppliedRemoteUpdate(this.guid, update);
+				break;
+			case "stale":
+				break;
+			case "gap":
+				metrics.recordDocumentUpdateEvent("catchup", this._parent.guid);
+				this.onServerHead({
+					snapshot: snapshotMetaFromUpdate(update).snapshot,
+				});
+				break;
+		}
+	}
+
 	public get tfile(): TFile | null {
 		if (!this._tfile) {
 			this._tfile = this._parent.getTFile(this);

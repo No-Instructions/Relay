@@ -71,7 +71,14 @@ import {
 import { recordHSMEntry } from "./debug";
 import { trackAsyncCleanup } from "./reloadUtils";
 import { DestroyedError, isDestroyedError } from "./DestroyedError";
-import { snapshotMetaFromUpdate } from "./merge-hsm/snapshots";
+import {
+	isServerUpdateSink,
+	isSyncParticipant,
+	type PlanContext,
+	type PlanOccasion,
+	type SyncParticipant,
+} from "./background-sync/SyncParticipant";
+import type { WorkRequest } from "./background-sync/WorkRequest";
 import { readNoteText } from "./diskText";
 import {
 	HSMStore,
@@ -266,7 +273,6 @@ export class SharedFolder extends HasProvider {
 	syncSettingsManager: SyncSettingsManager;
 	mergeManager: MergeManager;
 	private recordingBridge: E2ERecordingBridge;
-	private _pendingKeyframeUpdates: Map<string, Uint8Array[]> = new Map();
 	private _pendingRemaps: Set<string> = new Set();
 	/**
 	 * Paths whose download stepped aside for an in-flight reconciliation. The
@@ -846,64 +852,8 @@ export class SharedFolder extends HasProvider {
 		const file = this.files.get(guid);
 		if (!file) return;
 
-		if (isCanvas(file)) {
-			// A live update event is fresh evidence the server has content.
-			this.clearServerEmpty(guid);
-			if (!event.update) return;
-			const update =
-				event.update instanceof Uint8Array
-					? event.update
-					: new Uint8Array(event.update);
-			// Folder-routed canvas updates land on the provider-facing
-			// remoteDoc; the CanvasDocBridge merges them into the localDoc,
-			// where the CanvasHSM observes the change and decides whether
-			// disk follows. The manager buffers bytes for hibernated
-			// canvases and wakes them through the shared queue.
-			if (!this.mergeManager) {
-				Y.applyUpdate(file.ydoc, update, this);
-				return;
-			}
-			// The event stream is lossy — the server coalesces events per
-			// sender and a dropped batch leaves a dependency gap that Yjs
-			// buffers silently forever. Classify against the applied-remote
-			// baseline the way documents do; a gap heals through the
-			// machine's full-state download instead of a blind apply.
-			const canvasClassification = this.mergeManager.classifyUpdate(
-				guid,
-				update,
-			);
-			switch (canvasClassification) {
-				case "apply":
-					this.mergeManager.handleRemoteUpdate(guid, update);
-					metrics.recordDocumentUpdateEvent("applied", this.guid);
-					this.mergeManager.advanceAppliedRemoteUpdate(guid, update);
-					break;
-				case "stale":
-					break;
-				case "gap":
-					metrics.recordDocumentUpdateEvent("catchup", this.guid);
-					// A dependency gap names the state the server minimally
-					// holds — the update's own snapshot meta. The routing
-					// compares it, signals the machine, and wakes it if it
-					// could only pocket the signal.
-					this.mergeManager.serverHeadsReceived([
-						{
-							guid,
-							snapshot: snapshotMetaFromUpdate(update).snapshot,
-						},
-					]);
-					break;
-			}
-			return;
-		}
-
-		if (!isDocument(file)) return;
-
-		// Active documents: ProviderIntegration handles sync via y-protocols
-		if (this.mergeManager.isActive(guid)) {
-			return;
-		}
-
+		// A live update event is fresh evidence the server has content.
+		this.clearServerEmpty(guid);
 		if (!event.update) return;
 
 		// Normalize update bytes (CBOR decoding may return Buffer or plain object)
@@ -912,27 +862,10 @@ export class SharedFolder extends HasProvider {
 				? event.update
 				: new Uint8Array(event.update);
 
-		// If a keyframe fetch is in progress, buffer the update
-		const buf = this._pendingKeyframeUpdates.get(guid);
-		if (buf) {
-			metrics.recordDocumentUpdateEvent("catchup", this.guid);
-			buf.push(update);
-			return;
-		}
-
-		const classification = this.mergeManager.classifyUpdate(guid, update);
-		switch (classification) {
-			case 'apply':
-				this.mergeManager.handleRemoteUpdate(guid, update);
-				metrics.recordDocumentUpdateEvent("applied", this.guid);
-				this.mergeManager.advanceAppliedRemoteUpdate(guid, update);
-				break;
-			case 'stale':
-				break; // already covered by the applied remote baseline
-			case 'gap':
-				metrics.recordDocumentUpdateEvent("catchup", this.guid);
-				this._fetchKeyframeAndDeliver(file, guid, [update]);
-				break;
+		// The file decides what the update means for it: the folder only
+		// routes the stream.
+		if (isServerUpdateSink(file)) {
+			file.onServerUpdate(update);
 		}
 	}
 
@@ -1172,43 +1105,6 @@ export class SharedFolder extends HasProvider {
 				this._pendingDownloads.delete(path);
 			});
 		return true;
-	}
-
-	/**
-	 * Fetch an HTTP keyframe, then deliver it and the buffered updates.
-	 */
-	private _fetchKeyframeAndDeliver(
-		file: Document,
-		guid: string,
-		pending: Uint8Array[],
-	): void {
-		this._pendingKeyframeUpdates.set(guid, pending);
-		this.backgroundSync.enqueueDownload(file, false).then((keyframe) => {
-			// The longest window in the folder: a network round trip, after
-			// which every branch below reaches for the merge manager that
-			// teardown released. This callback has no rejection handler, so
-			// a download that lands after teardown escapes unreported.
-			if (this.destroyed) return;
-			const buf = this._pendingKeyframeUpdates.get(guid);
-			this._pendingKeyframeUpdates.delete(guid);
-			if (!buf || buf.length === 0) return;
-
-			if (keyframe) {
-				this.mergeManager.handleRemoteUpdate(guid, keyframe);
-				this.mergeManager.seedAppliedRemoteUpdate(guid, keyframe);
-			}
-
-			for (const u of buf) {
-				const c = this.mergeManager.classifyUpdate(guid, u);
-				if (c === 'apply') {
-					this.mergeManager.handleRemoteUpdate(guid, u);
-					this.mergeManager.advanceAppliedRemoteUpdate(guid, u);
-				}
-				// 'stale' → drop (subsumed by keyframe)
-				// 'gap' shouldn't happen after a keyframe, but if it does
-				// the update is dropped — the keyframe is the best we have
-			}
-		});
 	}
 
 	/**
@@ -1673,11 +1569,38 @@ export class SharedFolder extends HasProvider {
 				await this.whenMembershipSettled();
 			}
 			if (this.destroyed) return;
-			this.backgroundSync.enqueueSharedFolderSync(this);
+			this.backgroundSync.beginFolderPass(this);
+			this.admitPlannedWork({ kind: "sweep" });
 		} catch (error) {
 			if (isDestroyedError(error)) return;
 			throw error;
 		}
+	}
+
+	/**
+	 * Ask every file in the folder to plan its work for an occasion and
+	 * return the concatenation. The folder names no file type and reads no
+	 * machine: each participant answers from its own surface.
+	 */
+	planSyncWork(occasion: PlanOccasion): WorkRequest<SyncParticipant>[] {
+		const context: PlanContext = {
+			occasion,
+			now: this.currentTime(),
+			inFlight: (guid, scope) => this.backgroundSync.isClaimed(guid, scope),
+		};
+		const requests: WorkRequest<SyncParticipant>[] = [];
+		for (const file of this.files.values()) {
+			if (!isSyncParticipant(file)) continue;
+			requests.push(...file.planSyncWork(context));
+		}
+		return requests;
+	}
+
+	/** Plan for an occasion and admit the result as one batch. */
+	private admitPlannedWork(occasion: PlanOccasion): number {
+		const requests = this.planSyncWork(occasion);
+		if (requests.length > 0) this.backgroundSync.admitAll(requests);
+		return requests.length;
 	}
 
 	async resync(): Promise<void> {
@@ -1708,11 +1631,13 @@ export class SharedFolder extends HasProvider {
 			if (this.destroyed) return;
 			let staged = 0;
 			this.files.forEach((doc) => {
-				if (isSyncFolder(doc)) return; // directories have no rooms
+				// Directories have no rooms; only files that take part in
+				// background sync can be staged.
+				if (!isSyncParticipant(doc)) return;
 				// The outcome is dropped: this staging path never publishes
 				// membership itself, so there is no publication decision to make here.
 				const p = this.backgroundSync
-					.enqueueUpload(doc as Document | Canvas | SyncFile)
+					.enqueueUpload(doc)
 					.then(
 						() => undefined,
 						(e) => {
@@ -1832,7 +1757,7 @@ export class SharedFolder extends HasProvider {
 					// and re-sends the server subscribe frame itself, so the
 					// callbacks registered by the constructor's
 					// setupEventSubscriptions() call stay live.
-					this.enqueueLCABackfill("connect");
+					this.admitReconnectWork("connect");
 					this.connectForkedIdleDocuments();
 				}
 				return result;
@@ -1847,11 +1772,15 @@ export class SharedFolder extends HasProvider {
 		this.resolveStartupScan?.();
 	}
 
-	private enqueueLCABackfill(reason: string): void {
+	/**
+	 * The provider session came back: let every file plan the recovery work
+	 * it needs (a document without a merge base recovers it here).
+	 */
+	private admitReconnectWork(reason: string): void {
 		if (this.destroyed || this.localOnly || !this.connected) return;
-		const queued = this.backgroundSync.enqueueLCABackfill(this);
+		const queued = this.admitPlannedWork({ kind: "reconnect" });
 		if (queued > 0) {
-			this.debug(`[lca-backfill] queued ${queued} documents (${reason})`);
+			this.debug(`[reconnect] admitted ${queued} recovery requests (${reason})`);
 		}
 	}
 
@@ -3871,7 +3800,7 @@ export class SharedFolder extends HasProvider {
 		const canvas = this.getOrCreateCanvas(guid, vpath);
 		canvas.markOrigin("remote");
 
-		this.backgroundSync.enqueueCanvasDownload(canvas, userVisible);
+		this.backgroundSync.enqueueDownload(canvas, userVisible);
 
 		this.files.set(guid, canvas);
 		this.fset.add(canvas);
@@ -3968,7 +3897,7 @@ export class SharedFolder extends HasProvider {
 			.then(async () => {
 				const synced = await canvas.getServerSynced();
 				if (canvas.stat.size === 0 && !synced) {
-					this.backgroundSync.enqueueCanvasDownload(canvas);
+					this.backgroundSync.enqueueDownload(canvas);
 				} else if (this.pendingUpload.get(canvas.path)) {
 					if (this.shouldRoutePendingPublication(canvas.path)) {
 						await this.applyPendingUpload(canvas.path).promise;
