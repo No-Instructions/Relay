@@ -175,6 +175,11 @@ export class SyncStore extends Observable<SyncStore> {
 		return this.renames.has(vpath) && !this.hasRaw(vpath);
 	}
 
+	getMoveAliasTarget(vpath: string): string | undefined {
+		this.assertVPath(vpath);
+		return this.hasMoveAlias(vpath) ? this.renames.get(vpath) : undefined;
+	}
+
 	/** Whether this path itself has live membership, without following aliases. */
 	hasRaw(vpath: string): boolean {
 		this.assertVPath(vpath);

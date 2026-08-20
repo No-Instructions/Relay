@@ -2851,6 +2851,16 @@ export class SharedFolder extends HasProvider {
 		const newVPath = this.getVirtualPath(file.path);
 		this.cancelPendingCreate(oldVPath);
 		this.cancelPendingCreate(newVPath);
+		const aliasTarget = this.syncStore.getMoveAliasTarget(oldVPath);
+		if (aliasTarget === newVPath) {
+			const guid = this.syncStore.get(oldVPath);
+			const moved = guid ? this.files.get(guid) : undefined;
+			if (moved) {
+				moved.move(newVPath, this);
+			}
+			this.syncStore.resolveMove(oldVPath);
+			return;
+		}
 		if (this.syncStore.hasRaw(oldVPath)) {
 			this.renameFile(file, oldPath);
 			return;
@@ -4779,7 +4789,8 @@ export class SharedFolder extends HasProvider {
 			// A retained source claim is not live membership. This can be reached
 			// directly for moves out of the shared folder, so keep the guard here
 			// as well as in notifyVaultRename.
-			if (this.syncStore.hasMoveAlias(oldVPath)) return;
+			const aliasTarget = this.syncStore.getMoveAliasTarget(oldVPath);
+			if (aliasTarget !== undefined && aliasTarget !== newVPath) return;
 			// live doc exists
 			const guid = this.syncStore.get(oldVPath);
 			if (!guid) return;
