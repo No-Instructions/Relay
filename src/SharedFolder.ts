@@ -441,10 +441,9 @@ export class SharedFolder extends HasProvider {
 				this.handleCompetingClaim(path, meta);
 			});
 		};
-		// The withdrawn set: a remote removal answers "known" until its disk
-		// adoption completes, so a scan or a debounced vault-create landing in
-		// that window cannot re-mint the path. Entries clear when the adoption
-		// completes or the path re-commits in the map.
+		// Remote membership changes cross into the disk realm asynchronously.
+		// Keep removed paths and the guid-bearing source edge of moves until disk
+		// adoption completes, without turning either into a membership alias.
 		this.unsubscribes.push(
 			this.syncStore.subscribeMapDelta((delta, origin) => {
 				if (origin === this || origin === this._persistence) return;
@@ -465,6 +464,13 @@ export class SharedFolder extends HasProvider {
 				}
 				for (const move of delta.moves) {
 					this.realms.clearRemoteRemoval(move.to);
+					if (this.existsSync(move.from)) {
+						this.realms.recordRemoteMove(move);
+					} else {
+						// Disk already agrees with the moved membership (or no
+						// source exists to reconcile on this device).
+						this.realms.retire(move.from);
+					}
 				}
 			}),
 		);
@@ -1936,6 +1942,8 @@ export class SharedFolder extends HasProvider {
 		diffLog?: string[],
 	): Promise<void> {
 		// take a doc and it's new path.
+		const oldVPath = this.getVirtualPath(file.path);
+		this.realms.recordRemoteMove({ guid: doc.guid, from: oldVPath, to: path });
 		diffLog?.push(`${file.path} was renamed to ${this.getPath(path)}`);
 		if (file instanceof TFile) {
 			const dir = dirname(path);
@@ -1944,11 +1952,11 @@ export class SharedFolder extends HasProvider {
 				diffLog?.push(`creating directory ${dir}`);
 			}
 		}
-		await this.fileManager
-			.renameFile(file, normalizePath(this.getPath(path)))
-			.then(() => {
-				doc.move(path, this);
-			});
+		await this.fileManager.renameFile(file, normalizePath(this.getPath(path)));
+		this.realms.completeDiskMove(oldVPath, path);
+		if (!this.destroyed && doc.path !== path) {
+			doc.move(path, this);
+		}
 	}
 
 	trashFile(file: TAbstractFile): Promise<void> {
@@ -2713,6 +2721,10 @@ export class SharedFolder extends HasProvider {
 		const vpath = this.getVirtualPath(tfile.path);
 		if (this.isPendingDelete(vpath)) return false;
 		if (this.syncStore.has(vpath)) return true;
+		if (this.realms.observeMoveSourceCreation(vpath)) {
+			this.scheduleLegacyCreate(vpath);
+			return false;
+		}
 		this.scheduleLegacyCreate(vpath);
 		return false;
 	}
@@ -2752,6 +2764,9 @@ export class SharedFolder extends HasProvider {
 		const newVPath = this.getVirtualPath(file.path);
 		this.cancelPendingCreate(oldVPath);
 		this.cancelPendingCreate(newVPath);
+		if (this.consumeDiskMove(oldVPath, newVPath)) {
+			return;
+		}
 		if (this.syncStore.has(oldVPath)) {
 			this.renameFile(file, oldPath);
 			return;
@@ -2759,10 +2774,31 @@ export class SharedFolder extends HasProvider {
 		if (this.syncStore.has(newVPath) || !this.isSyncableTFile(file)) {
 			return;
 		}
+		// A distinct file renamed into the vacated source is a new disk
+		// occupant. It may claim the path without taking over the moved guid.
+		this.realms.observeMoveSourceCreation(newVPath);
 		const newDocs = this.placeHold([file]);
 		if (newDocs.includes(newVPath)) {
 			this.uploadFile(file);
 		}
+	}
+
+	/** Consume the vault rename that makes one remote membership move real on disk. */
+	private consumeDiskMove(oldVPath: string, newVPath: string): boolean {
+		const move = this.realms.diskMoveFrom(oldVPath);
+		if (!move || move.to !== newVPath) return false;
+
+		// Live membership at the source belongs to a separately recreated file,
+		// even while the guid-keyed move remains in flight.
+		const sourceGuid = this.syncStore.get(oldVPath);
+		if (sourceGuid !== undefined && sourceGuid !== move.guid) return false;
+
+		const moved = this.files.get(move.guid);
+		if (moved && moved.path !== newVPath) {
+			moved.move(newVPath, this);
+		}
+		this.realms.completeDiskMove(oldVPath, newVPath);
+		return true;
 	}
 
 	/**
@@ -3179,6 +3215,11 @@ export class SharedFolder extends HasProvider {
 					if (!this.existsSync(path)) {
 						this.realms.clearRemoteRemoval(path);
 						this.realms.retire(path);
+					}
+				}
+				for (const move of this.realms.pendingDiskMoves()) {
+					if (!this.existsSync(move.from) && this.existsSync(move.to)) {
+						this.realms.completeDiskMove(move.from, move.to);
 					}
 				}
 				this.sweepStalePendingUploads();
@@ -4504,8 +4545,14 @@ export class SharedFolder extends HasProvider {
 		const cleanupGuids = new Map<string, string>();
 		this.folderDoc.transact(() => {
 			for (const vpath of paths) {
-				this.pendingUpload.delete(vpath);
 				const guid = this.syncStore?.get(vpath);
+				const diskMove = this.realms.diskMoveFrom(vpath);
+				if (diskMove && (!guid || guid === diskMove.guid)) {
+					// This is the delete echo for the vacated disk path, not a
+					// deletion of the identity whose membership lives at `to`.
+					continue;
+				}
+				this.pendingUpload.delete(vpath);
 				if (guid) {
 					this.syncStore.delete(vpath);
 					const doc = this.files.get(guid);
@@ -4570,6 +4617,17 @@ export class SharedFolder extends HasProvider {
 			this.placeHold([tfile]);
 			this.uploadFile(tfile);
 		} else {
+			const diskMove = this.realms.diskMoveFrom(oldVPath);
+			if (diskMove && !this.syncStore.has(oldVPath)) {
+				if (newVPath && diskMove.to === newVPath) {
+					this.consumeDiskMove(oldVPath, newVPath);
+				} else {
+					// A different rename belongs to a recreated source occupant.
+					// It cannot move or destroy the guid already living at `to`.
+					this.realms.observeMoveSourceCreation(oldVPath);
+				}
+				return;
+			}
 			// live doc exists
 			const guid = this.syncStore.get(oldVPath);
 			if (!guid) return;
@@ -4615,11 +4673,6 @@ export class SharedFolder extends HasProvider {
 						}
 					});
 				}, this);
-
-				// Due to nested folder moves the tfiles and syncStore can diverge.
-				// The nested folder moves are done in bulk in the sync store, but the tfile
-				// events come in individually.
-				this.syncStore.resolveMove(oldVPath);
 			}
 		}
 	}
