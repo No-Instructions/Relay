@@ -15,7 +15,7 @@
 import { ViewPlugin, EditorView, ViewUpdate } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
 import { Transaction } from "@codemirror/state";
-import { editorInfoField } from "obsidian";
+import { editorInfoField, MarkdownView } from "obsidian";
 import type { TFile } from "obsidian";
 import { getLiveViews } from "../../editorContext";
 import { isDocument, type Document } from "../../Document";
@@ -85,22 +85,30 @@ export class HSMEditorPluginValue implements PluginValue {
   private bornAttachedRenderPending = false;
   /**
    * Whether this EditorView has been identified as an embedded sub-editor:
-   * an editor another editor spawns inside itself over the same file, like
-   * the per-cell editor Obsidian's Live Preview table widget creates when a
-   * table cell is edited. A sub-editor inherits the host view's
-   * editorInfoField, so file identity, document resolution, and
-   * source-view DOM ancestry all match the host — but its buffer holds only
-   * a fragment of the note, and the spawning machinery persists whatever is
-   * dispatched into it back into the note as a user edit. Binding one to
+   * an editor whose buffer holds less than the note and whose spawning
+   * machinery persists whatever is dispatched into it back into the note as
+   * a user edit. Obsidian has two such families. The Live Preview table
+   * widget spawns a per-cell editor inside the clicked cell and forwards
+   * its transactions into the host editor. Editable embeds (footnote
+   * popovers, the footnotes pane, page-preview hover popovers, canvas file
+   * nodes) spawn an editor over a subpath fragment whose every change is
+   * spliced back into the file as before + buffer + after. In both, file
+   * identity and document resolution match the real note. Binding one to
    * the merge machinery would render the full document into a fragment
-   * buffer (and the widget would then write that full document into one
-   * cell of the real note) and would feed fragment text back as document
-   * content. Sticky: once detected, this instance is permanently inert.
+   * buffer — which the spawning machinery then writes into the note — and
+   * would feed fragment text back as document content. Sticky: once
+   * detected, this instance is permanently inert.
    */
   private subEditor = false;
   private bindingEpoch = 0;
   private lastInitializationRetry:
-    | { file: TFile | null; live: boolean; owner: EditorView | null }
+    | {
+        file: TFile | null;
+        live: boolean;
+        owner: EditorView | null;
+        connected: boolean;
+        canvas: boolean;
+      }
     | null = null;
   private log: (...args: unknown[]) => void;
   private debug: (...args: unknown[]) => void;
@@ -243,21 +251,62 @@ export class HSMEditorPluginValue implements PluginValue {
   }
 
   /**
-   * Detect an embedded sub-editor by its container: the Live Preview table
-   * widget mounts the per-cell editor it spawns inside a
-   * `.table-cell-wrapper` element. Detection is sticky and fully inerts
-   * this instance — the widget forwards every transaction it does not
-   * recognize into the host note, so nothing may ever be dispatched into
-   * such an editor. The wrapper is only observable once the editor's DOM is
-   * attached, so a negative answer means "not detected", never "proven to
-   * be a view's own editor"; the owner-identity check in probeBornAttached
-   * covers the window before the DOM is attached.
+   * Detect an editor that may never bind, by allow-list: the only owners
+   * whose editors are eligible are workspace MarkdownViews (their own
+   * editor — the adoption check in probeBornAttached and the view registry
+   * prove which EditorView that is) and registered whole-file canvas embeds.
+   * Sticky refusals key only on stable owner properties or ancestry that has
+   * been positively observed. Everything the classification refuses is an
+   * embedded sub-editor whose machinery persists dispatched content back
+   * into the note, so nothing may ever be dispatched into it:
+   *
+   * - Any editor mounted inside a `.table-cell-wrapper` element — the
+   *   container the Live Preview table widget spawns its per-cell editor
+   *   in. The cell editor's owner is the host MarkdownView, so owner kind
+   *   cannot catch it; ancestry is checked first because it is definitive
+   *   and clears buffered fragment input immediately. The wrapper is only
+   *   observable once the editor's DOM is attached, so a negative answer
+   *   means "not detected", never "proven eligible".
+   * - Any editor whose owner is not a MarkdownView, except a registered
+   *   whole-file canvas embed. This refuses the
+   *   editable-embed family — footnote popovers, the footnotes pane,
+   *   page-preview hover popovers — whose buffer holds a subpath fragment
+   *   the embed splices back into the file on every change, and any
+   *   unrecognized future owner kind, which fails closed here instead of
+   *   binding. An embed scoped to a subpath is refused even when registered
+   *   by canvas: its buffer is a fragment of the target note. Before the DOM
+   *   attaches, a whole-file non-view owner remains undecided because canvas
+   *   registration may not exist yet; undecided editors remain unable to bind
+   *   (this probe returns true without setting `subEditor`) and are re-probed
+   *   after attachment.
    */
   private probeSubEditor(): boolean {
     if (this.subEditor) return true;
-    if (!this.editor.dom.closest(".table-cell-wrapper")) return false;
+    if (this.editor.dom.closest(".table-cell-wrapper")) {
+      this.log("Refusing to bind an embedded table-cell editor");
+      return this.inertSubEditor();
+    }
+    const fileInfo = this.editor.state.field(editorInfoField, false);
+    if (!fileInfo || typeof fileInfo !== "object") return false;
+    if (fileInfo instanceof MarkdownView) return false;
+    const subpath = (fileInfo as { subpath?: unknown }).subpath;
+    const fragmentScoped = typeof subpath === "string" && subpath.length > 0;
+    if (!fragmentScoped) {
+      const connectionManager = getConnectionManager(this.editor);
+      if (connectionManager?.findCanvas(this.editor) !== undefined) return false;
+      if (!this.editor.dom.isConnected) return true;
+    }
+    this.debug(
+      fragmentScoped
+        ? `Refusing to bind a fragment-scoped embed editor (${String(subpath)})`
+        : "Refusing to bind an embed-owned editor",
+    );
+    return this.inertSubEditor();
+  }
+
+  /** Permanently inert this instance and drop any buffered fragment input. */
+  private inertSubEditor(): boolean {
     this.subEditor = true;
-    this.log("Refusing to bind an embedded table-cell editor");
     if (this.cm6Integration) {
       this.cm6Integration.destroy();
       this.cm6Integration = null;
@@ -268,13 +317,14 @@ export class HSMEditorPluginValue implements PluginValue {
   }
 
   /**
-   * The EditorView that this editor's owning view considers its editor,
-   * when resolvable. An embedded sub-editor inherits its host's
-   * editorInfoField, so the field resolves to the HOST view and names the
-   * host's EditorView — a resolvable owner editor that is not this view
-   * identifies a sub-editor even before its DOM is attached. Returns null
-   * when the owner's editor is not resolvable (a view still under
-   * construction has not assigned its editor yet).
+   * The EditorView that this editor's owner considers its editor, when
+   * resolvable. A view's own editor is the one this names — positive
+   * adoption. A table-cell editor inherits its host's editorInfoField, so
+   * the field resolves to the HOST view and names the host's EditorView,
+   * never this one. (An embed-owned editor names itself here — the embed's
+   * editor getter resolves to its own edit mode — which is why adoption
+   * alone cannot admit an editor; the owner-kind check in probeSubEditor
+   * runs first.) Returns null when the owner's editor is not resolvable.
    */
   private ownerEditorView(): EditorView | null {
     try {
@@ -308,15 +358,19 @@ export class HSMEditorPluginValue implements PluginValue {
           // check against the view registry, so the probe itself must prove
           // this view is a view's own editor. File identity, the info
           // field, and source-view ancestry cannot: an embedded sub-editor
-          // (a table-cell editor) matches its host on all three. The owning
-          // view names its editor; a resolvable owner editor that is not
-          // this view is a sub-editor. Unresolvable leaves the decision
-          // open rather than deciding false: a view under construction
-          // assigns its editor only after extensions instantiate, and an
-          // in-place editor replacement names the outgoing editor until the
-          // owner adopts the new one.
+          // (a table-cell editor) matches its host on all three. The proof
+          // is positive adoption: the owning view names this EditorView as
+          // its editor. Obsidian assigns a view's editor before extensions
+          // can instantiate (the EditorView is created once in the editor's
+          // constructor and never replaced; MarkdownView.editor resolves
+          // through it live), so a view's own editor passes here at
+          // creation, while a table-cell editor names the host's editor and
+          // never passes. Anything short of adoption — a different editor
+          // or an unresolvable one — leaves the decision open rather than
+          // deciding false, and the retry paths re-probe when the owner's
+          // editor identity changes.
           const ownerCm = this.ownerEditorView();
-          if (ownerCm !== null && ownerCm !== this.editor) {
+          if (ownerCm !== this.editor) {
             return false;
           }
           const sourceView = this.editor.dom.closest(".markdown-source-view");
@@ -343,9 +397,10 @@ export class HSMEditorPluginValue implements PluginValue {
     const connectionManager = getConnectionManager(this.editor);
     if (!connectionManager) return false;
 
-    // Detect embedded canvas editors (no MarkdownView wrapper, no auto-save)
-    const sourceView = this.editor.dom.closest(".markdown-source-view");
-    this.embed = !!sourceView?.classList.contains("mod-inside-iframe");
+    // Registered canvas editors have no MarkdownView wrapper and do not
+    // auto-save. Registry membership is the same positive proof used by the
+    // owner allow-list and does not depend on DOM attachment timing.
+    this.embed = connectionManager.findCanvas(this.editor) !== undefined;
 
     this.document = this.resolveCurrentDocument();
     if (!this.document) return false;
@@ -475,17 +530,19 @@ export class HSMEditorPluginValue implements PluginValue {
       const abort = (reason: string): void => {
         this.log(`Aborting born-attached render for ${expectedGuid}: ${reason}`);
       };
-      // Either discriminator may become available before the deferred render.
-      // Check ancestry first: a known table-cell container makes the instance
-      // permanently inert. Owner identity also catches a still-detached
-      // fragment, but that refusal stays retryable for legitimate view adoption.
+      // Re-verify eligibility at fire time. A sub-editor discriminator may
+      // become available only after the bind (a container attached late);
+      // ancestry and owner kind make the instance permanently inert. The
+      // bind required positive owner adoption, so an owner that no longer
+      // names this editor means the view replaced its editor between bind
+      // and render; that refusal stays retryable for legitimate adoption.
       if (this.probeSubEditor()) {
         abort("embedded sub-editor");
         return;
       }
       const ownerCm = this.ownerEditorView();
-      if (ownerCm !== null && ownerCm !== this.editor) {
-        abort("embedded sub-editor");
+      if (ownerCm !== this.editor) {
+        abort("owner view no longer adopts this editor");
         if (this.cm6Integration) {
           this.cm6Integration.destroy();
           this.cm6Integration = null;
@@ -704,14 +761,19 @@ export class HSMEditorPluginValue implements PluginValue {
         const file = this.editor.state.field(editorInfoField, false)?.file ?? null;
         const live = this.isLiveEditor();
         const owner = this.ownerEditorView();
+        const connected = this.editor.dom.isConnected;
+        const canvas =
+          getConnectionManager(this.editor)?.findCanvas(this.editor) !== undefined;
         const prior = this.lastInitializationRetry;
         if (
           !prior ||
           prior.file !== file ||
           prior.live !== live ||
-          prior.owner !== owner
+          prior.owner !== owner ||
+          prior.connected !== connected ||
+          prior.canvas !== canvas
         ) {
-          this.lastInitializationRetry = { file, live, owner };
+          this.lastInitializationRetry = { file, live, owner, connected, canvas };
           this.initializeIfReady();
         }
       }
