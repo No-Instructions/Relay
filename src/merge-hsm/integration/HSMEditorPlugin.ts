@@ -579,7 +579,38 @@ export class HSMEditorPluginValue implements PluginValue {
     if (this.destroyed) return;
     const authority = editorBindingAuthority(this.editor);
     if (!authority) {
-      this.deactivateUnauthorizedEditor();
+      // A legitimate host grant can arrive after the EditorView is already
+      // configured and accepting input. Preserve a bounded delta from the
+      // first pre-grant edit; it remains inert unless a host later grants this
+      // exact instance, at which point normal bind reconciliation consumes it.
+      if (
+        this.bindingAuthority !== null ||
+        this.cm6Integration !== null ||
+        this.document !== null
+      ) {
+        this.deactivateUnauthorizedEditor();
+        return;
+      }
+      if (
+        update.docChanged &&
+        !update.transactions.some((tr) => tr.annotation(ySyncAnnotation))
+      ) {
+        const userEvent = update.transactions
+          .map((tr) => tr.annotation(Transaction.userEvent))
+          .find((event) => event != null);
+        if (userEvent !== "set") {
+          if (this.pendingEditBaseText === null) {
+            this.pendingEditBaseText = update.startState.doc.toString();
+            this.pendingEditFile =
+              this.editor.state.field(editorInfoField, false)?.file ?? null;
+          }
+          const editedText = update.state.doc.toString();
+          const changes = buildTextChanges(this.pendingEditBaseText, editedText);
+          this.pendingEdits = changes.length > 0
+            ? [{ changes, docText: editedText, userEvent }]
+            : [];
+        }
+      }
       return;
     }
     if (this.bindingAuthority && this.bindingAuthority !== authority) {
