@@ -265,7 +265,6 @@ export class SharedFolder extends HasProvider {
 	 * vanishes within the window is cancelled before it registers.
 	 */
 	private pendingCreates: Map<string, number> = new Map();
-	private pendingMoveResolutions: Map<string, number> = new Map();
 	private enabledSyncTypes: Set<SyncType> = new Set();
 
 	private _persistence: IndexeddbPersistence;
@@ -2015,17 +2014,15 @@ export class SharedFolder extends HasProvider {
 				diffLog?.push(`creating directory ${dir}`);
 			}
 		}
+		// Membership has already moved. Install the source alias before the disk
+		// rename begins so its matching vault event can consume the alias no
+		// matter how long the filesystem operation takes.
+		this.syncStore.retainMoveAlias(oldVPath, path);
 		await this.fileManager
 			.renameFile(file, normalizePath(this.getPath(path)))
 			.then(() => {
 				if (this.destroyed) return;
 				doc.move(path, this);
-				// Remote file moves update membership before this disk rename,
-				// so SyncStore.move never installed the source alias locally.
-				// Start the claim window at disk completion, when a lagging writer
-				// can first recreate the now-vacant source path.
-				this.syncStore.retainMoveAlias(oldVPath, path);
-				this.scheduleMoveResolution(oldVPath);
 			});
 	}
 
@@ -2785,9 +2782,6 @@ export class SharedFolder extends HasProvider {
 		const vpath = this.getVirtualPath(tfile.path);
 		if (this.isPendingDelete(vpath)) return false;
 		if (this.syncStore.hasMoveAlias(vpath)) {
-			// The observation itself proves a writer is still using the source;
-			// give its resolution the full settling window from this event.
-			this.scheduleMoveResolution(vpath);
 			this.scheduleLegacyCreate(vpath);
 			return false;
 		}
@@ -2823,26 +2817,6 @@ export class SharedFolder extends HasProvider {
 			this.timeProvider.clearTimeout(timer);
 			this.pendingCreates.delete(vpath);
 		}
-	}
-
-	/**
-	 * Keep the move alias alive through the create-settling window. Writers
-	 * racing a rename can briefly recreate its source path; while the alias is
-	 * present, resolution follows the moved guid instead of registering that
-	 * transient source as a new file.
-	 */
-	private scheduleMoveResolution(oldVPath: string): void {
-		const existing = this.pendingMoveResolutions.get(oldVPath);
-		if (existing !== undefined) {
-			this.timeProvider.clearTimeout(existing);
-		}
-		const timer = this.timeProvider.setTimeout(() => {
-			this.pendingMoveResolutions.delete(oldVPath);
-			if (!this.destroyed) {
-				this.syncStore.resolveMove(oldVPath);
-			}
-		}, NEW_FILE_REGISTRATION_DEBOUNCE_MS);
-		this.pendingMoveResolutions.set(oldVPath, timer);
 	}
 
 	/** Route an in-folder vault rename. */
@@ -4840,7 +4814,9 @@ export class SharedFolder extends HasProvider {
 				// Due to nested folder moves the tfiles and syncStore can diverge.
 				// The nested folder moves are done in bulk in the sync store, but the tfile
 				// events come in individually.
-				this.scheduleMoveResolution(oldVPath);
+				// This vault event is the disk acknowledgement for the membership
+				// move above, so the source alias has completed its lifecycle.
+				this.syncStore.resolveMove(oldVPath);
 			}
 		}
 	}
@@ -4866,10 +4842,6 @@ export class SharedFolder extends HasProvider {
 		this.markFirstSyncConverged();
 		this.pendingCreates.forEach((timer) => this.timeProvider.clearTimeout(timer));
 		this.pendingCreates.clear();
-		this.pendingMoveResolutions.forEach((timer) =>
-			this.timeProvider.clearTimeout(timer),
-		);
-		this.pendingMoveResolutions.clear();
 		this.clearDownloadsDeferredByState();
 		this.unsubscribes.forEach((unsub) => {
 			unsub();
