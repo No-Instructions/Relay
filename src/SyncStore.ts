@@ -267,6 +267,16 @@ export class SyncStore extends Observable<SyncStore> {
 	}
 
 	has(path: string) {
+		return this.hasKnown(path) || this.hasClaim(path);
+	}
+
+	/**
+	 * Membership known outside the device's own claims: the committed map,
+	 * the legacy map, or the migration overlay. Split from `has()` so boot
+	 * classification can ask about membership without the device's pending
+	 * claims vouching for themselves.
+	 */
+	hasKnown(path: string): boolean {
 		if (this.renames.has(path)) {
 			path = this.renames.get(path)!;
 		}
@@ -276,9 +286,35 @@ export class SyncStore extends Observable<SyncStore> {
 		return (
 			this.meta.has(path) ||
 			this.legacyIds.has(path) ||
-			this.overlay.has(path) ||
-			this.pendingUpload.has(path)
+			this.overlay.has(path)
 		);
+	}
+
+	/** The device holds unpublished identity for this path. */
+	hasClaim(path: string): boolean {
+		if (this.renames.has(path)) {
+			path = this.renames.get(path)!;
+		}
+		if (this.deleteSet.has(path)) {
+			return false;
+		}
+		return this.pendingUpload.has(path);
+	}
+
+	/**
+	 * Every path persisted membership holds: the committed and legacy maps,
+	 * raw. Claims and the migration overlay are excluded — the boot
+	 * snapshot holds membership only.
+	 */
+	membershipPaths(): Set<string> {
+		const paths = new Set<string>();
+		this.meta.forEach((_meta, path) => {
+			paths.add(path);
+		});
+		this.legacyIds.forEach((_guid, path) => {
+			paths.add(path);
+		});
+		return paths;
 	}
 
 	willSet(vpath: string, meta: Meta): boolean {

@@ -3,20 +3,22 @@
 /**
  * The folder machine: boot posture and the permissions derived from it.
  *
- * One machine per SharedFolder, on the shared HSM runtime. It owns two
+ * One machine per SharedFolder, on the shared HSM runtime. It owns three
  * permissions:
  *
- * - `mayConnect` — the provider connection may open once the startup disk
- *   scan has finished, so server membership cannot race the scan's
- *   comparison against replayed state. (whenReady's brand-new-folder path
- *   bypasses the gate at the call site, as it always has.)
- * - `mayPublish` — with the sync-convergence latch enabled, locally minted
- *   identities may not publish until the provider's first completed sync.
+ * - `mayConnect` — traffic may flow once the device has read its own state.
+ *   Depends on `replayComplete` rather than on the state so a folder with
+ *   no persisted membership can connect while still `loading`.
+ * - `mayMint` — local discovery may mint identities once there is baseline
+ *   evidence: the persisted membership if there is one, the server's first
+ *   view if not.
+ * - `mayPublish` — minted identities may publish once the initial
+ *   reconcile can decide against the server's completed view.
  *
- * Waiters resolve on grant and at close; callers re-check `destroyed`
- * after resuming, exactly as they did against the latch promises this
- * machine replaces. Transition subscribers run synchronously inside the
- * event dispatch, before any waiter resumes.
+ * Waiters resolve `true` on grant and `false` at close; transition
+ * subscribers run synchronously inside the event dispatch, before any
+ * waiter resumes — work a transition must complete ahead of released
+ * traffic (the initial reconcile's claim drops) belongs in a subscriber.
  */
 
 import { processEvent } from "../hsm/interpreter";
@@ -29,9 +31,10 @@ import { FOLDER_MACHINE, folderStateOf } from "./machine-definition";
 import type { FolderEvent, FolderFacts, FolderStatePath } from "./types";
 
 export interface FolderHSMOptions {
-	/** The sync-convergence latch: publication waits for the first
-	 * completed provider sync. Read once at construction. */
-	publicationLatch: boolean;
+	/** An authoritative folder is its own membership authority and may have
+	 * no provider to handshake with: the handshake requirement is vacuously
+	 * satisfied. */
+	authoritative?: boolean;
 	onTransition?: (
 		from: FolderStatePath,
 		to: FolderStatePath,
@@ -41,27 +44,31 @@ export interface FolderHSMOptions {
 
 export class FolderHSM implements MachineHost<FolderStatePath, FolderEvent> {
 	private _statePath: FolderStatePath = "loading";
-	private facts: FolderFacts = {
-		replayComplete: false,
-		diskScanned: false,
-		providerSynced: false,
-		closed: false,
-	};
-	private readonly publicationLatch: boolean;
+	private facts: FolderFacts;
 	private readonly config: InterpreterConfig<
 		FolderStatePath,
 		FolderHSM,
 		FolderEvent
 	>;
-	private waiters: { granted: () => boolean; resolve: () => void }[] = [];
+	private waiters: {
+		granted: () => boolean;
+		resolve: (permitted: boolean) => void;
+	}[] = [];
 	private subscribers = new Set<
 		(state: FolderStatePath, previous: FolderStatePath) => void
 	>();
 	private invoke: ActiveInvoke | null = null;
 	private currentEventType = "";
 
-	constructor(private readonly options: FolderHSMOptions) {
-		this.publicationLatch = options.publicationLatch;
+	constructor(private readonly options: FolderHSMOptions = {}) {
+		this.facts = {
+			replayComplete: false,
+			hasPersistedMembership: false,
+			providerSynced: options.authoritative ?? false,
+			diskScanned: false,
+			initialReconcileComplete: false,
+			closed: false,
+		};
 		this.config = {
 			guards: {
 				shouldBeClosed: (host) => host.shouldBe("closed"),
@@ -71,14 +78,23 @@ export class FolderHSM implements MachineHost<FolderStatePath, FolderEvent> {
 				shouldBeActive: (host) => host.shouldBe("active"),
 			},
 			actions: {
-				recordReplayComplete: (host) => {
+				recordReplayComplete: (host, event) => {
 					host.facts.replayComplete = true;
+					if (
+						event.type === "REPLAY_COMPLETE" &&
+						event.hasPersistedMembership
+					) {
+						host.facts.hasPersistedMembership = true;
+					}
 				},
 				recordDiskScanned: (host) => {
 					host.facts.diskScanned = true;
 				},
 				recordProviderSynced: (host) => {
 					host.facts.providerSynced = true;
+				},
+				recordInitialReconcileComplete: (host) => {
+					host.facts.initialReconcileComplete = true;
 				},
 				recordClosed: (host) => {
 					host.facts.closed = true;
@@ -90,8 +106,7 @@ export class FolderHSM implements MachineHost<FolderStatePath, FolderEvent> {
 
 	private shouldBe(target: FolderStatePath): boolean {
 		return (
-			folderStateOf(this.facts, this.publicationLatch) === target &&
-			this._statePath !== target
+			folderStateOf(this.facts) === target && this._statePath !== target
 		);
 	}
 
@@ -143,10 +158,6 @@ export class FolderHSM implements MachineHost<FolderStatePath, FolderEvent> {
 		return this.facts.replayComplete;
 	}
 
-	get diskScanned(): boolean {
-		return this.facts.diskScanned;
-	}
-
 	get providerSynced(): boolean {
 		return this.facts.providerSynced;
 	}
@@ -155,30 +166,53 @@ export class FolderHSM implements MachineHost<FolderStatePath, FolderEvent> {
 		return this.facts.closed;
 	}
 
-	/** The provider connection may open: the startup disk scan finished. */
+	/** Traffic may flow: the device has read its own state. */
 	get mayConnect(): boolean {
-		return !this.facts.closed && this.facts.diskScanned;
+		return !this.facts.closed && this.facts.replayComplete;
 	}
 
-	/**
-	 * Locally minted identities may publish. Derived from facts rather than
-	 * from the state: with the latch disabled, publication is permitted even
-	 * before the scan finishes, exactly as the latch it replaces behaved.
-	 */
-	get mayPublish(): boolean {
+	/** Local discovery may mint identities. */
+	get mayMint(): boolean {
+		const state = this._statePath;
 		return (
-			!this.facts.closed &&
-			(!this.publicationLatch || this.facts.providerSynced)
+			state === "discovering" ||
+			state === "reconciling" ||
+			state === "active"
 		);
 	}
 
-	/** Resolves when connecting is permitted, and at close. */
-	whenMayConnect(): Promise<void> {
+	/** Minted identities may publish. */
+	get mayPublish(): boolean {
+		const state = this._statePath;
+		return state === "reconciling" || state === "active";
+	}
+
+	/**
+	 * Still waiting for the server's first view to serve as the boot
+	 * snapshot — the loading clause a folder with no persisted membership
+	 * exits through.
+	 */
+	get needsServerSnapshot(): boolean {
+		return (
+			!this.facts.closed &&
+			this.facts.replayComplete &&
+			!this.facts.hasPersistedMembership &&
+			!this.facts.providerSynced
+		);
+	}
+
+	/** Resolves `true` when connecting is permitted, `false` at close. */
+	whenMayConnect(): Promise<boolean> {
 		return this.when(() => this.mayConnect);
 	}
 
-	/** Resolves when publication is permitted, and at close. */
-	whenMayPublish(): Promise<void> {
+	/** Resolves `true` when minting is permitted, `false` at close. */
+	whenMayMint(): Promise<boolean> {
+		return this.when(() => this.mayMint);
+	}
+
+	/** Resolves `true` when publication is permitted, `false` at close. */
+	whenMayPublish(): Promise<boolean> {
 		return this.when(() => this.mayPublish);
 	}
 
@@ -196,9 +230,10 @@ export class FolderHSM implements MachineHost<FolderStatePath, FolderEvent> {
 		this.send({ type: "CLOSE" });
 	}
 
-	private when(granted: () => boolean): Promise<void> {
-		if (this.facts.closed || granted()) return Promise.resolve();
-		return new Promise<void>((resolve) => {
+	private when(granted: () => boolean): Promise<boolean> {
+		if (this.facts.closed) return Promise.resolve(false);
+		if (granted()) return Promise.resolve(true);
+		return new Promise<boolean>((resolve) => {
 			this.waiters.push({ granted, resolve });
 		});
 	}
@@ -207,8 +242,10 @@ export class FolderHSM implements MachineHost<FolderStatePath, FolderEvent> {
 		if (this.waiters.length === 0) return;
 		const remaining: typeof this.waiters = [];
 		for (const waiter of this.waiters) {
-			if (this.facts.closed || waiter.granted()) {
-				waiter.resolve();
+			if (this.facts.closed) {
+				waiter.resolve(false);
+			} else if (waiter.granted()) {
+				waiter.resolve(true);
 			} else {
 				remaining.push(waiter);
 			}
