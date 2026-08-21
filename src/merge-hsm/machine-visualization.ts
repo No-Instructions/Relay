@@ -10,7 +10,7 @@ import type {
 	MachineDefinition,
 	EventHandler,
 } from "./types";
-import { normalizeToCandidates } from "./machine-interpreter";
+import { normalizeToCandidates } from "../hsm/interpreter";
 
 // =============================================================================
 // Types

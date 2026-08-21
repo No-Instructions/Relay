@@ -19,7 +19,7 @@ import type {
 	InvokeSourceFn,
 	EventHandler,
 } from "./types";
-import { normalizeToCandidates } from "./machine-interpreter";
+import { normalizeToCandidates } from "../hsm/interpreter";
 
 // =============================================================================
 // Shared Event Handlers

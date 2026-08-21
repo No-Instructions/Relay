@@ -222,32 +222,28 @@ export interface CanvasHSMConfig {
 }
 
 // =============================================================================
-// Declarative machine shape (structurally mirrors merge-hsm/types.ts)
+// Declarative machine shape (generic runtime bound to canvas unions)
 // =============================================================================
 
-export type CanvasTransitionCandidate = {
-	target: CanvasStatePath;
-	guard?: string;
-	actions?: string[];
-	reenter?: boolean;
-};
+import type {
+	TransitionCandidate,
+	EventHandler,
+	AlwaysCandidate,
+	InvokeDef,
+	StateNode,
+	MachineHost,
+	GuardFn,
+	ActionFn,
+	InterpreterConfig,
+} from "../hsm/types";
 
-export type CanvasEventHandler =
-	| CanvasStatePath
-	| CanvasTransitionCandidate
-	| CanvasTransitionCandidate[];
+export type CanvasTransitionCandidate = TransitionCandidate<CanvasStatePath>;
 
-export type CanvasAlwaysCandidate = {
-	target: CanvasStatePath;
-	guard?: string;
-	actions?: string[];
-};
+export type CanvasEventHandler = EventHandler<CanvasStatePath>;
 
-export type CanvasInvokeDef = {
-	src: string;
-	onDone: CanvasEventHandler;
-	onError?: CanvasEventHandler;
-};
+export type CanvasAlwaysCandidate = AlwaysCandidate<CanvasStatePath>;
+
+export type CanvasInvokeDef = InvokeDef<CanvasStatePath>;
 
 /**
  * Effect capabilities per state. These encode the engine's structural
@@ -263,12 +259,7 @@ export interface CanvasCapabilities {
 	canSurfaceStatus?: boolean;
 }
 
-export type CanvasStateNode = {
-	entry?: string[];
-	exit?: string[];
-	on?: Record<string, CanvasEventHandler>;
-	always?: CanvasAlwaysCandidate[];
-	invoke?: CanvasInvokeDef;
+export type CanvasStateNode = StateNode<CanvasStatePath> & {
 	capabilities?: CanvasCapabilities;
 };
 
@@ -276,5 +267,13 @@ export type CanvasMachineDefinition = Partial<
 	Record<CanvasStatePath, CanvasStateNode>
 >;
 
-export type CanvasGuardFn = (event: CanvasEvent) => boolean;
-export type CanvasActionFn = (event: CanvasEvent) => void;
+export type CanvasMachineHost = MachineHost<CanvasStatePath, CanvasEvent>;
+
+export type CanvasGuardFn = GuardFn<CanvasMachineHost, CanvasEvent>;
+export type CanvasActionFn = ActionFn<CanvasMachineHost, CanvasEvent>;
+
+export type CanvasInterpreterConfig = InterpreterConfig<
+	CanvasStatePath,
+	CanvasMachineHost,
+	CanvasEvent
+>;

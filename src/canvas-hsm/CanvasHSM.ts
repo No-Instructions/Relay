@@ -4,7 +4,7 @@
  * One machine per canvas, deciding when the canvas localDoc may be written
  * to disk, when the disk file has diverged, and when an attached view must
  * be reconciled. The declarative CANVAS_MACHINE definition is interpreted
- * by the merge-hsm interpreter; guards, actions, invoke sources, and
+ * by the shared HSM interpreter; guards, actions, invoke sources, and
  * effect emission are bound per instance here.
  *
  * The machine reasons over exactly three inputs — the disk file, the
@@ -19,9 +19,9 @@
  * the vault-wide HSMStore.
  */
 
-import { processEvent } from "../merge-hsm/machine-interpreter";
+import { processEvent } from "../hsm/interpreter";
+import type { ActiveInvoke } from "../hsm/types";
 import type {
-	ActiveInvoke,
 	PersistedCanvasState,
 	SyncMachine,
 	SyncStatus,
@@ -44,6 +44,7 @@ import type {
 	CanvasEffect,
 	CanvasEvent,
 	CanvasHSMConfig,
+	CanvasInterpreterConfig,
 	CanvasStatePath,
 	EvaluationResult,
 	EvaluationVerdict,
@@ -176,14 +177,7 @@ export class CanvasHSM implements SyncMachine {
 	private _serverHead: YjsSnapshot | null = null;
 	private readonly hashFn: (contents: string) => Promise<string>;
 	private readonly now: () => number;
-	private interpreterConfig: {
-		guards: Record<string, (hsm: unknown, event: CanvasEvent) => boolean>;
-		actions: Record<string, (hsm: unknown, event: CanvasEvent) => void>;
-		invokeSources: Record<
-			string,
-			(hsm: unknown, signal: AbortSignal) => Promise<unknown>
-		>;
-	};
+	private interpreterConfig: CanvasInterpreterConfig;
 	private warn = curryLog("[CanvasHSM]", "warn");
 
 	constructor(private config: CanvasHSMConfig) {
@@ -449,14 +443,7 @@ export class CanvasHSM implements SyncMachine {
 		this._currentEventType = event.type;
 		const revisionBefore = this.context.revision;
 		const stateBefore = this._statePath;
-		// The interpreter is generic at runtime; its types are bound to
-		// MergeHSM's unions, so the boundary casts here are deliberate.
-		processEvent(
-			this as never,
-			event as never,
-			CANVAS_MACHINE as never,
-			this.interpreterConfig as never,
-		);
+		processEvent(this, event, CANVAS_MACHINE, this.interpreterConfig);
 		if (
 			(this.context.revision !== revisionBefore ||
 				this._statePath !== stateBefore) &&

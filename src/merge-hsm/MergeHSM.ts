@@ -72,7 +72,7 @@ import { curryLog, recordHSMEntry } from "../debug";
 import { flags } from "../flagManager";
 import { generateHash } from "../hashing";
 import { Lifetime } from "../promiseUtils";
-import { processEvent } from "./machine-interpreter";
+import { processEvent } from "../hsm/interpreter";
 import { MACHINE, createInterpreterConfig, validateMachine } from "./machine-definition";
 import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./types";
 import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture } from "./undo";
