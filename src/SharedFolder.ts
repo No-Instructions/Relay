@@ -41,6 +41,7 @@ import type { MergeHSM } from "./merge-hsm/MergeHSM";
 import { SyncFolder, isSyncFolder } from "./SyncFolder";
 import { isDocument } from "./Document";
 import { SyncStore, type FolderMapDelta } from "./SyncStore";
+import { FolderHSM } from "./folder-hsm/FolderHSM";
 import {
 	SyncType,
 	makeCanvasMeta,
@@ -318,20 +319,11 @@ export class SharedFolder extends HasProvider {
 	 * recurring sweeps do not re-request known-empty documents.
 	 */
 	private _emptyOnServer: Map<string, number> = new Map();
-	/**
-	 * Compatibility latch for outbound consumers. It settles during
-	 * construction and again defensively on destroy so no waiter can remain
-	 * pending during teardown.
-	 */
-	private _membershipSettled = false;
-	private _membershipSettledPromise: Promise<void> | undefined;
-	private _resolveMembershipSettled: (() => void) | undefined;
 	/** Default-off session gate: local discovery may mint identities, but it
 	 * cannot publish them until the provider's first completed handshake. */
 	private readonly _syncConvergenceLatchEnabled: boolean;
-	private _firstSyncConverged = false;
-	private _firstSyncConvergedPromise: Promise<void> | undefined;
-	private _resolveFirstSyncConverged: (() => void) | undefined;
+	/** Boot posture and the connect/publish permissions derived from it. */
+	private folderMachine: FolderHSM;
 	/** Paths removed by provider-applied membership updates before convergence. */
 	private _preConvergenceRemoteDeletes: Set<string> | undefined;
 	/** Deleted paths that had a local publication hold when convergence opened. */
@@ -349,9 +341,6 @@ export class SharedFolder extends HasProvider {
 	private _convergenceDeletionInFlight: Set<string> | undefined;
 	private readonly remoteActivityIndex = new RemoteActivityIndex();
 	private readonly remoteActivitySubscribers = new Set<() => void>();
-	private startupScanComplete = false;
-	private startupScanPromise: Promise<void>;
-	private resolveStartupScan?: () => void;
 	private connectionAttempt: Promise<boolean> | null = null;
 	private startupConnectRequested = false;
 
@@ -380,8 +369,13 @@ export class SharedFolder extends HasProvider {
 			: new S3Folder(guid);
 
 		super(guid, s3rn, tokenStore, loginManager);
-		this.startupScanPromise = new Promise<void>((resolve) => {
-			this.resolveStartupScan = resolve;
+		// Constructed before any subscription can route back into connect():
+		// an authoritative folder is its own membership authority and may have
+		// no provider to handshake with, so its publication latch never arms.
+		this._syncConvergenceLatchEnabled =
+			flags().enableSyncConvergenceLatch && !authoritative;
+		this.folderMachine = new FolderHSM({
+			publicationLatch: this._syncConvergenceLatchEnabled,
 		});
 		this.timeProvider = timeProvider;
 		this.path = path;
@@ -418,11 +412,6 @@ export class SharedFolder extends HasProvider {
 		}
 
 		this.authoritative = authoritative;
-		// An authoritative folder is its own membership authority and may have no
-		// provider to handshake with. Later boots are non-authoritative, so they
-		// still wait for the server view before publishing local discoveries.
-		this._syncConvergenceLatchEnabled =
-			flags().enableSyncConvergenceLatch && !authoritative;
 		if (this._syncConvergenceLatchEnabled) {
 			this._preConvergenceRemoteDeletes = new Set();
 			this._convergenceRemoteDeletedHolds = new Map();
@@ -430,9 +419,6 @@ export class SharedFolder extends HasProvider {
 			this._convergencePublicationRuns = new Map();
 			this._pendingDocumentEnrollments = new WeakMap();
 			this._convergenceDeletionInFlight = new Set();
-			this._firstSyncConvergedPromise = new Promise<void>((resolve) => {
-				this._resolveFirstSyncConverged = resolve;
-			});
 		}
 
 		this.syncSettingsManager = this._settings.getChild<
@@ -459,7 +445,6 @@ export class SharedFolder extends HasProvider {
 			this.syncStore.typeRegistry.getEnabledFileSyncTypes(),
 		);
 
-		this.initializeMembershipLatch();
 		this.syncStore.onCompetingClaim = (path: string, meta: Meta) => {
 			void Promise.resolve().then(() => {
 				this.handleCompetingClaim(path, meta);
@@ -675,6 +660,7 @@ export class SharedFolder extends HasProvider {
 		trackPromise(`folder:whenSynced:${this.guid}`, this.whenSynced())
 			.then(async () => {
 				if (this.destroyed) return;
+				this.folderMachine.send({ type: "REPLAY_COMPLETE" });
 				// Load persisted HSM metadata before sync startup can create
 				// Documents. Document construction immediately creates HSMs,
 				// and cold-start needs this cache to decide whether a doc can
@@ -692,7 +678,7 @@ export class SharedFolder extends HasProvider {
 				// installed, so replay both local doc discovery and file-tree sync after
 				// start() to avoid missing the first batch of remote entries.
 				this.addLocalDocs();
-				this.markStartupScanComplete();
+				this.folderMachine.send({ type: "DISK_SCANNED" });
 				void this.startupConnect();
 				await this.syncFileTree();
 				try {
@@ -709,7 +695,7 @@ export class SharedFolder extends HasProvider {
 				// Startup did not complete a trustworthy disk comparison. Release
 				// callers waiting to connect rather than leaving the folder offline
 				// for the session; nothing from an incomplete scan can be protected.
-				this.markStartupScanComplete();
+				this.folderMachine.send({ type: "DISK_SCANNED" });
 			})
 			// Tail net: the normal path connects immediately after addLocalDocs(),
 			// while a failure above releases the scan barrier in catch(). Either
@@ -791,7 +777,7 @@ export class SharedFolder extends HasProvider {
 					// open sessions that push local-ahead ops, so delivery
 					// waits for the session's first confirmed membership
 					// settlement.
-					if (!this._membershipSettled) {
+					if (!this.membershipSettled) {
 						await this.whenMembershipSettled();
 					}
 					if (this.destroyed) return;
@@ -1128,10 +1114,10 @@ export class SharedFolder extends HasProvider {
 		// session's first confirmed membership settlement, so a file the
 		// settlement will condemn cannot push its content first. The work
 		// is held, not dropped — the effect is not re-emitted.
-		if (!this._membershipSettled) {
+		if (!this.membershipSettled) {
 			await this.whenMembershipSettled();
 		}
-		if (this._syncConvergenceLatchEnabled && !this._firstSyncConverged) {
+		if (this._syncConvergenceLatchEnabled && !this.firstSyncConverged) {
 			await this.whenFirstSyncConverged();
 		}
 		if (this.destroyed) return;
@@ -1565,7 +1551,7 @@ export class SharedFolder extends HasProvider {
 			// Membership before content: the folder-wide flush pushes local
 			// ops, so it waits for the session's first confirmed membership
 			// settlement. Discovery above is unaffected.
-			if (!this._membershipSettled) {
+			if (!this.membershipSettled) {
 				await this.whenMembershipSettled();
 			}
 			if (this.destroyed) return;
@@ -1625,7 +1611,7 @@ export class SharedFolder extends HasProvider {
 		// transaction; enqueue on a fresh microtask so upload bookkeeping
 		// never re-enters observer or transaction context.
 		void Promise.resolve().then(async () => {
-			if (this._syncConvergenceLatchEnabled && !this._firstSyncConverged) {
+			if (this._syncConvergenceLatchEnabled && !this.firstSyncConverged) {
 				await this.whenFirstSyncConverged();
 			}
 			if (this.destroyed) return;
@@ -1725,8 +1711,8 @@ export class SharedFolder extends HasProvider {
 		// reach the folder document before local discovery has compared the disk
 		// with replayed membership. A brand-new folder bypasses this barrier only
 		// from whenReady(), because it needs the server map before discovery.
-		if (!beforeStartupScan && !this.startupScanComplete) {
-			await this.startupScanPromise;
+		if (!beforeStartupScan && !this.folderMachine.mayConnect) {
+			await this.folderMachine.whenMayConnect();
 		}
 		if (this.destroyed) return false;
 		if (this.connectionAttempt) return this.connectionAttempt;
@@ -1764,12 +1750,6 @@ export class SharedFolder extends HasProvider {
 			}
 		}
 		return false;
-	}
-
-	private markStartupScanComplete(): void {
-		if (this.startupScanComplete) return;
-		this.startupScanComplete = true;
-		this.resolveStartupScan?.();
 	}
 
 	/**
@@ -2705,38 +2685,33 @@ export class SharedFolder extends HasProvider {
 		return expandDesiredRemotePaths(paths);
 	}
 
-	/** Initialize the construction-time compatibility latch. */
-	private initializeMembershipLatch(): void {
-		this._membershipSettledPromise = new Promise<void>((resolve) => {
-			this._resolveMembershipSettled = resolve;
-		});
-		this.markMembershipSettled();
-	}
-
-	/** True once construction has opened the outbound compatibility latch. */
+	/**
+	 * Retained API for outbound consumers. The latch it once exposed settled
+	 * during construction, so it reads settled for the folder's whole life.
+	 */
 	public get membershipSettled(): boolean {
-		return this._membershipSettled;
+		return true;
 	}
 
-	/** Resolves at membership settlement (immediately when already settled). */
+	/** Resolves at membership settlement (immediately: always settled). */
 	public whenMembershipSettled(): Promise<void> {
-		return this._membershipSettledPromise ?? Promise.resolve();
+		return Promise.resolve();
 	}
 
-	private markMembershipSettled(): void {
-		if (this._membershipSettled) return;
-		this._membershipSettled = true;
-		this._resolveMembershipSettled?.();
+	/** The convergence-latch fact: the provider synced once, or teardown
+	 * released everything parked on it. */
+	private get firstSyncConverged(): boolean {
+		return this.folderMachine.providerSynced || this.folderMachine.closed;
 	}
 
 	private whenFirstSyncConverged(): Promise<void> {
-		return this._firstSyncConvergedPromise ?? Promise.resolve();
+		return this.folderMachine.whenMayPublish();
 	}
 
 	public shouldDeferPendingPublication(path: string): boolean {
 		return (
 			this._syncConvergenceLatchEnabled &&
-			!this._firstSyncConverged &&
+			!this.firstSyncConverged &&
 			this.pendingUpload.has(path)
 		);
 	}
@@ -2745,9 +2720,19 @@ export class SharedFolder extends HasProvider {
 		return this._syncConvergenceLatchEnabled && this.pendingUpload.has(path);
 	}
 
+	/** The provider's first sync converged: the publication latch opens. */
 	private markFirstSyncConverged(): void {
-		if (!this._syncConvergenceLatchEnabled || this._firstSyncConverged) return;
-		this._firstSyncConverged = true;
+		this.transferPreConvergenceDeletesToHolds();
+		this.folderMachine.send({ type: "PROVIDER_SYNCED" });
+	}
+
+	/**
+	 * Pre-convergence remote deletes become publication holds the moment the
+	 * latch opens — on the first completed sync, or at teardown. Runs before
+	 * the machine records the fact, so it fires exactly once.
+	 */
+	private transferPreConvergenceDeletesToHolds(): void {
+		if (!this._syncConvergenceLatchEnabled || this.firstSyncConverged) return;
 		for (const path of this._preConvergenceRemoteDeletes ?? []) {
 			const guid = this.pendingUpload.get(path);
 			if (guid) {
@@ -2755,11 +2740,10 @@ export class SharedFolder extends HasProvider {
 			}
 		}
 		this._preConvergenceRemoteDeletes?.clear();
-		this._resolveFirstSyncConverged?.();
 	}
 
 	private recordPreConvergenceRemoteDeletes(delta: FolderMapDelta): void {
-		if (this._firstSyncConverged || !this._preConvergenceRemoteDeletes) return;
+		if (this.firstSyncConverged || !this._preConvergenceRemoteDeletes) return;
 		for (const entry of delta.deletes) {
 			this._preConvergenceRemoteDeletes.add(entry.path);
 		}
@@ -2896,7 +2880,7 @@ export class SharedFolder extends HasProvider {
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
-		if (this._syncConvergenceLatchEnabled && !this._firstSyncConverged) {
+		if (this._syncConvergenceLatchEnabled && !this.firstSyncConverged) {
 			let parked = this._convergenceParkedUploads?.get(path);
 			if (!parked) {
 				parked = this.whenFirstSyncConverged()
@@ -4308,7 +4292,7 @@ export class SharedFolder extends HasProvider {
 			if (!awaitingUpdates) {
 				// Outbound content waits for the folder compatibility latch before
 				// dispatching, including bootstrap uploads.
-				if (!this._membershipSettled) {
+				if (!this.membershipSettled) {
 					await this.whenMembershipSettled();
 				}
 				if (this.destroyed) return;
@@ -4794,11 +4778,10 @@ export class SharedFolder extends HasProvider {
 			`${this.path} (${this.guid})`,
 		);
 		this.destroyed = true;
-		this.markStartupScanComplete();
-		// Release outbound work held for membership settlement: awaiters
-		// re-check `destroyed` and bail instead of pending forever.
-		this.markMembershipSettled();
-		this.markFirstSyncConverged();
+		// Close the machine: parked connect() callers and parked publications
+		// resume, re-check `destroyed`, and bail instead of pending forever.
+		this.transferPreConvergenceDeletesToHolds();
+		this.folderMachine.close();
 		this.pendingCreates.forEach((timer) => this.timeProvider.clearTimeout(timer));
 		this.pendingCreates.clear();
 		this.clearDownloadsDeferredByState();
