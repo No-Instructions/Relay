@@ -631,18 +631,29 @@ export class SyncStore extends Observable<SyncStore> {
 	private detectFolderMoves() {
 		const movedFolders = new Map<string, string>(); // old path -> new path
 		const processedFolders = new Set<string>();
+		const documentPathsById = new Map<
+			string,
+			{ latest: string; previous?: string }
+		>();
+
+		// Index document paths once. A guid can temporarily exist at both its
+		// old and new paths, so retain the two latest paths and select the one
+		// that differs from the legacy client's path below.
+		this.meta.forEach((meta, path) => {
+			if (meta.type !== SyncType.Document) return;
+			const existing = documentPathsById.get(meta.id);
+			documentPathsById.set(meta.id, {
+				latest: path,
+				previous: existing?.latest,
+			});
+		});
 
 		this.legacyIds.forEach((guid, newPath) => {
-			let oldPath: string | undefined;
-			this.meta.forEach((meta, path) => {
-				if (
-					meta.type === SyncType.Document &&
-					meta.id === guid &&
-					path !== newPath
-				) {
-					oldPath = path;
-				}
-			});
+			const documentPaths = documentPathsById.get(guid);
+			const oldPath =
+				documentPaths?.latest === newPath
+					? documentPaths.previous
+					: documentPaths?.latest;
 
 			if (oldPath) {
 				const oldDir = dirname(oldPath);
