@@ -16,20 +16,19 @@ import type { FolderFacts, FolderStatePath } from "./types";
 /**
  * The state as a pure total function of the facts: a descending cascade.
  *
- * `publicationLatch` is the sync-convergence latch: when enabled, locally
- * discovered files may mint identities but publication waits for the
- * provider's first completed sync (`reconciling`). When disabled, a scanned
- * folder is immediately `active`.
+ * A folder with no persisted membership has no boot snapshot to read, so
+ * it stays `loading` until the server's first view stands in for one —
+ * that such a folder must connect while still loading is why `mayConnect`
+ * depends on `replayComplete` rather than on the state.
  */
-export function folderStateOf(
-	facts: FolderFacts,
-	publicationLatch: boolean,
-): FolderStatePath {
+export function folderStateOf(facts: FolderFacts): FolderStatePath {
 	if (facts.closed) return "closed";
-	if (!facts.diskScanned) {
-		return facts.replayComplete ? "discovering" : "loading";
+	if (!facts.replayComplete) return "loading";
+	if (!facts.hasPersistedMembership && !facts.providerSynced) {
+		return "loading";
 	}
-	if (publicationLatch && !facts.providerSynced) return "reconciling";
+	if (!(facts.diskScanned && facts.providerSynced)) return "discovering";
+	if (!facts.initialReconcileComplete) return "reconciling";
 	return "active";
 }
 
@@ -45,6 +44,11 @@ const FACT_EVENTS = (
 	PROVIDER_SYNCED: {
 		target: self,
 		actions: ["recordProviderSynced"],
+		reenter: true,
+	},
+	INITIAL_RECONCILE_COMPLETE: {
+		target: self,
+		actions: ["recordInitialReconcileComplete"],
 		reenter: true,
 	},
 	CLOSE: { target: self, actions: ["recordClosed"], reenter: true },
