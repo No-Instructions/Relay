@@ -43,6 +43,7 @@ import { isDocument } from "./Document";
 import { SyncStore } from "./SyncStore";
 import { FolderHSM } from "./folder-hsm/FolderHSM";
 import { MembershipSnapshot } from "./folder-hsm/MembershipSnapshot";
+import { ServerOps } from "./folder-hsm/ServerOps";
 import {
 	SyncType,
 	makeCanvasMeta,
@@ -325,8 +326,8 @@ export class SharedFolder extends HasProvider {
 	/** Membership as known at replay completion; null once the initial
 	 * reconcile has decided every entry. */
 	private bootSnapshot: MembershipSnapshot | null = null;
-	/** Remote removals whose disk adoption has not completed. */
-	private pendingRemoteDeletes = new Set<string>();
+	/** Server-decided operations whose disk effect is still in flight. */
+	private serverOps = new ServerOps();
 	/** One parked publication re-entry per held path. */
 	private _parkedPublications: Map<string, Promise<void>> = new Map();
 	/** One publication decision executor per held path. */
@@ -438,16 +439,18 @@ export class SharedFolder extends HasProvider {
 				this.handleCompetingClaim(path, meta);
 			});
 		};
-		// A remote removal answers "known" until its disk adoption completes,
-		// so a scan or a debounced vault-create landing in that window cannot
-		// re-mint the path. Entries clear when the adoption completes or the
-		// path re-commits in the map.
+		// Remote membership changes cross onto disk asynchronously. Keep
+		// removed paths and the guid-bearing source edge of moves in the op
+		// set until disk adoption completes, so a scan or a debounced
+		// vault-create landing in that window cannot re-mint, and the disk
+		// echoes are consumed as the folder's own lag rather than user
+		// intent.
 		this.unsubscribes.push(
 			this.syncStore.subscribeMapDelta((delta, origin) => {
 				if (origin === this || origin === this._persistence) return;
 				for (const removal of delta.deletes) {
 					if (this.existsSync(removal.path)) {
-						this.pendingRemoteDeletes.add(removal.path);
+						this.serverOps.recordDelete(removal.path);
 					} else {
 						// Nothing on disk to adopt: the removal is already
 						// decided for this device.
@@ -455,13 +458,26 @@ export class SharedFolder extends HasProvider {
 					}
 				}
 				for (const entry of delta.adds) {
-					this.pendingRemoteDeletes.delete(entry.path);
+					this.serverOps.clearDelete(entry.path);
 				}
 				for (const entry of delta.updates) {
-					this.pendingRemoteDeletes.delete(entry.path);
+					this.serverOps.clearDelete(entry.path);
 				}
 				for (const move of delta.moves) {
-					this.pendingRemoteDeletes.delete(move.to);
+					this.serverOps.clearDelete(move.to);
+					const moved = this.files.get(move.guid);
+					if (
+						this.existsSync(move.from) ||
+						moved?.path === move.from
+					) {
+						this.serverOps.recordMove(move);
+					} else {
+						// Disk already agrees with the moved membership (or no
+						// source exists to reconcile on this device). A prior
+						// edge for this identity is no longer in flight either.
+						this.serverOps.discardMove(move.guid);
+						this.bootSnapshot?.discard(move.from);
+					}
 				}
 			}),
 		);
@@ -1940,6 +1956,8 @@ export class SharedFolder extends HasProvider {
 		diffLog?: string[],
 	): Promise<void> {
 		// take a doc and it's new path.
+		const oldVPath = this.getVirtualPath(file.path);
+		this.serverOps.recordMove({ guid: doc.guid, from: oldVPath, to: path });
 		diffLog?.push(`${file.path} was renamed to ${this.getPath(path)}`);
 		if (file instanceof TFile) {
 			const dir = dirname(path);
@@ -1948,11 +1966,12 @@ export class SharedFolder extends HasProvider {
 				diffLog?.push(`creating directory ${dir}`);
 			}
 		}
-		await this.fileManager
-			.renameFile(file, normalizePath(this.getPath(path)))
-			.then(() => {
-				doc.move(path, this);
-			});
+		await this.fileManager.renameFile(file, normalizePath(this.getPath(path)));
+		this.serverOps.completeMove(oldVPath, path);
+		this.bootSnapshot?.discard(oldVPath);
+		if (!this.destroyed && doc.path !== path) {
+			doc.move(path, this);
+		}
 	}
 
 	trashFile(file: TAbstractFile): Promise<void> {
@@ -2618,7 +2637,7 @@ export class SharedFolder extends HasProvider {
 							// The removal's disk adoption is complete: the path
 							// may classify as a local creation again, so a
 							// legitimate recreation is not refused.
-							this.pendingRemoteDeletes.delete(vpath);
+							this.serverOps.clearDelete(vpath);
 							this.bootSnapshot?.discard(vpath);
 						})
 						.finally(() => {
@@ -2671,8 +2690,38 @@ export class SharedFolder extends HasProvider {
 		return (
 			!this.syncStore.has(vpath) &&
 			!(this.bootSnapshot?.has(vpath) ?? false) &&
-			!this.pendingRemoteDeletes.has(vpath)
+			!this.serverOps.coversPath(vpath)
 		);
+	}
+
+	/**
+	 * A vault create at a move source is a distinct disk occupant: it may
+	 * claim the path without taking over the moved guid, so the snapshot
+	 * retires for it and normal settling may mint the new occupant.
+	 */
+	private observeMoveSourceRecreation(vpath: string): boolean {
+		if (!this.serverOps.observeSourceRecreation(vpath)) return false;
+		this.bootSnapshot?.discard(vpath);
+		return true;
+	}
+
+	/** Consume the vault rename that makes one server move real on disk. */
+	private consumeMoveEcho(oldVPath: string, newVPath: string): boolean {
+		const move = this.serverOps.moveFrom(oldVPath);
+		if (!move || move.to !== newVPath) return false;
+
+		// Live membership at the source belongs to a separately recreated
+		// file, even while the guid-keyed move remains in flight.
+		const sourceGuid = this.syncStore.get(oldVPath);
+		if (sourceGuid !== undefined && sourceGuid !== move.guid) return false;
+
+		const moved = this.files.get(move.guid);
+		if (moved && moved.path !== newVPath) {
+			moved.move(newVPath, this);
+		}
+		this.serverOps.completeMove(oldVPath, newVPath);
+		this.bootSnapshot?.discard(oldVPath);
+		return true;
 	}
 
 	/**
@@ -2688,8 +2737,10 @@ export class SharedFolder extends HasProvider {
 		// for itself.
 		const liveMembership = (path: string) =>
 			this.syncStore.has(path) && !this.pendingUpload.has(path);
-		const gone = this.bootSnapshot?.deletedSince(liveMembership) ?? [];
-		for (const path of this.pendingRemoteDeletes) {
+		const gone = (
+			this.bootSnapshot?.deletedSince(liveMembership) ?? []
+		).filter((path) => !this.serverOps.moveFrom(path));
+		for (const path of this.serverOps.pendingDeletePaths()) {
 			if (this.bootSnapshot?.has(path)) continue;
 			if (!liveMembership(path)) gone.push(path);
 		}
@@ -2732,6 +2783,7 @@ export class SharedFolder extends HasProvider {
 		const vpath = this.getVirtualPath(tfile.path);
 		if (this.isPendingDelete(vpath)) return false;
 		if (this.syncStore.has(vpath)) return true;
+		this.observeMoveSourceRecreation(vpath);
 		this.scheduleLegacyCreate(vpath);
 		return false;
 	}
@@ -2771,6 +2823,9 @@ export class SharedFolder extends HasProvider {
 		const newVPath = this.getVirtualPath(file.path);
 		this.cancelPendingCreate(oldVPath);
 		this.cancelPendingCreate(newVPath);
+		if (this.consumeMoveEcho(oldVPath, newVPath)) {
+			return;
+		}
 		if (this.syncStore.has(oldVPath)) {
 			this.renameFile(file, oldPath);
 			return;
@@ -2778,6 +2833,9 @@ export class SharedFolder extends HasProvider {
 		if (this.syncStore.has(newVPath) || !this.isSyncableTFile(file)) {
 			return;
 		}
+		// A distinct file renamed into the vacated source is a new disk
+		// occupant. It may claim the path without taking over the moved guid.
+		this.observeMoveSourceRecreation(newVPath);
 		const newDocs = this.placeHold([file]);
 		if (newDocs.includes(newVPath)) {
 			this.uploadFile(file);
@@ -3191,13 +3249,23 @@ export class SharedFolder extends HasProvider {
 				if (diffLog.length > 0) {
 					this.log("syncFileTree diff:\n" + diffLog.join("\n"));
 				}
-				// A pending remote delete with nothing on disk has no adoption
-				// left to wait for; confirm its absence so a later recreation
-				// is not refused as a re-mint.
-				for (const path of this.pendingRemoteDeletes) {
+				// An op with nothing left on disk to adopt has no echo to wait
+				// for; confirm its absence so a later recreation is not refused
+				// as a re-mint.
+				for (const path of this.serverOps.pendingDeletePaths()) {
 					if (!this.existsSync(path)) {
-						this.pendingRemoteDeletes.delete(path);
+						this.serverOps.clearDelete(path);
 						this.bootSnapshot?.discard(path);
+					}
+				}
+				for (const move of this.serverOps.pendingMoves()) {
+					if (!this.existsSync(move.from) && this.existsSync(move.to)) {
+						const moved = this.files.get(move.guid);
+						if (moved && moved.path === move.from) {
+							moved.move(move.to, this);
+						}
+						this.serverOps.completeMove(move.from, move.to);
+						this.bootSnapshot?.discard(move.from);
 					}
 				}
 				this.sweepStalePendingUploads();
@@ -4520,8 +4588,21 @@ export class SharedFolder extends HasProvider {
 		const cleanupGuids = new Map<string, string>();
 		this.folderDoc.transact(() => {
 			for (const vpath of paths) {
-				this.pendingUpload.delete(vpath);
 				const guid = this.syncStore?.get(vpath);
+				const move = this.serverOps.moveFrom(vpath);
+				if (
+					move &&
+					(guid === move.guid || (!guid && !this.pendingUpload.has(vpath)))
+				) {
+					// The delete echo for the vacated disk path, not a deletion
+					// of the identity whose membership lives at `to`.
+					const moved = this.files.get(move.guid);
+					if (moved && moved.path === move.from) {
+						moved.move(move.to, this);
+					}
+					continue;
+				}
+				this.pendingUpload.delete(vpath);
 				if (guid) {
 					this.syncStore.delete(vpath);
 					const doc = this.files.get(guid);
@@ -4586,6 +4667,18 @@ export class SharedFolder extends HasProvider {
 			this.placeHold([tfile]);
 			this.uploadFile(tfile);
 		} else {
+			const move = this.serverOps.moveFrom(oldVPath);
+			if (move && !this.syncStore.has(oldVPath)) {
+				if (newVPath && move.to === newVPath) {
+					this.consumeMoveEcho(oldVPath, newVPath);
+				} else {
+					// A different rename belongs to a recreated source
+					// occupant. It cannot move or destroy the guid already
+					// living at `to`.
+					this.observeMoveSourceRecreation(oldVPath);
+				}
+				return;
+			}
 			// live doc exists
 			const guid = this.syncStore.get(oldVPath);
 			if (!guid) return;
@@ -4631,11 +4724,6 @@ export class SharedFolder extends HasProvider {
 						}
 					});
 				}, this);
-
-				// Due to nested folder moves the tfiles and syncStore can diverge.
-				// The nested folder moves are done in bulk in the sync store, but the tfile
-				// events come in individually.
-				this.syncStore.resolveMove(oldVPath);
 			}
 		}
 	}
