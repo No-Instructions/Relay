@@ -2876,12 +2876,11 @@ export class SharedFolder extends HasProvider {
 		ops: Operation[],
 		types: SyncType[],
 	) {
+		const remoteIds = syncStore.remoteIds;
 		syncStore.forEachWithPending((meta, path) => {
 			if (!this._assertNamespacing(path)) return;
 			if (meta && types.contains(meta.type)) {
-				ops.push(
-					this.applyRemoteState(meta.id, path, syncStore.remoteIds, diffLog),
-				);
+				ops.push(this.applyRemoteState(meta.id, path, remoteIds, diffLog));
 			} else if (!meta && types.contains(SyncType.Document)) {
 				ops.push(this.applyPendingUpload(path));
 			}
