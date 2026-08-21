@@ -44,9 +44,8 @@ export interface FolderMapDelta {
 /**
  * Convert a Y.Map observer event into a membership delta with move pairing:
  * within one transaction, a delete paired with an add carrying the same guid
- * is a move. This extends the
- * folder-move pairing that processFolderOperation has always done to files —
- * a paired move is structurally incapable of being misread as
+ * is a move. Folder and child moves use the same representation, so a
+ * paired move is structurally incapable of being misread as
  * delete-then-create. A delete+re-add of one guid at one path collapses
  * into an update.
  *
@@ -121,7 +120,6 @@ export class SyncStore extends Observable<SyncStore> {
 	overlay: Map<string, Meta>;
 	deleteSet: Set<string>;
 	typeRegistry: TypeRegistry;
-	renames: Map<string, string>;
 
 	constructor(
 		public ydoc: Y.Doc,
@@ -133,7 +131,6 @@ export class SyncStore extends Observable<SyncStore> {
 		this.legacyIds = this.ydoc.getMap("docs");
 		this.meta = this.ydoc.getMap("filemeta_v0");
 		this.overlay = new Map();
-		this.renames = new Map();
 		this.deleteSet = new Set();
 		this.typeRegistry = new TypeRegistry(this.syncSettingsManager);
 	}
@@ -164,22 +161,10 @@ export class SyncStore extends Observable<SyncStore> {
 		return this.typeRegistry.canSync(vpath, meta);
 	}
 
-	resolveMove(oldVPath: string) {
-		// Moves are an async operation, so we keep the old path pointer around until the move has resolved.
-		this.log("resolving alias", oldVPath);
-		this.renames.delete(oldVPath);
-	}
-
-	resolveAll() {
-		this.renames.clear();
-	}
-
 	move(oldVPath: string, newVPath: string) {
-		// This move must be finalized with a vault rename event
 		this.log("moving file", oldVPath, "to", newVPath);
 		this.assertVPath(oldVPath);
 		this.assertVPath(newVPath);
-		this.renames.set(oldVPath, newVPath);
 		const guid = this.pendingUpload.get(oldVPath);
 		if (guid) {
 			this.pendingUpload.set(newVPath, guid);
@@ -277,9 +262,6 @@ export class SyncStore extends Observable<SyncStore> {
 	 * claims vouching for themselves.
 	 */
 	hasKnown(path: string): boolean {
-		if (this.renames.has(path)) {
-			path = this.renames.get(path)!;
-		}
 		if (this.deleteSet.has(path)) {
 			return false;
 		}
@@ -292,9 +274,6 @@ export class SyncStore extends Observable<SyncStore> {
 
 	/** The device holds unpublished identity for this path. */
 	hasClaim(path: string): boolean {
-		if (this.renames.has(path)) {
-			path = this.renames.get(path)!;
-		}
 		if (this.deleteSet.has(path)) {
 			return false;
 		}
@@ -403,51 +382,6 @@ export class SyncStore extends Observable<SyncStore> {
 	 */
 	onCompetingClaim: ((path: string, meta: Meta) => void) | null = null;
 
-	processFolderOperation(event: Y.YMapEvent<Meta>) {
-		const deletedFolders = new Map<string, string>();
-		const addedFolders = new Map<string, string>();
-
-		event.changes.keys.forEach((change, path) => {
-			if (change.action === "delete") {
-				const oldMeta = change.oldValue as Meta;
-				if (oldMeta?.type === SyncType.Folder) {
-					deletedFolders.set(oldMeta.id, path);
-				}
-			} else if (change.action === "add" || change.action === "update") {
-				const newMeta = this.meta.get(path);
-				if (newMeta?.type === SyncType.Folder) {
-					addedFolders.set(newMeta.id, path);
-				}
-			}
-		});
-
-		deletedFolders.forEach((oldFolderPath, folderId) => {
-			const newFolderPath = addedFolders.get(folderId);
-			if (newFolderPath && oldFolderPath !== newFolderPath) {
-				this.log(
-					`Detected folder move from ${oldFolderPath} to ${newFolderPath}`,
-				);
-
-				const pathsMoved = new Map<string, Meta>();
-				this.meta.forEach((meta, path) => {
-					if (path.startsWith(newFolderPath + sep)) {
-						pathsMoved.set(path, meta);
-					}
-				});
-
-				this.renames.set(oldFolderPath, newFolderPath);
-				this.log("setting alias", oldFolderPath, newFolderPath);
-				this.log("paths to move", pathsMoved);
-				pathsMoved.forEach((meta, vpath) => {
-					const relativePath = vpath.slice(newFolderPath.length);
-					const oldVPath = oldFolderPath + relativePath;
-					this.renames.set(oldVPath, vpath);
-					this.log("setting alias", oldVPath, vpath);
-				});
-			}
-		});
-	}
-
 	start() {
 		withFlag(flag.enableDeltaLogging, () => {
 			const logObserver = (event: Y.YMapEvent<any>) => {
@@ -495,9 +429,7 @@ export class SyncStore extends Observable<SyncStore> {
 			const origin = event.transaction.origin;
 			if (origin == this) return;
 
-			this.processFolderOperation(event);
-			// Compute a delta only when at least one consumer is installed;
-			// otherwise the legacy path above is the only logic that runs.
+			// Compute a delta only when at least one consumer is installed.
 			if (this.onMapDelta || this.mapDeltaSubscribers.size > 0) {
 				const delta = extractMapDelta(event, this.meta);
 				this.onMapDelta?.(delta, origin);
@@ -553,9 +485,6 @@ export class SyncStore extends Observable<SyncStore> {
 
 	get(vpath: string): string | undefined {
 		this.assertVPath(vpath);
-		if (this.renames.has(vpath)) {
-			vpath = this.renames.get(vpath)!;
-		}
 		if (this.deleteSet.has(vpath)) {
 			return undefined;
 		}
@@ -572,9 +501,6 @@ export class SyncStore extends Observable<SyncStore> {
 
 	getMeta(vpath: string): Meta | undefined {
 		this.assertVPath(vpath);
-		if (this.renames.has(vpath)) {
-			vpath = this.renames.get(vpath)!;
-		}
 		if (this.deleteSet.has(vpath)) {
 			return undefined;
 		}
@@ -614,9 +540,6 @@ export class SyncStore extends Observable<SyncStore> {
 	 */
 	getCommittedMeta(vpath: string): Meta | undefined {
 		this.assertVPath(vpath);
-		if (this.renames.has(vpath)) {
-			vpath = this.renames.get(vpath)!;
-		}
 		if (this.deleteSet.has(vpath)) {
 			return undefined;
 		}
@@ -789,7 +712,6 @@ export class SyncStore extends Observable<SyncStore> {
 		super.destroy();
 		this.overlay.clear();
 		this.deleteSet.clear();
-		this.renames.clear();
 		this.legacyIds = null as any;
 		this.meta = null as any;
 	}
