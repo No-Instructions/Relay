@@ -257,6 +257,23 @@ export function snapshotStateVector(snapshot: YjsSnapshot): DecodedSV {
 }
 
 /**
+ * Extract the delete-set portion from an encoded Yjs snapshot.
+ *
+ * This is an internal-surgery primitive for callers that need to attribute a
+ * specific deleted struct relative to a snapshot. Head comparisons should use
+ * the snapshot-level helpers instead.
+ */
+export function snapshotDeleteSet(snapshot: YjsSnapshot): DecodedDeleteSet {
+	const decoded = decodeSnapshotData(snapshot).ds.clients;
+	return new Map(
+		[...decoded.entries()].map(([client, ranges]) => [
+			client,
+			ranges.map((range) => ({ ...range })),
+		]),
+	);
+}
+
+/**
  * Check whether an encoded Yjs snapshot includes any tombstones.
  */
 export function snapshotHasDeleteSet(snapshot: YjsSnapshot): boolean {
