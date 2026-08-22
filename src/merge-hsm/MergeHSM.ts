@@ -87,6 +87,7 @@ import {
 	snapshotHasOpsMissingFrom,
 	snapshotIsAhead,
 	snapshotIsEmpty,
+	snapshotCoversItem,
 	snapshotMetaFromUpdate,
 	snapshotsEqual,
 	yjsDocIsAhead,
@@ -401,6 +402,17 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	// Y.Map("frontmatter") observer: tracks whether a remote update touched the map.
 	// Repair is only valid when the remote client also populates the Y.Map.
 	private _remoteFrontmatterMapUpdated = false;
+
+	// Frontmatter keys whose text value changed while the folder was
+	// disconnected. Their map write is withheld: a value minted from text
+	// that has not merged with the server would be a fresh LWW operation
+	// that can win over a live peer's newer edit and, through repair,
+	// silently revert that edit for everyone. Until the drain at provider
+	// sync, these keys stay text-authoritative — map overlays and repairs
+	// skip them — so the user's own edit is not reverted either. The set
+	// survives lock cycles and connectivity bounces; only a drain or the
+	// document's teardown clears it.
+	private readonly _deferredFrontmatterKeys = new Set<string>();
 
 	// Observables (per spec)
 	private readonly _effects = new SimpleObservable<MergeEffect>();
@@ -3409,6 +3421,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			},
 			mergeRemoteToLocal: () => this._bridge.flushInbound(),
 			seedFrontmatterMap: () => this.seedFrontmatterMapFromCurrentText(),
+			drainFrontmatterMap: () => this.drainFrontmatterMapIfSynced(),
 			repairFrontmatter: () => this.repairFrontmatterFromMap(),
 			absorbTextPreservingRemoteUpdate: (_hsm, event) =>
 				this.absorbTextPreservingRemoteUpdate(event as MergeEvent),
@@ -3839,6 +3852,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 					this._bridge.resetPendingCounters();
 					this.emitPersistState();
 					this.patchLCAHash(localContent);
+					// The sync-point frontmatter reconcile waited for the fork.
+					this.seedFrontmatterMapFromCurrentText();
 					return;
 				}
 
@@ -3920,6 +3935,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				// Sync merged result to remote
 				this._bridge.syncToRemote(Y.encodeStateAsUpdate(this.localDoc));
 				this._bridge.clearOutboundQueue();
+				// The sync-point frontmatter reconcile waited for the fork.
+				this.seedFrontmatterMapFromCurrentText();
 			},
 
 		};
@@ -5886,6 +5903,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		this._localDocSnapshotSafe = false;
 		this._remoteFrontmatterMapUpdated = false;
 		this.frontmatterMapItemIds.clear();
+		this._deferredFrontmatterKeys.clear();
 		this.assertMachineResources("after destroyLocalDoc");
 
 		// Clean up captured references
@@ -6709,8 +6727,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		// key present only in the map was deleted from the text, and
 		// writing it back here is what resurrected deleted fields.
 		// Duplicate-key recovery has already produced a safe parsed key set.
+		// A key whose map write is withheld stays text-authoritative until
+		// it drains: its map value predates the local edit.
 		for (const [key, value] of ymap.entries()) {
 			if (!(key in obj)) continue;
+			if (this._deferredFrontmatterKeys.has(key)) continue;
 			let parsed: any;
 			try { parsed = JSON.parse(value as string); }
 			catch { parsed = value; }
@@ -6838,6 +6859,214 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	}
 
 	/**
+	 * Bring Y.Map("frontmatter") in line with the text at a sync point: seed
+	 * an empty map from the text, or reconcile a populated one with the
+	 * merged text. Runs on enrollment (before provider sync, with
+	 * `allowBeforeProviderSync`), on entry to active tracking, and on
+	 * PROVIDER_SYNCED after the remote merge.
+	 */
+	private seedFrontmatterMapFromCurrentText(allowBeforeProviderSync = false): void {
+		if (!this.localDoc || !this._yaml) return;
+		if (
+			!allowBeforeProviderSync &&
+			!this._providerSynced &&
+			!this._isProviderSynced()
+		) return;
+		// A pending fork keeps inbound sync gated, so the text has not merged
+		// the remote yet; publishing from it would mint exactly the pre-merge
+		// values this reconcile exists to avoid. Fork reconciliation runs
+		// this again once the fork clears.
+		if (this.hasFork()) return;
+
+		const ymap = this.localDoc.getMap("frontmatter");
+		if (ymap.size === 0) {
+			// Derive the structured baseline from the text. Enrollment gets
+			// here before provider sync because its disk text is the causal
+			// baseline; a returning client gets here only after the provider
+			// synced, so its text has merged peer state. Neither has a peer
+			// value to race against, so the offline gate does not apply.
+			this.localDoc.transact(() => {
+				this.syncFrontmatterToMap(undefined, { bypassOfflineGate: true });
+			}, this);
+		} else {
+			// PROVIDER_SYNCED runs mergeRemoteToLocal before this action, so
+			// the text now reflects the reconciled merge. Publishing the
+			// withheld keys from it makes their values causally after
+			// everything seen at sync; draining any earlier would re-introduce
+			// the pre-merge value the gate exists to suppress.
+			this.localDoc.transact(() => {
+				this.reconcileFrontmatterMapAfterSync({ seedMissing: true });
+			}, this);
+		}
+		this._bridge.flushOutbound();
+	}
+
+	/**
+	 * Publish withheld frontmatter values from an idle document once its
+	 * provider has synced. A note closed after an offline edit still ships
+	 * the edit's text operations on reconnect; if the map value did not
+	 * follow from the same sync, a peer's next map-carrying write would
+	 * rebuild and repair the stale map value over the edit on every client
+	 * that mirrors. Idle never seeds missing keys — that remains the active
+	 * path's job.
+	 */
+	private drainFrontmatterMapIfSynced(): void {
+		if (!this.localDoc || !this._yaml) return;
+		if (!this._providerSynced && !this._isProviderSynced()) return;
+		if (this.hasFork()) return;
+		if (this.localDoc.getMap("frontmatter").size === 0) return;
+		let published = false;
+		this.localDoc.transact(() => {
+			published = this.reconcileFrontmatterMapAfterSync({ seedMissing: false });
+		}, this);
+		if (published) this._bridge.flushOutbound();
+	}
+
+	/**
+	 * Reconcile a populated map with the merged text once the provider has
+	 * synced. Runs inside a transaction.
+	 *
+	 * Keys whose writes were withheld while the folder was disconnected
+	 * are published from the merged text: for those keys the text merge is
+	 * the arbiter, and its value becomes a fresh LWW operation every peer
+	 * adopts. A withheld key the text no longer carries is pruned instead —
+	 * the text owns key removal.
+	 *
+	 * With `seedMissing`, keys the text carries but the map lacks are added.
+	 * A baseline seeded around an edit made before the first sync, or a key
+	 * introduced by a client that does not mirror, otherwise leaves the map
+	 * sparse for that key forever and repair unable to converge it.
+	 *
+	 * Finally, a key whose text moved past its map value without a matching
+	 * map write — a withheld write whose in-memory marker did not survive
+	 * hibernation or a restart, or an edit from a client that does not
+	 * mirror — is published from the text. The evidence is the persisted
+	 * merge baseline (LCA): the text and snapshot on which disk and the
+	 * local document last agreed. Left alone, the next map overlay would
+	 * resurrect the stale map value over the edit.
+	 *
+	 * Returns whether any map operation was minted.
+	 */
+	private reconcileFrontmatterMapAfterSync(options: { seedMissing: boolean }): boolean {
+		if (!this.localDoc || !this._yaml) return false;
+		const text = this.localDoc.getText("contents").toString();
+		const ymap = this.localDoc.getMap("frontmatter");
+		const fm = this.parseFrontmatter(text);
+		let minted = false;
+
+		if (!fm) {
+			// No block at all means the text deleted every key, withheld or
+			// not — the same pruning the edit path applies once synced. A
+			// block that does not parse keeps its keys deferred until it
+			// parses again.
+			if (!this._yaml.getFrontMatterInfo(text).exists) {
+				for (const key of [...ymap.keys()]) {
+					ymap.delete(key);
+					minted = true;
+				}
+				this._deferredFrontmatterKeys.clear();
+			}
+			return minted;
+		}
+
+		const drained: string[] = [];
+		for (const key of this._deferredFrontmatterKeys) {
+			if (key in fm.parsed) {
+				const serialized = JSON.stringify(fm.parsed[key]);
+				if (ymap.get(key) !== serialized) {
+					ymap.set(key, serialized);
+					minted = true;
+				}
+			} else if (ymap.has(key)) {
+				ymap.delete(key);
+				minted = true;
+			}
+			drained.push(key);
+		}
+		for (const key of drained) this._deferredFrontmatterKeys.delete(key);
+		if (drained.length > 0) {
+			this.crdtLog(
+				`frontmatter mirror: drained ${drained.length} withheld key(s) after sync: ${drained.join(", ")}`,
+			);
+		}
+
+		if (options.seedMissing) {
+			const added: string[] = [];
+			for (const [key, value] of Object.entries(fm.parsed)) {
+				if (ymap.has(key)) continue;
+				ymap.set(key, JSON.stringify(value));
+				minted = true;
+				added.push(key);
+			}
+			if (added.length > 0) {
+				this.crdtLog(
+					`frontmatter mirror: seeded ${added.length} key(s) missing from the map: ${added.join(", ")}`,
+				);
+			}
+		}
+
+		// A block that parsed only after duplicate-key recovery has no single
+		// value per key to compare, so this recovery declines rather than
+		// reading the wrong duplicate.
+		const baseline = fm.recovered ? null : this.lcaMirrorBaseline();
+		if (baseline !== null) {
+			const published: string[] = [];
+			for (const [key, value] of Object.entries(fm.parsed)) {
+				const serialized = JSON.stringify(value);
+				const current = ymap.get(key);
+				if (current === undefined || current === serialized) continue;
+				if (!(key in baseline.parsed)) continue;
+				const lcaValue = JSON.stringify(baseline.parsed[key]);
+				let textIsNewer = false;
+				if (lcaValue === current) {
+					// The map still matches the last confirmed text, and the
+					// text has moved on since: the edit happened after the
+					// baseline with no map write to follow it.
+					textIsNewer = true;
+				} else if (lcaValue === serialized) {
+					// The confirmed text already carried today's value. That is
+					// newer than the map only if the map's winning value was
+					// written before the baseline — a map value written since
+					// is a peer's newer write the repair has yet to apply.
+					const winnerId = (ymap as any)._map.get(key)?.id;
+					textIsNewer =
+						typeof winnerId?.client === "number" &&
+						snapshotCoversItem(baseline.snapshot, winnerId);
+				}
+				if (!textIsNewer) continue;
+				ymap.set(key, serialized);
+				minted = true;
+				published.push(key);
+			}
+			if (published.length > 0) {
+				this.crdtLog(
+					`frontmatter mirror: published ${published.length} key(s) edited past the map: ${published.join(", ")}`,
+				);
+			}
+		}
+		return minted;
+	}
+
+	/**
+	 * The persisted merge baseline as the mirror's reference: the LCA's
+	 * snapshot and its parsed frontmatter, or null when no usable baseline
+	 * exists. A hibernated note may have compacted the LCA body; it is
+	 * rebuilt from the attached documents first, and without a body there is
+	 * nothing to compare.
+	 */
+	private lcaMirrorBaseline(): {
+		snapshot: YjsSnapshot;
+		parsed: Record<string, any>;
+	} | null {
+		if (this._lca?.contents === null) this.hydrateLCAContentsFromMatchingDoc();
+		const lca = this._lca;
+		if (!lca || !lca.snapshot || lca.contents === null) return null;
+		const parsed = this.parseFrontmatter(lca.contents)?.parsed;
+		if (!parsed) return null;
+		return { snapshot: { snapshot: lca.snapshot }, parsed };
+	}
+
+	/**
 	 * Sync frontmatter properties from Y.Text to Y.Map("frontmatter").
 	 *
 	 * MUST be called from inside an existing Y.Doc transaction so the
@@ -6845,27 +7074,16 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	 * enclosing transaction exists (e.g., initial seed), the caller is
 	 * responsible for wrapping in transact().
 	 */
-	private seedFrontmatterMapFromCurrentText(allowBeforeProviderSync = false): void {
-		if (!this.localDoc || !this._yaml) return;
-		if (this.localDoc.getMap("frontmatter").size > 0) return;
-		if (
-			!allowBeforeProviderSync &&
-			!this._providerSynced &&
-			!this._isProviderSynced()
-		) return;
-
-		this.localDoc.transact(() => {
-			this.syncFrontmatterToMap();
-		}, this);
-		this._bridge.flushOutbound();
-	}
-
-	private syncFrontmatterToMap(previousText?: string): void {
+	private syncFrontmatterToMap(
+		previousText?: string,
+		options: { bypassOfflineGate?: boolean } = {},
+	): void {
 		if (!this.localDoc || !this._yaml) return;
 
 		const text = this.localDoc.getText("contents").toString();
 		const fm = this.parseFrontmatter(text);
 		const ymap = this.localDoc.getMap("frontmatter");
+		const synced = this._providerSynced || this._isProviderSynced();
 
 		if (!fm) {
 			// Distinguish a document with NO frontmatter block from one
@@ -6875,12 +7093,13 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			// keeps the last known-good values.
 			if (
 				ymap.size > 0 &&
-				(this._providerSynced || this._isProviderSynced()) &&
+				synced &&
 				!this._yaml.getFrontMatterInfo(text).exists
 			) {
 				for (const key of [...ymap.keys()]) {
 					ymap.delete(key);
 				}
+				this._deferredFrontmatterKeys.clear();
 			}
 			return;
 		}
@@ -6890,9 +7109,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			const previousInfo = this._yaml.getFrontMatterInfo(previousText);
 			if (previousInfo.exists) {
 				const previousFm = this.parseFrontmatter(previousText);
-				// A malformed previous block has no safe structured delta.
-				if (!previousFm) return;
-				previousParsed = previousFm.parsed;
+				// A malformed previous block has no safe structured delta, so
+				// no key counts as changed; withheld keys can still drain.
+				previousParsed = previousFm ? previousFm.parsed : fm.parsed;
 			} else {
 				previousParsed = {};
 			}
@@ -6901,15 +7120,49 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		// Store changed values as JSON strings for faithful round-tripping.
 		// Enrollment omits previousText to seed a full baseline. Edit paths
 		// provide it so unchanged stale values never become map writes.
+		//
+		// A changed value is written in the same transaction as the text
+		// that motivated it: peers receive text and map together, which is
+		// what lets them rebuild the editor from the map and repair
+		// interleaved text. The one exception is a disconnected folder —
+		// that text cannot have merged the server's state, so the write is
+		// withheld and the key drained after provider sync. A connected
+		// folder whose document session has not finished syncing (the first
+		// moments after opening a note) still writes immediately.
+		const online =
+			options.bypassOfflineGate === true || this._isFolderConnected();
 		for (const [key, value] of Object.entries(fm.parsed)) {
 			const serialized = JSON.stringify(value);
-			if (
+			const changed =
 				previousParsed === null ||
 				!(key in previousParsed) ||
-				JSON.stringify(previousParsed[key]) !== serialized
-			) {
-				ymap.set(key, serialized);
+				JSON.stringify(previousParsed[key]) !== serialized;
+			const deferred = this._deferredFrontmatterKeys.has(key);
+			// A withheld key drains opportunistically once synced: by then the
+			// text has merged peer state, the same condition the provider-sync
+			// drain waits for.
+			if (!changed && !(deferred && synced)) continue;
+			if (ymap.get(key) === serialized) {
+				// Agreement never mints a new operation, and leaves nothing to drain.
+				this._deferredFrontmatterKeys.delete(key);
+				continue;
 			}
+			// A map that did not even match the pre-edit text is already
+			// behind this key's text — a withheld write whose marker was lost,
+			// or a peer that edits text without mirroring. Until provider sync
+			// merges that history, a further edit must not publish from it
+			// either, even with the folder connected.
+			const mapBehindText =
+				previousParsed !== null &&
+				key in previousParsed &&
+				ymap.has(key) &&
+				ymap.get(key) !== JSON.stringify(previousParsed[key]);
+			if (!online || ((deferred || mapBehindText) && !synced)) {
+				this._deferredFrontmatterKeys.add(key);
+				continue;
+			}
+			ymap.set(key, serialized);
+			if (synced) this._deferredFrontmatterKeys.delete(key);
 		}
 		// The text owns key removal: a key deleted from the frontmatter
 		// must leave the map, or the next reconstruction resurrects it.
@@ -6919,10 +7172,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		// An unpruned stale key is inert (reconstruction never reintroduces
 		// keys the text lacks) and is pruned at the next reconciliation by
 		// repairFrontmatterFromMap instead.
-		if (this._providerSynced || this._isProviderSynced()) {
+		if (synced) {
 			for (const key of [...ymap.keys()]) {
 				if (!(key in fm.parsed)) {
 					ymap.delete(key);
+					this._deferredFrontmatterKeys.delete(key);
 				}
 			}
 		}
@@ -6964,6 +7218,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		// what resurrected deleted fields, and two clients re-inserting
 		// the same line each contribute a copy the merge keeps, while two
 		// clients pruning the same map entry converge to one state.
+		//
+		// A key whose map write is withheld keeps its text value: the map
+		// holds the value from before the local edit, and the corruption
+		// check below must not read that divergence as text corruption.
 		const obj: Record<string, any> = { ...fm.parsed };
 		const staleKeys: string[] = [];
 		for (const [key, value] of ymap.entries()) {
@@ -6971,6 +7229,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				staleKeys.push(key);
 				continue;
 			}
+			if (this._deferredFrontmatterKeys.has(key)) continue;
 			let parsed: any;
 			try { parsed = JSON.parse(value as string); }
 			catch { parsed = value; }
@@ -6984,6 +7243,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			this.localDoc.transact(() => {
 				for (const key of staleKeys) {
 					ymap.delete(key);
+					this._deferredFrontmatterKeys.delete(key);
 				}
 			}, FRONTMATTER_MIRROR_ORIGIN);
 		}

@@ -257,6 +257,19 @@ export function snapshotStateVector(snapshot: YjsSnapshot): DecodedSV {
 }
 
 /**
+ * Whether an encoded Yjs snapshot covers one struct: the struct's client had
+ * already advanced past its clock when the snapshot was captured. Answers
+ * "was this item written before the baseline" for a single item, where the
+ * whole-head helpers compare entire documents.
+ */
+export function snapshotCoversItem(
+	snapshot: YjsSnapshot,
+	id: { client: number; clock: number },
+): boolean {
+	return id.clock < (decodeSnapshotData(snapshot).sv.get(id.client) ?? 0);
+}
+
+/**
  * Check whether an encoded Yjs snapshot includes any tombstones.
  */
 export function snapshotHasDeleteSet(snapshot: YjsSnapshot): boolean {

@@ -231,7 +231,7 @@ export const MACHINE: MachineDefinition = {
 			canWake: true,
 			canPersistFullLca: true,
 		},
-		entry: ['resetIdleRetryCount', 'clearSettledDiskContents', 'persistSettledState', 'drainServerAhead'],
+		entry: ['resetIdleRetryCount', 'clearSettledDiskContents', 'persistSettledState', 'drainServerAhead', 'drainFrontmatterMap'],
 		on: {
 			REMOTE_UPDATE: [
 				{ target: 'idle.localAhead', guard: 'hasFork', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
@@ -248,7 +248,7 @@ export const MACHINE: MachineDefinition = {
 			],
 			PROVIDER_SYNCED: [
 				{ target: 'idle.remoteAhead', guard: 'providerSyncedRemoteAhead', actions: ['markProviderSynced'], reenter: true },
-				{ target: 'idle.synced', actions: ['markProviderSynced'] },
+				{ target: 'idle.synced', actions: ['markProviderSynced', 'drainFrontmatterMap'] },
 			],
 			CM6_CHANGE: { target: 'idle.synced', actions: ['accumulateCM6Change'] },
 			SERVER_AHEAD: { target: 'idle.synced', actions: ['actOnServerAhead'] },
