@@ -4,7 +4,6 @@ export interface FeatureFlags {
 	enableDiffLinkStatus: boolean;
 	enableDeltaLogging: boolean;
 	enableNetworkLogging: boolean;
-	enableVerifyUploads: boolean;
 	enableDiscordLogin: boolean;
 	enableDeviceManagement: boolean;
 	enableHSMRecording: boolean;
@@ -105,13 +104,6 @@ export const FeatureFlagSchema: {
 		title: "HTTP response logging",
 		description:
 			"Log HTTP status, method, URL, and response bodies from Relay network requests.",
-	},
-	enableVerifyUploads: {
-		default: false,
-		category: "debugging",
-		title: "Verify uploaded attachments",
-		description:
-			"After attachment sync, confirm the remote object exists and re-upload if it is missing.",
 	},
 	enableHSMRecording: {
 		default: false,

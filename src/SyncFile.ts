@@ -13,7 +13,6 @@ import { Observable, type Unsubscriber } from "./observable/Observable";
 import { generateHash } from "./hashing";
 import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
-import { flags } from "./flagManager";
 import { errorFromUnknown, formatUserFacingError } from "./UserFacingError";
 import type {
 	PlanContext,
@@ -567,6 +566,9 @@ export class SyncFile
 			try {
 				await this.sharedFolder.cas.writeFile(this);
 				await this.sharedFolder.markUploaded(this);
+				if (hash) {
+					this.sharedFolder.markCasVerified(this.guid, hash);
+				}
 				this.uploadError = undefined;
 				this.notifyListeners();
 				this.debug("push complete", {
@@ -658,7 +660,10 @@ export class SyncFile
 			return;
 		}
 
-		if (this.isCleanLastServerEdit(this.meta as FileMetas, this.stat)) {
+		if (
+			this.isCleanLastServerEdit(this.meta as FileMetas, this.stat) &&
+			this.sharedFolder.isCasVerified(this.guid, this.meta.hash)
+		) {
 			this.debug("sync decision", {
 				path: this.path,
 				guid: this.guid,
@@ -682,17 +687,7 @@ export class SyncFile
 				statMtime: this.stat.mtime,
 				metaSynctime: this.meta.synctime,
 			});
-			if (flags().enableVerifyUploads) {
-				// Not remote
-				try {
-					if (!(await this.verifyUpload())) {
-						this.warn("file in metadata, but not on the server!");
-						await this.push();
-					}
-				} catch (err) {
-					// pass
-				}
-			}
+			await this.reconcileRemoteContent(hash);
 			if (hash === this.meta.hash) {
 				this.clearCurrentUserEdit();
 				this.debug("sync decision", {
@@ -805,6 +800,53 @@ export class SyncFile
 		return this.sharedFolder.cas.verify(this);
 	}
 
+	/**
+	 * Confirm the version named by metadata actually exists in storage,
+	 * at most once per (file, hash). A hole is healable only from a machine
+	 * whose local content IS the missing version; a machine holding a
+	 * different version must not clobber the claim - the missing bytes may
+	 * still exist on the authoring machine.
+	 */
+	private async reconcileRemoteContent(localHash: string | null) {
+		if (!this.meta) {
+			return;
+		}
+		const metaHash = this.meta.hash;
+		if (this.sharedFolder.isCasVerified(this.guid, metaHash)) {
+			return;
+		}
+		let exists: boolean;
+		try {
+			exists = await this.verifyUpload();
+		} catch (err) {
+			this.debug(
+				"remote content verification failed; retrying on a later sync",
+				err,
+			);
+			return;
+		}
+		if (exists) {
+			this.sharedFolder.markCasVerified(this.guid, metaHash);
+			return;
+		}
+		if (localHash && localHash === metaHash) {
+			this.warn(
+				`[${this.path}] content missing from storage; re-uploading local copy`,
+			);
+			await this.push(true);
+			return;
+		}
+		this.warn(
+			`[${this.path}] content missing from storage and the local copy is a different version; only the authoring machine can heal this`,
+		);
+		const message =
+			"Attachment content was never uploaded; awaiting its author's machine.";
+		if (this.uploadError !== message) {
+			this.uploadError = message;
+			this.notifyListeners();
+		}
+	}
+
 	public async pull() {
 		this.log("pull");
 		this._refreshMeta();
@@ -853,6 +895,7 @@ export class SyncFile
 				.catch((error) => {
 					this.warn("Failed to save pulled hash:", error);
 				});
+			this.sharedFolder.markCasVerified(this.guid, this.meta.hash);
 			if (this.uploadError) {
 				this.uploadError = undefined;
 				this.notifyListeners();

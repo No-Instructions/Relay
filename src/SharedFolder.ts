@@ -252,6 +252,7 @@ export class SharedFolder extends HasProvider {
 	private syncRequestedDuringSync: boolean = false;
 	private authoritative: boolean;
 	private pendingUpload: LocalStorage<string>;
+	private casVerified: LocalStorage<string>;
 	private unsubscribes: Unsubscriber[] = [];
 	private storageQuota?: number;
 	/**
@@ -383,6 +384,9 @@ export class SharedFolder extends HasProvider {
 		this.fset = new Files();
 		this.pendingUpload = new LocalStorage<string>(
 			`${appId}-system3-relay/folders/${this.guid}/pendingUploads`,
+		);
+		this.casVerified = new LocalStorage<string>(
+			`${appId}-system3-relay/folders/${this.guid}/casVerified`,
 		);
 		this.pendingUpload.forEach((guid, vpath) => {
 			if (!this.existsSync(vpath)) {
@@ -3161,6 +3165,27 @@ export class SharedFolder extends HasProvider {
 		this.warn("dropped stale pending-upload holds", stale);
 	}
 
+	/**
+	 * Enqueue a sync for every attachment version not yet in the casVerified
+	 * ledger. The tree sync noops files whose local state matches committed
+	 * metadata, so their sync() — where remote-content verification lives —
+	 * otherwise never runs for at-rest files. The ledger bounds this to one
+	 * verification per (file, hash) per machine.
+	 */
+	private sweepUnverifiedCasContent(): void {
+		for (const file of this.files.values()) {
+			if (!isSyncFile(file) || file.destroyed) continue;
+
+			const meta = this.syncStore.getMeta(file.path);
+			if (!meta || !isFileMetas(meta) || !meta.hash) continue;
+			if (this.isCasVerified(file.guid, meta.hash)) continue;
+
+			this.backgroundSync.enqueueSync(file).catch((error) => {
+				this.warn(`cas verification sync failed for ${file.path}`, error);
+			});
+		}
+	}
+
 	syncFileTree(): Promise<void> {
 		// If a sync is already running, mark that we want another sync after
 		if (this.syncFileTreePromise) {
@@ -3268,6 +3293,7 @@ export class SharedFolder extends HasProvider {
 					}
 				}
 				this.sweepStalePendingUploads();
+				this.sweepUnverifiedCasContent();
 			} finally {
 				// Reset the promise after completion (success or failure)
 				this.syncFileTreePromise = null;
@@ -3457,6 +3483,20 @@ export class SharedFolder extends HasProvider {
 	 */
 	public clearPendingUploads(): void {
 		this.pendingUpload.clear();
+	}
+
+	/**
+	 * Durable per-machine ledger of attachment versions whose content is
+	 * known to exist in storage, so remote-existence verification runs at
+	 * most once per (file, hash) instead of on every sync pass. Content is
+	 * immutable under its hash, so an entry never needs re-checking.
+	 */
+	public isCasVerified(guid: string, hash: string): boolean {
+		return this.casVerified.get(guid) === hash;
+	}
+
+	public markCasVerified(guid: string, hash: string): void {
+		this.casVerified.set(guid, hash);
 	}
 
 	async markUploaded(
