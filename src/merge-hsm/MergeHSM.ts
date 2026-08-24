@@ -7028,9 +7028,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 					// newer than the map only if the map's winning value was
 					// written before the baseline — a map value written since
 					// is a peer's newer write the repair has yet to apply.
-					const winnerId = (ymap as any)._map.get(key)?.id;
+					const winnerId = ymap._map.get(key)?.id;
 					textIsNewer =
-						typeof winnerId?.client === "number" &&
+						winnerId !== undefined &&
 						snapshotCoversItem(baseline.snapshot, winnerId);
 				}
 				if (!textIsNewer) continue;
@@ -7056,7 +7056,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	 */
 	private lcaMirrorBaseline(): {
 		snapshot: YjsSnapshot;
-		parsed: Record<string, any>;
+		parsed: Record<string, unknown>;
 	} | null {
 		if (this._lca?.contents === null) this.hydrateLCAContentsFromMatchingDoc();
 		const lca = this._lca;
