@@ -12,6 +12,7 @@ module.exports = {
 	moduleNameMapper: {
 		"^(\\.{1,2}/.*)\\.js$": "$1",
 		"^src/(.*)$": "<rootDir>/src/$1",
+		"^__tests__/(.*)$": "<rootDir>/__tests__/$1",
 		"^yjs$": yjsIndex,
 		"^yjs/dist/src/internals$": yjsInternals,
 		"^pocketbase$": "<rootDir>/__tests__/mocks/pocketbase.ts",

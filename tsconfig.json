@@ -23,8 +23,5 @@
   "include": [
     "src/**/*.ts",
     "relay-plugin-api.d.ts"
-  ],
-  "exclude": [
-    "src/merge-hsm/testing"
   ]
 }
