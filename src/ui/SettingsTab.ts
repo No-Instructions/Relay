@@ -49,6 +49,6 @@ export class LiveSettingsTab extends PluginSettingTab {
 
 	destroy() {
 		this.hide();
-		this.plugin = null as any;
+		this.plugin = null as unknown as typeof this.plugin;
 	}
 }

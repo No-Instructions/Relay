@@ -123,7 +123,7 @@ export class ResourceMeterMount {
 		this.offLayoutChange?.();
 		this.offLayoutChange = null;
 		this.unmount();
-		this.workspace = null as any;
-		this.sharedFolders = null as any;
+		this.workspace = null as unknown as typeof this.workspace;
+		this.sharedFolders = null as unknown as typeof this.sharedFolders;
 	}
 }

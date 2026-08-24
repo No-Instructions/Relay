@@ -657,11 +657,11 @@ export class LoginManager extends Observable<LoginManager> {
 	destroy() {
 		this.pb.cancelAllRequests();
 		this.pb.realtime.unsubscribe();
-		this.pb = null as any;
+		this.pb = null as unknown as typeof this.pb;
 		this.authStore.destroy();
-		this.authStore = null as any;
+		this.authStore = null as unknown as typeof this.authStore;
 		this.user = undefined;
-		this.openSettings = null as any;
+		this.openSettings = null as unknown as typeof this.openSettings;
 		super.destroy();
 	}
 }

@@ -422,8 +422,8 @@ export class UpdateManager extends Observable<UpdateManager> {
 		this.updateGeneration += 1;
 
 		// Set state to null before destroying
-		this.githubReleases = null as any;
-		this.releaseChannels = null as any;
+		this.githubReleases = null as unknown as typeof this.githubReleases;
+		this.releaseChannels = null as unknown as typeof this.releaseChannels;
 
 		// Let the parent class handle its own cleanup
 		super.destroy();

@@ -307,9 +307,9 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 		this._awareness = undefined;
 		this.document = undefined;
 		this.decorations = Decoration.none;
-		this.connectionManager = null as any;
-		this.view = null as any;
-		this.editor = null as any;
+		this.connectionManager = null as unknown as typeof this.connectionManager;
+		this.view = null as unknown as typeof this.view;
+		this.editor = null as unknown as typeof this.editor;
 	}
 
 	update(update: ViewUpdate) {

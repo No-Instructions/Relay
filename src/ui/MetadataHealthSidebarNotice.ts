@@ -85,7 +85,7 @@ export class MetadataHealthSidebarNoticeMount {
 		this.offLayoutChange?.();
 		this.offLayoutChange = null;
 		this.unmount();
-		this.workspace = null as any;
-		this.metadataHealth = null as any;
+		this.workspace = null as unknown as typeof this.workspace;
+		this.metadataHealth = null as unknown as typeof this.metadataHealth;
 	}
 }
