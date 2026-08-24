@@ -41,11 +41,14 @@
 		"typescript": "^5.4.5"
 	},
 	"dependencies": {
+		"@codemirror/state": "6.5.0",
+		"@codemirror/view": "6.38.6",
 		"cbor-x": "^1.6.0",
 		"diff": "^5.2.0",
 		"diff-match-patch": "^1.0.5",
 		"eventsource": "^2.0.2",
 		"jose": "^5.3.0",
+		"lib0": "0.2.90",
 		"lucide-svelte": "^0.377.0",
 		"monkey-around": "^3.0.0",
 		"node-diff3": "^3.2.0",
@@ -53,7 +56,8 @@
 		"pocketbase": "^0.20.3",
 		"tslib": "2.4.0",
 		"uuid": "^11.1.1",
-		"y-protocols": "^1.0.5"
+		"y-protocols": "^1.0.5",
+		"yjs": "13.6.14"
 	},
 	"overrides": {
 		"@typescript-eslint/typescript-estree": {
