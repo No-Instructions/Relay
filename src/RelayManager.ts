@@ -943,8 +943,8 @@ class Store extends HasLogging {
 
 	destroy() {
 		this.clear();
-		this.collections = null as any;
-		this.relationships = null as any;
+		this.collections = null as unknown as typeof this.collections;
+		this.relationships = null as unknown as typeof this.relationships;
 	}
 
 	ingestPage<T>(
@@ -2351,17 +2351,17 @@ export class RelayManager extends HasLogging {
 	destroy(): void {
 		this.destroyed = true;
 		this._offLoginManager?.();
-		this._offLoginManager = null as any;
+		this._offLoginManager = null as unknown as typeof this._offLoginManager;
 		this._offFeatureFlags?.();
-		this._offFeatureFlags = null as any;
+		this._offFeatureFlags = null as unknown as typeof this._offFeatureFlags;
 		this.pb?.cancelAllRequests();
 		this.pb?.realtime?.unsubscribe();
 		this._isSubscribed = false;
-		this.loginManager = null as any;
+		this.loginManager = null as unknown as typeof this.loginManager;
 		this.store?.destroy();
-		this.pb = null as any;
+		this.pb = null;
 		this.authUser = null;
-		this.store = null as any;
+		this.store = null as unknown as typeof this.store;
 		this.policyManager = undefined;
 	}
 }

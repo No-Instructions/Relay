@@ -4753,11 +4753,11 @@ export class SharedFolder extends HasProvider {
 		});
 		this.unsubscribes = [];
 		this.whenSyncedPromise?.destroy(destroyedError);
-		this.whenSyncedPromise = null as any;
+		this.whenSyncedPromise = null;
 		this.readyPromise?.destroy(destroyedError);
-		this.readyPromise = null as any;
+		this.readyPromise = null;
 		this.syncFileTreePromise?.destroy(destroyedError);
-		this.syncFileTreePromise = null as any;
+		this.syncFileTreePromise = null;
 
 		// Mark the merge manager as shutting down before destroying docs so
 		// per-doc unloads don't schedule hibernate timers we'd just orphan.
@@ -4786,18 +4786,18 @@ export class SharedFolder extends HasProvider {
 		super.destroy();
 		this.fset.destroy();
 		this._settings.destroy();
-		this._settings = null as any;
-		this.proxy = null as any;
-		this.relayManager = null as any;
-		this.backgroundSync = null as any;
-		this.loginManager = null as any;
-		this.tokenStore = null as any;
-		this.fileManager = null as any;
-		this.cas = null as any;
-		this.syncStore = null as any;
-		this.syncSettingsManager = null as any;
-		this.mergeManager = null as any;
-		this.fset = null as any;
+		this._settings = null as unknown as typeof this._settings;
+		this.proxy = null as unknown as typeof this.proxy;
+		this.relayManager = null as unknown as typeof this.relayManager;
+		this.backgroundSync = null as unknown as typeof this.backgroundSync;
+		this.loginManager = null as unknown as typeof this.loginManager;
+		this.tokenStore = null as unknown as typeof this.tokenStore;
+		this.fileManager = null as unknown as typeof this.fileManager;
+		this.cas = null as unknown as typeof this.cas;
+		this.syncStore = null as unknown as typeof this.syncStore;
+		this.syncSettingsManager = null as unknown as typeof this.syncSettingsManager;
+		this.mergeManager = null as unknown as typeof this.mergeManager;
+		this.fset = null as unknown as typeof this.fset;
 
 	}
 }
@@ -5036,10 +5036,10 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 			this._offRemoteUpdates = undefined;
 		}
 		super.destroy();
-		this.relayManager = null as any;
-		this.folderBuilder = null as any;
-		this.settings = null as any;
-		this._hsmStore = null as any;
+		this.relayManager = null as unknown as typeof this.relayManager;
+		this.folderBuilder = null as unknown as typeof this.folderBuilder;
+		this.settings = null as unknown as typeof this.settings;
+		this._hsmStore = null as unknown as typeof this._hsmStore;
 	}
 
 	load() {

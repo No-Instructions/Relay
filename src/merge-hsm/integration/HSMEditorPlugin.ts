@@ -882,7 +882,7 @@ export class HSMEditorPluginValue implements PluginValue {
     }
     this.clearPendingEdits();
     this.document = null;
-    this.editor = null as any;
+    this.editor = null as unknown as typeof this.editor;
   }
 }
 

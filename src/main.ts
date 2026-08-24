@@ -1829,7 +1829,7 @@ export default class Live extends Plugin {
 		};
 		setActiveTracker(null);
 		this.promises.destroy();
-		this.promises = null as any;
+		this.promises = null as unknown as typeof this.promises;
 		teardownStep("pendingVaultDeleteFlush", () => {
 			if (this.pendingVaultDeleteFlush !== null) {
 				window.clearTimeout(this.pendingVaultDeleteFlush);
@@ -1841,7 +1841,7 @@ export default class Live extends Plugin {
 		teardownStep("relayDebugAPI.destroy", () => {
 			this.relayDebugAPI?.destroy();
 		});
-		this.relayDebugAPI = null as any;
+		this.relayDebugAPI = null as unknown as typeof this.relayDebugAPI;
 
 		teardownStep("savingFlagPolyfill.disarm", () => {
 			this.savingFlagPolyfill?.disarm();
@@ -1860,7 +1860,7 @@ export default class Live extends Plugin {
 		teardownStep("folderNavDecorations.destroy", () => {
 			this.folderNavDecorations?.destroy();
 		});
-		this.folderNavDecorations = null as any;
+		this.folderNavDecorations = null as unknown as typeof this.folderNavDecorations;
 
 		teardownStep("resourceMeter.destroy", () => {
 			this.resourceMeter?.destroy();
@@ -1877,27 +1877,27 @@ export default class Live extends Plugin {
 			teardownStep("updateManager.destroy", () => {
 				this.updateManager.destroy();
 			});
-			this.updateManager = null as any;
+			this.updateManager = null as unknown as typeof this.updateManager;
 		}
 
 		teardownStep("liveViews.destroy", () => {
 			this._liveViews?.destroy();
 		});
-		this._liveViews = null as any;
+		this._liveViews = null as unknown as typeof this._liveViews;
 		teardownStep("textViewRegistry.destroy", () => {
 			this.textViewRegistry?.destroy();
 		});
-		this.textViewRegistry = null as any;
+		this.textViewRegistry = null as unknown as typeof this.textViewRegistry;
 
 		teardownStep("relayManager.destroy", () => {
 			this.relayManager?.destroy();
 		});
-		this.relayManager = null as any;
+		this.relayManager = null as unknown as typeof this.relayManager;
 
 		teardownStep("deviceManager.destroy", () => {
 			this.deviceManager?.destroy();
 		});
-		this.deviceManager = null as any;
+		this.deviceManager = null as unknown as typeof this.deviceManager;
 
 		teardownStep("tokenStore.stop", () => {
 			this.tokenStore?.stop();
@@ -1908,7 +1908,7 @@ export default class Live extends Plugin {
 		teardownStep("tokenStore.destroy", () => {
 			this.tokenStore?.destroy();
 		});
-		this.tokenStore = null as any;
+		this.tokenStore = null as unknown as typeof this.tokenStore;
 
 		teardownStep("networkStatus.stop", () => {
 			this.networkStatus?.stop();
@@ -1916,7 +1916,7 @@ export default class Live extends Plugin {
 		teardownStep("networkStatus.destroy", () => {
 			this.networkStatus?.destroy();
 		});
-		this.networkStatus = null as any;
+		this.networkStatus = null as unknown as typeof this.networkStatus;
 
 		teardownStep("openModals.close", () => {
 			this.openModals.forEach((modal) => {
@@ -1928,7 +1928,7 @@ export default class Live extends Plugin {
 		teardownStep("sharedFolders.destroy", () => {
 			this.sharedFolders?.destroy();
 		});
-		this.sharedFolders = null as any;
+		this.sharedFolders = null as unknown as typeof this.sharedFolders;
 
 		// Flush pending HSM writes and close the database after SharedFolders
 		// are destroyed. Capture the store reference locally before clearing
@@ -1941,44 +1941,44 @@ export default class Live extends Plugin {
 				`plugin:teardown:hsmStore.destroy:${this._instanceId}`,
 			);
 		});
-		this._hsmStore = null as any;
+		this._hsmStore = null as unknown as typeof this._hsmStore;
 
 		teardownStep("settingsTab.destroy", () => {
 			this.settingsTab?.destroy();
 		});
-		this.settingsTab = null as any;
+		this.settingsTab = null as unknown as typeof this.settingsTab;
 
 		teardownStep("loginManager.destroy", () => {
 			this.loginManager?.destroy();
 		});
-		this.loginManager = null as any;
+		this.loginManager = null as unknown as typeof this.loginManager;
 
 		teardownStep("backgroundSync.destroy", () => {
 			this.backgroundSync?.destroy();
 		});
-		this.backgroundSync = null as any;
+		this.backgroundSync = null as unknown as typeof this.backgroundSync;
 
 		teardownStep("hashStore.destroy", () => {
 			this.hashStore.destroy();
 		});
-		this.hashStore = null as any;
+		this.hashStore = null as unknown as typeof this.hashStore;
 
 		teardownStep("workspace.updateOptions", () => {
 			this.app?.workspace.updateOptions();
 		});
-		this.app = null as any;
-		this.fileManager = null as any;
-		this.manifest = null as any;
-		this.vault = null as any;
+		this.app = null as unknown as typeof this.app;
+		this.fileManager = null as unknown as typeof this.fileManager;
+		this.manifest = null as unknown as typeof this.manifest;
+		this.vault = null as unknown as typeof this.vault;
 
 		teardownStep("debugSettings.destroy", () => {
 			this.debugSettings.destroy();
 		});
-		this.debugSettings = null as any;
+		this.debugSettings = null as unknown as typeof this.debugSettings;
 		teardownStep("folderSettings.destroy", () => {
 			this.folderSettings.destroy();
 		});
-		this.folderSettings = null as any;
+		this.folderSettings = null as unknown as typeof this.folderSettings;
 
 		// Destroy FeatureFlagManager before destroying featureSettings
 		teardownStep("FeatureFlagManager.destroy", () => {
@@ -1988,34 +1988,34 @@ export default class Live extends Plugin {
 		teardownStep("featureSettings.destroy", () => {
 			this.featureSettings.destroy();
 		});
-		this.featureSettings = null as any;
+		this.featureSettings = null as unknown as typeof this.featureSettings;
 		teardownStep("releaseSettings.destroy", () => {
 			this.releaseSettings.destroy();
 		});
-		this.releaseSettings = null as any;
+		this.releaseSettings = null as unknown as typeof this.releaseSettings;
 		teardownStep("loginSettings.destroy", () => {
 			this.loginSettings.destroy();
 		});
-		this.loginSettings = null as any;
+		this.loginSettings = null as unknown as typeof this.loginSettings;
 		teardownStep("endpointSettings.destroy", () => {
 			this.endpointSettings.destroy();
 		});
-		this.endpointSettings = null as any;
+		this.endpointSettings = null as unknown as typeof this.endpointSettings;
 		teardownStep("pluginRegistrySettings.destroy", () => {
 			this.pluginRegistrySettings.destroy();
 		});
-		this.pluginRegistrySettings = null as any;
+		this.pluginRegistrySettings = null as unknown as typeof this.pluginRegistrySettings;
 		teardownStep("settings.destroy", () => {
 			this.settings.destroy();
 		});
-		this.settings = null as any;
+		this.settings = null as unknown as typeof this.settings;
 
 		this.interceptedUrls.length = 0;
 		teardownStep("PostOffice.destroy", () => {
 			PostOffice.destroy();
 		});
 
-		this.notifier = null as any;
+		this.notifier = null as unknown as typeof this.notifier;
 
 		teardownStep("auditTeardown", () => {
 			auditTeardown();
@@ -2026,8 +2026,8 @@ export default class Live extends Plugin {
 		teardownStep("timeProvider.destroy", () => {
 			this.timeProvider?.destroy();
 		});
-		this.timeProvider = null as any;
-		this.promises = null as any;
+		this.timeProvider = null as unknown as typeof this.timeProvider;
+		this.promises = null as unknown as typeof this.promises;
 
 		// Clear our instance ID from the leak-detection set LAST — if
 		// anything above throws, we leave the ID in place so the next

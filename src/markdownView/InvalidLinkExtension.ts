@@ -354,9 +354,9 @@ export class InvalidLinkPluginValue {
 		this.decorations = Decoration.none;
 		this.decorationAnchors = [];
 		this.metadata.clear();
-		this.metadata = null as any;
-		this.cb = null as any;
-		this.editor = null as any;
+		this.metadata = null as unknown as typeof this.metadata;
+		this.cb = null as unknown as typeof this.cb;
+		this.editor = null as unknown as typeof this.editor;
 	}
 }
 

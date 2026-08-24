@@ -1230,9 +1230,9 @@ export class Canvas
 			unsubscribe();
 		});
 		this.whenSyncedPromise?.destroy(destroyedError);
-		this.whenSyncedPromise = null as any;
+		this.whenSyncedPromise = null;
 		this.readyPromise?.destroy(destroyedError);
-		this.readyPromise = null as any;
+		this.readyPromise = null as unknown as typeof this.readyPromise;
 		if (this._persistenceInstance) {
 			const p = this._persistenceInstance.destroy().catch(() => {});
 			trackAsyncCleanup(p);

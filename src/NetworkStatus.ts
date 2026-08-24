@@ -145,10 +145,10 @@ class NetworkStatus {
 
 	destroy() {
 		this._onceOnline.clear();
-		this._onceOnline = null as any;
-		this.onOnline = null as any;
-		this.onOffline = null as any;
-		this.timeProvider = null as any;
+		this._onceOnline = null as unknown as typeof this._onceOnline;
+		this.onOnline = null as unknown as typeof this.onOnline;
+		this.onOffline = null as unknown as typeof this.onOffline;
+		this.timeProvider = null as unknown as typeof this.timeProvider;
 	}
 }
 

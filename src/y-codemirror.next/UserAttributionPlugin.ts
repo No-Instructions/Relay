@@ -225,7 +225,7 @@ export class UserAttributionPluginValue {
 	destroy() {
 		this.destroyed = true;
 		this.decorations = Decoration.none;
-		this.editor = null as any;
+		this.editor = null as unknown as typeof this.editor;
 	}
 }
 

@@ -136,6 +136,6 @@ export class MetadataRenderer extends HasLogging implements ViewRenderer {
 		this.pendingFocusedProps = [];
 		this.removeFocusoutListener();
 		this.debug("destroyed");
-		this.view = null as any;
+		this.view = null as unknown as typeof this.view;
 	}
 }
