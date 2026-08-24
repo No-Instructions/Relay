@@ -1,13 +1,36 @@
 "use strict";
 
-import type { Api, ApiV0, RelayEvent, User } from "../relay-plugin-api";
 import type { LoginManager } from "./LoginManager";
 import type { RelayUser } from "./Relay";
 import type { RelayManager } from "./RelayManager";
 import type { TextViewRegistry } from "./TextViewRegistry";
 import type { User as SignedInUser } from "./User";
 
-export type { Api, ApiV0, RelayEvent, User };
+// These declarations mirror relay-plugin-api.d.ts, the standalone file
+// consumers copy into their plugins. The api-contract linter holds the
+// two surfaces equal.
+export interface User {
+	id: string;
+	name: string;
+	picture?: string;
+	color?: string;
+}
+
+export type RelayEvent<T> = {
+	action: "create" | "update" | "delete";
+	record: T;
+};
+
+export interface ApiV0 {
+	getUsers(): User[];
+	getCurrentUser(): User | null;
+	registerView(pluginId: string, viewType: string): void;
+	unregisterView(pluginId: string, viewType: string): void;
+}
+
+export interface Api {
+	v0: ApiV0;
+}
 
 export const API_UNLOADED_ERROR =
 	'Relay plugin unloaded; resolve app.plugins.plugins["system3-relay"]?.api after the next system3-relay:api-ready signal';
