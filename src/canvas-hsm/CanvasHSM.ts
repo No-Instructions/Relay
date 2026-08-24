@@ -125,7 +125,7 @@ function parseCanvasData(raw: string): CanvasData | null {
 			nodes: (nodes as CanvasData["nodes"]) ?? [],
 			edges: (edges as CanvasData["edges"]) ?? [],
 		};
-	} catch (e) {
+	} catch {
 		return null;
 	}
 }
