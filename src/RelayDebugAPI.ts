@@ -8,6 +8,9 @@
  */
 
 import * as Y from 'yjs';
+import { TFile } from 'obsidian';
+import type { WorkspaceLeaf } from 'obsidian';
+import type { EditorView } from '@codemirror/view';
 import { diff_match_patch } from 'diff-match-patch';
 import { IndexeddbPersistence } from './storage/y-indexeddb';
 import type { TimeProvider } from './TimeProvider';
@@ -27,6 +30,13 @@ import {
 } from './ui/SyncStatusModel';
 import type { FolderSyncSnapshot } from './BackgroundSyncProgress';
 import { Canvas, isCanvas } from './Canvas';
+import type { CanvasData } from './CanvasView';
+import type { ConflictData } from './merge-hsm/conflict';
+import type Live from './main';
+import type { SharedFolder } from './SharedFolder';
+import type { MergeHSM } from './merge-hsm/MergeHSM';
+import type { MergeManager, MergeManagerDocument } from './merge-hsm/MergeManager';
+import type { RemoteEntityFile } from './BackgroundSync';
 import { areCanvasDataEqual } from './CanvasData';
 
 export type { ConflictHunkInfo, ConflictInfoSnapshot } from './merge-hsm/conflict';
@@ -109,7 +119,7 @@ export interface IdbContentSnapshot {
   guid: string;
   folder: string;
   dbName: string;
-  metadata: Record<string, any>;
+  metadata: Record<string, unknown>;
   updatesCount: number;
   idbContent: string | null;
   idbLength: number;
@@ -120,7 +130,7 @@ export interface IdbContentSnapshot {
 
 export interface IdbHistoryEntry {
   key: IDBValidKey;
-  origin: any;
+  origin: unknown;
   timestamp: number | null;
   time: string | null;
   insertionsBytes: number;
@@ -144,7 +154,7 @@ export interface ForkSnapshot {
   origin: string | null;
   created: number | null;
   createdTime: string | null;
-  captureMark: any;
+  captureMark: unknown;
   localSnapshotBytes: number;
   remoteSnapshotBytes: number;
 }
@@ -209,7 +219,7 @@ export interface HsmStateSnapshot {
   persistedLcaContent: string | null;
   persistedAt: number | null;
   hasConflict: boolean;
-  conflictData: any | null;
+  conflictData: ConflictData | null;
   localDocLength: number;
   idbContent: string | null;
   diskMtime: number | null;
@@ -218,7 +228,7 @@ export interface HsmStateSnapshot {
   diskMatchesIdb: boolean;
   idbMatchesLca: boolean;
   idbMatchesPersistedLca: boolean;
-  frontmatterMap: Record<string, any> | null;
+  frontmatterMap: Record<string, unknown> | null;
   recentTransitions: HsmStateTransition[];
 }
 
@@ -267,7 +277,38 @@ export type SetEditorContentResult =
   | { success: true; changeCount: number }
   | { success: false; error: string };
 
+/** The raw fork record read off a machine or its persisted state. */
+interface DebugForkRaw {
+  base?: string | null;
+  origin?: string | null;
+  created?: number | null;
+  captureMark?: unknown;
+  localSnapshot?: { byteLength?: number } | null;
+  remoteSnapshot?: { byteLength?: number } | null;
+}
+
+/** The raw sync-gate posture read off a machine's bridge. */
+interface DebugSyncGateRaw {
+  providerSynced?: boolean;
+  localOnly?: boolean;
+  pendingInbound?: number;
+  pendingOutbound?: number;
+}
+
+/** A resolved document lookup: the registry record, its machine, its home. */
+export interface DebugDocumentLookup {
+  doc: MergeManagerDocument;
+  hsm: MergeHSM;
+  guid: string;
+  folder: SharedFolder;
+  filePath: string;
+}
+
 export interface RelayDebugGlobal {
+  /** Identity of the installing API instance; teardown removes only its own global. */
+  __owner?: unknown;
+  /** Register a recording bridge for the folder at PATH; returns its unsubscriber. */
+  registerBridge?: (folderPath: string, bridge: E2ERecordingBridge) => () => void;
   /** Open PATH in an editor leaf. Pass `{ newLeaf: true }` to force a new tab. */
   openEditor: (path: string, opts?: { newLeaf?: boolean }) => Promise<OpenEditorResult>;
   /** Close the exact leaf identified by HANDLE. No-op if already gone. */
@@ -311,9 +352,9 @@ export interface RelayDebugGlobal {
   /** Set the editor text via minimal CM6 transactions. Throws if the leaf drifted. */
   setEditorContent: (handle: EditorHandle, content: string, options?: SetEditorContentOptions) => Promise<SetEditorContentResult>;
   /** Look up a document by vault-level path including the shared-folder prefix (e.g. "/private/foo.md"). Returns document, HSM, folder, and GUID. */
-  lookupDocument: (path: string) => { doc: any; hsm: any; guid: string; folder: any; filePath: string } | null;
+  lookupDocument: (path: string) => DebugDocumentLookup | null;
   /** Look up a shared folder by path (e.g. "private"). Returns the SharedFolder or null. */
-  lookupFolder: (path: string) => any | null;
+  lookupFolder: (path: string) => SharedFolder | null;
   /** Folder-scoped sync rows from MergeManager.syncStatus keyed by guid. */
   getFolderSyncStatus: (folderGuid: string) => { guid: string; path: string; status: string }[];
   /** Folder-scoped subset of sync rows where status === "error". */
@@ -428,10 +469,10 @@ export interface RelayDebugGlobal {
 export class RelayDebugAPI {
   private bridges = new Map<string, E2ERecordingBridge>();
   private activeRecordingName: string | null = null;
-  private plugin: any;
+  private plugin: Live | undefined;
   private destroyed = false;
 
-  constructor(plugin?: any) {
+  constructor(plugin?: Live) {
     this.plugin = plugin;
     this.installGlobal();
   }
@@ -440,8 +481,52 @@ export class RelayDebugAPI {
     return window;
   }
 
-  private debugGlobal(): any {
-    return (this.debugWindow() as any).__relayDebug;
+  /** The private machine internals the debug API reads. */
+  private hsmInternals(hsm: MergeHSM): {
+    _statePath?: string;
+    _lca?: { meta?: { hash?: string | null }; contents?: string | null } | null;
+    _disk?: { mtime?: number | null } | null;
+    _localSnapshot?: Uint8Array | null;
+    _remoteSnapshot?: Uint8Array | null;
+    remoteDoc?: Y.Doc | null;
+    _persistenceMetadata?: {
+      appId?: string;
+      persistence?: { opCapture?: { entries?: unknown[] } };
+    };
+    _fork?: DebugForkRaw;
+    _syncGate?: DebugSyncGateRaw;
+    _bridge?: { syncGate?: DebugSyncGateRaw; _syncGate?: DebugSyncGateRaw };
+  } {
+    return hsm as unknown as ReturnType<RelayDebugAPI['hsmInternals']>;
+  }
+
+  /** The private folder internals the debug API reads. */
+  private folderInternals(folder: SharedFolder): {
+    _hsmStore?: {
+      loadState?: (guid: string) => Promise<{
+        lca?: { hash?: string | null; contents?: unknown } | null;
+        persistedAt?: number | null;
+      } | null | undefined>;
+    };
+  } {
+    return folder as unknown as ReturnType<RelayDebugAPI['folderInternals']>;
+  }
+
+  /** The attached plugin, or a loud failure when the API outlives it. */
+  private requirePlugin(): Live {
+    if (!this.plugin) throw new Error('Relay debug API has no attached plugin');
+    return this.plugin;
+  }
+
+  /** Read the merge manager's private document registry. */
+  private managedDoc(folder: SharedFolder, key: string): MergeManagerDocument | undefined {
+    return (folder.mergeManager as unknown as {
+      _getDocument?: (key: string) => MergeManagerDocument | undefined;
+    })._getDocument?.(key);
+  }
+
+  private debugGlobal(): RelayDebugGlobal | undefined {
+    return (this.debugWindow() as unknown as { __relayDebug?: RelayDebugGlobal }).__relayDebug;
   }
 
   /**
@@ -480,7 +565,7 @@ export class RelayDebugAPI {
   private installGlobal(): void {
     if (this.destroyed) {
       if (this.debugGlobal()?.__owner === this) {
-        delete (this.debugWindow() as any).__relayDebug;
+        delete (this.debugWindow() as unknown as { __relayDebug?: RelayDebugGlobal }).__relayDebug;
       }
       return;
     }
@@ -510,8 +595,8 @@ export class RelayDebugAPI {
           try { recordings.push(bridge.stopRecording()); }
           catch { /* not recording */ }
         }
-        const combined = recordings.flatMap(r => {
-          try { return JSON.parse(r); } catch { return []; }
+        const combined = recordings.flatMap((r): unknown[] => {
+          try { return JSON.parse(r) as unknown[]; } catch { return []; }
         });
         return JSON.stringify(combined, null, 2);
       },
@@ -586,49 +671,54 @@ export class RelayDebugAPI {
       getRecentPromises: () => getRecentPromises(),
 
       createRelay: async (name) => {
-        if (!this.plugin.relayManager) throw new Error('RelayManager not available');
-        const relay = await this.plugin.relayManager.createRelay(name);
+        const relayManager = this.plugin?.relayManager;
+        if (!relayManager) throw new Error('RelayManager not available');
+        const relay = await relayManager.createRelay(name);
         return { guid: relay.guid, name: relay.name };
       },
       getRelayShareKey: async (guid) => {
-        if (!this.plugin.relayManager) throw new Error('RelayManager not available');
+        const relayManager = this.plugin?.relayManager;
+        if (!relayManager) throw new Error('RelayManager not available');
         const relay = this.findRelayByGuid(guid);
         if (!relay) throw new Error(`Relay not found: ${guid}`);
-        const invitation = await this.plugin.relayManager.getRelayInvitation(relay);
+        const invitation = await relayManager.getRelayInvitation(relay);
         if (!invitation?.key) throw new Error(`Relay invitation not found: ${guid}`);
         return { guid: relay.guid, name: relay.name, key: invitation.key };
       },
       acceptRelayShareKey: async (key) => {
-        if (!this.plugin.relayManager) throw new Error('RelayManager not available');
-        const relay = await this.plugin.relayManager.acceptInvitation(key);
+        const relayManager = this.plugin?.relayManager;
+        if (!relayManager) throw new Error('RelayManager not available');
+        const relay = await relayManager.acceptInvitation(key);
         return { guid: relay.guid, name: relay.name };
       },
       renameRelay: async (guid, newName) => {
-        if (!this.plugin.relayManager) throw new Error('RelayManager not available');
+        const relayManager = this.plugin?.relayManager;
+        if (!relayManager) throw new Error('RelayManager not available');
         const relay = this.findRelayByGuid(guid);
         if (!relay) throw new Error(`Relay not found: ${guid}`);
         relay.name = newName;
-        await this.plugin.relayManager.updateRelay(relay);
+        await relayManager.updateRelay(relay);
         return { guid: relay.guid, name: relay.name };
       },
       deleteRelay: async (guid) => {
-        if (!this.plugin.relayManager) throw new Error('RelayManager not available');
+        const relayManager = this.plugin?.relayManager;
+        if (!relayManager) throw new Error('RelayManager not available');
         const relay = this.findRelayByGuid(guid);
         if (!relay) throw new Error(`Relay not found: ${guid}`);
-        return await this.plugin.relayManager.destroyRelay(relay);
+        return await relayManager.destroyRelay(relay);
       },
 
       captureEditorSnapshot: (handle) => this.captureEditorSnapshot(handle),
       setEditorContent: (handle, content, options) => this.setEditorContent(handle, content, options),
 
       lookupFolder: (path: string) => {
-        if (!this.plugin?.sharedFolders?._set) return null;
-        for (const folder of this.plugin.sharedFolders._set.values()) {
-          if ((folder as any).path === path) return folder;
+        const folders = this.plugin?.sharedFolders?.items() ?? [];
+        for (const folder of folders) {
+          if (folder.path === path) return folder;
         }
         // Also try matching as a prefix (e.g. "private" matches folder at path "private")
-        for (const folder of this.plugin.sharedFolders._set.values()) {
-          if (path.startsWith((folder as any).path + '/')) return folder;
+        for (const folder of folders) {
+          if (path.startsWith(folder.path + '/')) return folder;
         }
         return null;
       },
@@ -643,7 +733,7 @@ export class RelayDebugAPI {
 
     };
 
-    (this.debugWindow() as any).__relayDebug = {
+    (this.debugWindow() as unknown as { __relayDebug?: RelayDebugGlobal }).__relayDebug = {
       __owner: this,
       ...api,
       registerBridge: (folderPath: string, bridge: E2ERecordingBridge) => this.registerBridge(folderPath, bridge),
@@ -656,22 +746,22 @@ export class RelayDebugAPI {
    * and GUID. Shared by the `window.__relayDebug` global and in-plugin debug
    * UI like the note state inspector.
    */
-  lookupDocument(path: string): { doc: any; hsm: any; guid: string; folder: any; filePath: string } | null {
+  lookupDocument(path: string): DebugDocumentLookup | null {
     const sharedFolders = this.plugin?.sharedFolders;
     if (!sharedFolders || !path) return null;
     if (!path.startsWith('/')) {
-      for (const folder of (sharedFolders as any)._set.values()) {
-        const doc = folder.mergeManager?._getDocument(path);
-        const hsm = doc?._hsm;
-        if (hsm) return { doc, hsm, guid: path, folder, filePath: hsm.path || path };
+      for (const folder of sharedFolders.items()) {
+        const doc = this.managedDoc(folder, path);
+        const hsm = doc?.hsm;
+        if (doc && hsm) return { doc, hsm, guid: path, folder, filePath: hsm.path || path };
       }
       throw new Error(`Document paths must start with '/' (got: ${JSON.stringify(path)})`);
     }
     const vaultPath = path.slice(1);
-    const folder: any = sharedFolders.lookup(vaultPath);
+    const folder = sharedFolders.lookup(vaultPath);
     if (!folder) {
-      const available = Array.from((sharedFolders as any)._set.values())
-        .map((f: any) => '/' + f.path + '/')
+      const available = sharedFolders.items()
+        .map((f) => '/' + f.path + '/')
         .join(', ') || '(none)';
       throw new Error(
         `Document path must be a vault-level path under a shared folder ` +
@@ -681,9 +771,9 @@ export class RelayDebugAPI {
     const vpath = folder.getVirtualPath(vaultPath);
     const guid = folder.syncStore?.get(vpath);
     if (!guid) return null;
-    const doc = folder.mergeManager?._getDocument(guid);
-    const hsm = doc?._hsm;
-    if (!hsm) return null;
+    const doc = this.managedDoc(folder, guid);
+    const hsm = doc?.hsm;
+    if (!doc || !hsm) return null;
     return { doc, hsm, guid, folder, filePath: hsm.path || vpath };
   }
 
@@ -691,9 +781,9 @@ export class RelayDebugAPI {
    * Locate the leaf identified by HANDLE.windowId + HANDLE.leafId. Does NOT
    * verify the path — callers that require path match call resolveAndVerify.
    */
-  private findLeaf(handle: EditorHandle): any | null {
-    let found: any = null;
-    this.plugin?.app?.workspace?.iterateAllLeaves?.((leaf: any) => {
+  private findLeaf(handle: EditorHandle): WorkspaceLeaf | null {
+    let found: WorkspaceLeaf | null = null;
+    this.plugin?.app?.workspace?.iterateAllLeaves?.((leaf) => {
       if (found) return;
       const ids = this.leafIds(leaf);
       if (ids.windowId === handle.windowId && ids.leafId === handle.leafId) {
@@ -707,12 +797,12 @@ export class RelayDebugAPI {
    * Resolve the exact leaf for HANDLE and verify it still shows handle.path.
    * Throws a precise error on every failure mode the caller cares about.
    */
-  private resolveAndVerify(handle: EditorHandle): any {
+  private resolveAndVerify(handle: EditorHandle): WorkspaceLeaf {
     const leaf = this.findLeaf(handle);
     if (!leaf) {
       throw new Error(`leaf not found: windowId=${handle.windowId} leafId=${handle.leafId}`);
     }
-    const currentPath = leaf.view?.file?.path ?? null;
+    const currentPath = this.leafInternals(leaf).view?.file?.path ?? null;
     if (currentPath !== handle.path) {
       throw new Error(`leaf drifted to ${currentPath ?? '<no file>'} (expected ${handle.path})`);
     }
@@ -723,26 +813,42 @@ export class RelayDebugAPI {
    * Stable IDs for a leaf. Uses Obsidian's internal leaf.id and derives a
    * windowId from the leaf's root (main window vs popout).
    */
-  private leafIds(leaf: any): { windowId: string; leafId: string } {
-    const leafId: string = leaf?.id ?? '';
-    const root = leaf?.getRoot?.();
+  /** The undocumented internals the debug API reads off a workspace leaf. */
+  private leafInternals(leaf: WorkspaceLeaf): {
+    id?: string;
+    getRoot?: () => { id?: string } | undefined;
+    view?: {
+      getViewType?: () => string;
+      getMode?: () => string;
+      file?: { path?: string };
+      containerEl?: HTMLElement;
+      editor?: { getValue(): string; cm?: EditorView };
+    };
+  } {
+    return leaf as unknown as ReturnType<RelayDebugAPI['leafInternals']>;
+  }
+
+  private leafIds(leaf: WorkspaceLeaf): { windowId: string; leafId: string } {
+    const internals = this.leafInternals(leaf);
+    const leafId: string = internals.id ?? '';
+    const root = internals.getRoot?.();
     const rootId: string | undefined = root?.id;
     const mainRoot = this.plugin?.app?.workspace?.rootSplit;
     let windowId: string;
-    if (!root || root === mainRoot) {
+    if (!root || (root as unknown) === mainRoot) {
       windowId = 'main';
     } else if (rootId) {
       windowId = `popout:${rootId}`;
     } else {
       // Fallback: identify by the window containing the leaf's DOM.
-      const ownerWin = leaf?.view?.containerEl?.ownerDocument?.defaultView;
+      const ownerWin = internals.view?.containerEl?.ownerDocument?.defaultView;
       windowId = ownerWin && ownerWin !== window ? 'popout:unknown' : 'main';
     }
     return { windowId, leafId };
   }
 
-  private leafViewInfo(leaf: any): { viewType: string | null; mode: string | null; currentPath: string | null } {
-    const view = leaf?.view;
+  private leafViewInfo(leaf: WorkspaceLeaf): { viewType: string | null; mode: string | null; currentPath: string | null } {
+    const view = this.leafInternals(leaf).view;
     return {
       viewType: view?.getViewType?.() ?? null,
       mode: view?.getMode?.() ?? null,
@@ -750,10 +856,10 @@ export class RelayDebugAPI {
     };
   }
 
-  private findLeavesByPath(path: string): any[] {
-    const matches: any[] = [];
-    this.plugin?.app?.workspace?.iterateAllLeaves?.((leaf: any) => {
-      if (leaf?.view?.file?.path === path) {
+  private findLeavesByPath(path: string): WorkspaceLeaf[] {
+    const matches: WorkspaceLeaf[] = [];
+    this.plugin?.app?.workspace?.iterateAllLeaves?.((leaf) => {
+      if (this.leafInternals(leaf).view?.file?.path === path) {
         matches.push(leaf);
       }
     });
@@ -764,19 +870,20 @@ export class RelayDebugAPI {
     path: string,
     opts?: { newLeaf?: boolean },
   ): Promise<OpenEditorResult> {
-    const file = this.plugin?.app?.vault?.getAbstractFileByPath(path);
-    if (!file) {
+    const app = this.requirePlugin().app;
+    const file = app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) {
       throw new Error(`File not found: ${path}`);
     }
-    const leaf = this.plugin.app.workspace.getLeaf(opts?.newLeaf ? 'tab' : false);
+    const leaf = app.workspace.getLeaf(opts?.newLeaf ? 'tab' : false);
     await leaf.openFile(file);
-    this.plugin.app.workspace.setActiveLeaf?.(leaf, { focus: true });
+    app.workspace.setActiveLeaf?.(leaf, { focus: true });
 
     // Markdown views default to preview; flip to source so the editor is live.
     // setViewState is used instead of view.setMode because setMode expects a
     // mode instance (from view.modes), not a string — passing a string leaves
     // view.currentMode as the string and corrupts the view.
-    const view = leaf.view;
+    const view = leaf.view as { getViewType?: () => string; getMode?: () => string } | undefined;
     if (view?.getViewType?.() === 'markdown' && view.getMode?.() !== 'source') {
       if (typeof leaf.setViewState === 'function') {
         const state = leaf.getViewState?.() ?? { type: 'markdown', state: {} };
@@ -790,10 +897,11 @@ export class RelayDebugAPI {
     // Let Obsidian finish any async view replacement caused by mode switches.
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
-    const activeLeaf = this.plugin.app.workspace.activeLeaf;
+    const activeLeaf = app.workspace.activeLeaf;
     const candidates = this.findLeavesByPath(path);
+    const activeFile = (activeLeaf?.view as { file?: { path?: string } } | undefined)?.file;
     const resolvedLeaf = (
-      (activeLeaf?.view?.file?.path === path ? activeLeaf : null)
+      (activeFile?.path === path ? activeLeaf : null)
       ?? candidates.find((candidate) => candidate === leaf)
       ?? candidates[0]
       ?? leaf
@@ -833,7 +941,7 @@ export class RelayDebugAPI {
   private listEditors(): EditorInfo[] {
     const out: EditorInfo[] = [];
     const activeLeaf = this.plugin?.app?.workspace?.activeLeaf;
-    this.plugin?.app?.workspace?.iterateAllLeaves?.((leaf: any) => {
+    this.plugin?.app?.workspace?.iterateAllLeaves?.((leaf) => {
       const info = this.leafViewInfo(leaf);
       // Only markdown leaves have an editor; other view types can't be targeted
       // by editor commands, so listing them would just add noise.
@@ -852,7 +960,7 @@ export class RelayDebugAPI {
 
   private async getEditorContent(handle: EditorHandle): Promise<string> {
     const leaf = this.resolveAndVerify(handle);
-    const editor = leaf.view?.editor;
+    const editor = this.leafInternals(leaf).view?.editor;
     if (!editor) {
       throw new Error(`leaf has no editor: ${handle.path}`);
     }
@@ -865,7 +973,9 @@ export class RelayDebugAPI {
     if (!lookup) {
       throw new Error(`Document not found for editor path: ${path}`);
     }
-    const localDoc = lookup.hsm?.getLocalDoc?.() ?? lookup.doc?.localDoc;
+    const localDoc =
+      lookup.hsm?.getLocalDoc?.() ??
+      (lookup.doc as { localDoc?: Y.Doc | null }).localDoc;
     if (!localDoc) {
       throw new Error(`localDoc not available for editor path: ${path}`);
     }
@@ -878,7 +988,7 @@ export class RelayDebugAPI {
 
   private async captureEditorSnapshot(handle: EditorHandle): Promise<EditorSnapshot> {
     const leaf = this.resolveAndVerify(handle);
-    const editor = leaf.view?.editor;
+    const editor = this.leafInternals(leaf).view?.editor;
     const cm = editor?.cm;
     if (!cm) {
       throw new Error(`leaf has no CM6 EditorView: ${handle.path}`);
@@ -922,7 +1032,7 @@ export class RelayDebugAPI {
     options?: SetEditorContentOptions,
   ): Promise<SetEditorContentResult> {
     const leaf = this.resolveAndVerify(handle);
-    const editor = leaf.view?.editor;
+    const editor = this.leafInternals(leaf).view?.editor;
     const cm = editor?.cm;
     if (!cm) return { success: false, error: 'leaf has no CM6 EditorView' };
     if (options?.base !== undefined && typeof options.base !== 'string') {
@@ -1007,7 +1117,7 @@ export class RelayDebugAPI {
 
   private async closeEditor(handle: EditorHandle): Promise<void> {
     const leaf = this.findLeaf(handle);
-    if (leaf && leaf?.view?.file?.path === handle.path) {
+    if (leaf && this.leafInternals(leaf).view?.file?.path === handle.path) {
       leaf.detach?.();
       return;
     }
@@ -1064,7 +1174,7 @@ export class RelayDebugAPI {
 
     // Disk
     try {
-      const adapter = this.plugin.app.vault.adapter;
+      const adapter = this.requirePlugin().app.vault.adapter;
       const vaultRelativePath = folder.getPath(filePath);
       const content = await adapter.read(vaultRelativePath);
       const stat = await adapter.stat(vaultRelativePath);
@@ -1076,7 +1186,9 @@ export class RelayDebugAPI {
 
     // Server
     try {
-      const response = await folder.backgroundSync.downloadItem(doc);
+      const response = await folder.backgroundSync.downloadItem(
+        doc as unknown as RemoteEntityFile,
+      );
       const rawUpdate = new Uint8Array(response.arrayBuffer);
       const tempDoc = new Y.Doc();
       Y.applyUpdate(tempDoc, rawUpdate);
@@ -1119,11 +1231,11 @@ export class RelayDebugAPI {
    * folder's membership map so a member without a file on disk (a canvas
    * awaiting materialization) is still reachable.
    */
-  private lookupCanvas(path: string): { canvas: any; folder: any; guid: string } {
-    let owner: any = null;
-    if (this.plugin?.sharedFolders?._set) {
-      for (const folder of this.plugin.sharedFolders._set.values()) {
-        if (path.startsWith((folder as any).path + '/')) {
+  private lookupCanvas(path: string): { canvas: Canvas; folder: SharedFolder; guid: string } {
+    let owner: SharedFolder | null = null;
+    if (this.plugin?.sharedFolders) {
+      for (const folder of this.plugin.sharedFolders.items()) {
+        if (path.startsWith(folder.path + '/')) {
           owner = folder;
           break;
         }
@@ -1133,9 +1245,9 @@ export class RelayDebugAPI {
     const vpath = path.slice(owner.path.length);
     const guid = owner.syncStore.get(vpath);
     if (!guid) throw new Error(`Canvas not in folder membership: ${path}`);
-    let canvas = owner.files.get(guid);
+    let canvas: import('./IFile').IFile | null | undefined = owner.files.get(guid);
     if (!canvas) {
-      const tfile = this.plugin.app.vault.getAbstractFileByPath(path);
+      const tfile = this.requirePlugin().app.vault.getAbstractFileByPath(path);
       if (tfile) canvas = owner.getFile(tfile);
     }
     if (!isCanvas(canvas)) {
@@ -1208,11 +1320,14 @@ export class RelayDebugAPI {
 
     // Disk
     try {
-      const adapter = this.plugin.app.vault.adapter;
+      const adapter = this.requirePlugin().app.vault.adapter;
       const raw = await adapter.read(path);
       const stat = await adapter.stat(path);
       try {
-        const parsed = raw.trim().length > 0 ? JSON.parse(raw) : {};
+        const parsed = (raw.trim().length > 0 ? JSON.parse(raw) : {}) as {
+          nodes?: unknown[];
+          edges?: unknown[];
+        };
         result.disk = {
           data: { nodes: parsed.nodes ?? [], edges: parsed.edges ?? [] },
           mtime: stat?.mtime ?? 0,
@@ -1225,14 +1340,16 @@ export class RelayDebugAPI {
 
     // Open view (when a canvas leaf shows this file)
     try {
-      this.plugin.app.workspace.iterateAllLeaves((leaf: any) => {
-        if (
-          leaf.view?.getViewType?.() === 'canvas' &&
-          leaf.view?.file?.path === path
-        ) {
-          const data = leaf.view.canvas.getData();
+      this.requirePlugin().app.workspace.iterateAllLeaves((leaf) => {
+        const view = leaf.view as {
+          getViewType?: () => string;
+          file?: { path?: string };
+          canvas?: { getData: () => { nodes?: unknown[]; edges?: unknown[] } };
+        } | undefined;
+        if (view?.getViewType?.() === 'canvas' && view.file?.path === path) {
+          const data = view.canvas?.getData();
           result.view = {
-            data: { nodes: data.nodes ?? [], edges: data.edges ?? [] },
+            data: { nodes: data?.nodes ?? [], edges: data?.edges ?? [] },
           };
         }
       });
@@ -1266,7 +1383,10 @@ export class RelayDebugAPI {
     } catch { /* persisted record not readable */ }
 
     const eq = (a: unknown, b: unknown) =>
-      areCanvasDataEqual(a as any, b as any);
+      areCanvasDataEqual(
+        a as CanvasData | null | undefined,
+        b as CanvasData | null | undefined,
+      );
     if (result.local && result.remote) {
       result.localRemoteContentEqual = eq(result.local.data, result.remote.data);
     }
@@ -1306,13 +1426,14 @@ export class RelayDebugAPI {
     }
     const { doc, hsm, guid, folder, filePath } = lookup;
 
-    const hsmAny = hsm as any;
+    const internals = this.hsmInternals(hsm);
+    const localYDoc = hsm.getLocalDoc();
 
     // Disk — prefer the vault adapter so we see exactly what the HSM sees.
-    const vaultPath = (folder as any).path + filePath;
+    const vaultPath = folder.path + filePath;
     let diskContent: string | null = null;
     try {
-      diskContent = await this.plugin.app.vault.adapter.read(vaultPath);
+      diskContent = await this.requirePlugin().app.vault.adapter.read(vaultPath);
     } catch {
       diskContent = null;
     }
@@ -1321,14 +1442,14 @@ export class RelayDebugAPI {
     // IndexeddbPersistence when the HSM is warm.
     let idbContent: string | null = null;
     let idbSnapshot: Uint8Array | null = null;
-    if (hsmAny.localDoc) {
-      idbContent = hsmAny.localDoc.getText('contents').toString();
-      idbSnapshot = hsmAny._localSnapshot || null;
+    if (localYDoc) {
+      idbContent = localYDoc.getText('contents').toString();
+      idbSnapshot = internals._localSnapshot || null;
     } else {
       try {
         const result = await readIdbContent(
           guid,
-          hsmAny._persistenceMetadata?.appId,
+          internals._persistenceMetadata?.appId ?? '',
           this.plugin?.timeProvider,
         );
         if (result) {
@@ -1346,14 +1467,14 @@ export class RelayDebugAPI {
     // the persistence-level check needed while the document is idle.
     let headSnapshotsEqual: boolean | null = null;
     try {
-      if (hsmAny.localDoc && hsmAny.remoteDoc) {
+      if (localYDoc && internals.remoteDoc) {
         headSnapshotsEqual = snapshotsEqual(
-          snapshotFromDoc(hsmAny.localDoc),
-          snapshotFromDoc(hsmAny.remoteDoc),
+          snapshotFromDoc(localYDoc),
+          snapshotFromDoc(internals.remoteDoc),
         );
       } else {
         const remoteSnapshot: Uint8Array | null =
-          hsmAny._remoteSnapshot || null;
+          internals._remoteSnapshot || null;
         if (idbSnapshot && remoteSnapshot) {
           headSnapshotsEqual = snapshotsEqual(
             { snapshot: idbSnapshot },
@@ -1366,8 +1487,14 @@ export class RelayDebugAPI {
     // Recent transitions from the HSM disk log.
     let recentTransitions: HsmStateTransition[] = [];
     try {
-      const entries = await getRecentEntries(guid, 10);
-      recentTransitions = entries.map((raw: any) => ({
+      const entries = (await getRecentEntries(guid, 10)) as Array<{
+        ts: number;
+        seq: number;
+        event: { type: string } | string;
+        from: string;
+        to: string;
+      }>;
+      recentTransitions = entries.map((raw) => ({
         ts: raw.ts,
         seq: raw.seq,
         event: typeof raw.event === 'object' ? raw.event.type : raw.event,
@@ -1377,10 +1504,10 @@ export class RelayDebugAPI {
     } catch { /* noop */ }
 
     // Frontmatter Y.Map snapshot.
-    let frontmatterMap: Record<string, any> | null = null;
-    if (hsmAny.localDoc) {
+    let frontmatterMap: Record<string, unknown> | null = null;
+    if (localYDoc) {
       try {
-        const ymap = hsmAny.localDoc.getMap('frontmatter');
+        const ymap = localYDoc.getMap('frontmatter');
         if (ymap.size > 0) {
           frontmatterMap = {};
           for (const [k, v] of ymap.entries()) {
@@ -1397,7 +1524,7 @@ export class RelayDebugAPI {
     let persistedLcaContent: string | null = null;
     let persistedAt: number | null = null;
     try {
-      const persistedState = await (folder as any)._hsmStore?.loadState?.(guid);
+      const persistedState = await this.folderInternals(folder)._hsmStore?.loadState?.(guid);
       const persistedLca = persistedState?.lca ?? null;
       if (persistedLca) {
         persistedLcaHash = persistedLca.hash ?? null;
@@ -1414,18 +1541,18 @@ export class RelayDebugAPI {
 
     // Capture volatile in-memory HSM fields together after the async reads
     // above. Initial enrollment can complete while disk/IDB/log probes await.
-    const lca = hsmAny._lca;
+    const lca = internals._lca;
     const hasValidLCA = !!(lca && lca.contents !== undefined && lca.meta?.hash);
-    const lcaContent: string | null = hasValidLCA ? lca.contents : null;
-    const localDoc = hsmAny.localDoc;
-    const statePath = hsmAny._statePath || 'unknown';
-    const disk = hsmAny._disk;
+    const lcaContent: string | null = hasValidLCA ? (lca?.contents ?? null) : null;
+    const localDoc = localYDoc;
+    const statePath = internals._statePath || 'unknown';
+    const disk = internals._disk;
     const syncGateRaw =
-      hsmAny._syncGate ||
-      hsmAny._bridge?.syncGate ||
-      hsmAny._bridge?._syncGate;
+      internals._syncGate ||
+      internals._bridge?.syncGate ||
+      internals._bridge?._syncGate;
     const syncGate: HsmSyncGate | null = syncGateRaw ? {
-      providerConnected: !!doc?.connected,
+      providerConnected: !!(doc as { connected?: boolean } | undefined)?.connected,
       providerSynced: !!syncGateRaw.providerSynced,
       localOnly: !!syncGateRaw.localOnly,
       pendingInbound: syncGateRaw.pendingInbound ?? 0,
@@ -1443,7 +1570,7 @@ export class RelayDebugAPI {
     return {
       path: this.toVaultPath(folder, filePath),
       guid,
-      folder: (folder as any).name,
+      folder: folder.name,
       statePath,
       syncGate,
       hasLCA: hasValidLCA,
@@ -1454,8 +1581,8 @@ export class RelayDebugAPI {
       persistedLcaContentLength: persistedLcaContent?.length ?? null,
       persistedLcaContent,
       persistedAt,
-      hasConflict: !!hsmAny.getConflictData?.(),
-      conflictData: hsmAny.getConflictData?.() || null,
+      hasConflict: !!hsm.getConflictData(),
+      conflictData: hsm.getConflictData() || null,
       localDocLength: localDoc
         ? (localDoc.getText?.('contents')?.toString()?.length ?? 0)
         : 0,
@@ -1490,10 +1617,12 @@ export class RelayDebugAPI {
   ): Promise<string> {
     const lookup = this.debugGlobal()?.lookupDocument?.(path);
     if (!lookup) throw new Error(`HSM not found: ${path}`);
-    const hsm = lookup.hsm as any;
+    const hsm = lookup.hsm;
+    const internals = this.hsmInternals(hsm);
 
     const matcher = (s: string) => s.startsWith(statePrefix);
-    if (matcher(hsm._statePath)) return hsm._statePath;
+    const current = internals._statePath ?? '';
+    if (matcher(current)) return current;
 
     let timer: number | null = null;
     try {
@@ -1505,7 +1634,7 @@ export class RelayDebugAPI {
               new Error(
                 `awaitHsmState timeout after ${timeoutMs}ms waiting for ` +
                   `${path} to reach state starting with "${statePrefix}" ` +
-                  `(current: ${hsm._statePath})`,
+                  `(current: ${this.hsmInternals(hsm)._statePath})`,
               ),
             );
           }, timeoutMs);
@@ -1514,14 +1643,14 @@ export class RelayDebugAPI {
     } finally {
       if (timer !== null) window.clearTimeout(timer);
     }
-    return hsm._statePath;
+    return this.hsmInternals(hsm)._statePath ?? 'unknown';
   }
 
   /**
    * Conflict APIs translate vault paths into merge-layer targets. State,
    * hunk lookup, waking, and mutation behavior live below this boundary.
    */
-  private resolveConflictTarget(path: string): { manager: any; guid: string; folder: any; filePath: string } {
+  private resolveConflictTarget(path: string): { manager: MergeManager; guid: string; folder: SharedFolder; filePath: string } {
     const lookup = this.debugGlobal()?.lookupDocument?.(path);
     if (!lookup) throw new Error(`HSM not found: ${path}`);
     const manager = lookup.folder?.mergeManager;
@@ -1560,28 +1689,28 @@ export class RelayDebugAPI {
    * version without LCA tracking.
    */
   private findRelayByGuid(guid: string) {
-    for (const r of this.plugin.relayManager.relays._map.values()) {
+    for (const r of this.requirePlugin().relayManager.relays.values()) {
       if (r.guid === guid) return r;
     }
     return null;
   }
 
   /** Resolve a shared folder by exact path or path prefix. */
-  private resolveFolder(path: string): any | null {
-    if (!this.plugin?.sharedFolders?._set) return null;
-    for (const folder of this.plugin.sharedFolders._set.values()) {
-      if ((folder as any).path === path) return folder;
+  private resolveFolder(path: string): SharedFolder | null {
+    if (!this.plugin?.sharedFolders) return null;
+    for (const folder of this.plugin.sharedFolders.items()) {
+      if (folder.path === path) return folder;
     }
-    for (const folder of this.plugin.sharedFolders._set.values()) {
-      if (path.startsWith((folder as any).path + '/')) return folder;
+    for (const folder of this.plugin.sharedFolders.items()) {
+      if (path.startsWith(folder.path + '/')) return folder;
     }
     return null;
   }
 
-  private getFolderByGuid(folderGuid: string): any | null {
-    if (!this.plugin?.sharedFolders?._set) return null;
-    for (const folder of this.plugin.sharedFolders._set.values()) {
-      if ((folder as any).guid === folderGuid) return folder;
+  private getFolderByGuid(folderGuid: string): SharedFolder | null {
+    if (!this.plugin?.sharedFolders) return null;
+    for (const folder of this.plugin.sharedFolders.items()) {
+      if (folder.guid === folderGuid) return folder;
     }
     return null;
   }
@@ -1591,20 +1720,20 @@ export class RelayDebugAPI {
    * prefix (e.g. `/private/foo.md`). All debug-API outputs emit paths in
    * this shape so output can round-trip through any path-accepting call.
    */
-  private toVaultPath(folder: any, vpath: string): string {
+  private toVaultPath(folder: SharedFolder, vpath: string): string {
     return '/' + folder.getPath(vpath);
   }
 
   private getFolderSyncStatus(folderGuid: string): { guid: string; path: string; status: string }[] {
     const folder = this.getFolderByGuid(folderGuid);
     const mm = folder?.mergeManager;
-    if (!mm?.syncStatus) return [];
+    if (!folder || !mm?.syncStatus) return [];
 
     const rows: { guid: string; path: string; status: string }[] = [];
     for (const [guid, syncStatus] of mm.syncStatus.entries()) {
-      const document = mm._getDocument?.(guid);
+      const document = this.managedDoc(folder, guid);
       const candidate = folder.files?.get(guid);
-      const file = document ?? (isCanvas(candidate) ? candidate : undefined);
+      const file = (document as { path?: string } | undefined) ?? (isCanvas(candidate) ? candidate : undefined);
       const vpath = file?.path;
       rows.push({
         guid,
@@ -1627,9 +1756,9 @@ export class RelayDebugAPI {
   }
 
   private listAllConflicts(): { folderGuid: string; folderPath: string; guid: string; path: string }[] {
-    if (!this.plugin?.sharedFolders?._set) return [];
+    if (!this.plugin?.sharedFolders) return [];
     const out: { folderGuid: string; folderPath: string; guid: string; path: string }[] = [];
-    for (const folder of this.plugin.sharedFolders._set.values() as Iterable<any>) {
+    for (const folder of this.plugin.sharedFolders.items()) {
       const folderGuid = folder.guid;
       const folderPath = folder.path ?? '';
       for (const row of this.getFolderConflicts(folderGuid)) {
@@ -1648,16 +1777,16 @@ export class RelayDebugAPI {
   }
 
   private listSyncPanelStatus(): SyncPanelStatus[] {
-    if (!this.plugin?.sharedFolders?._set) return [];
+    if (!this.plugin?.sharedFolders) return [];
     const panels: SyncPanelStatus[] = [];
-    for (const folder of this.plugin.sharedFolders._set.values() as Iterable<any>) {
+    for (const folder of this.plugin.sharedFolders.items()) {
       panels.push(this.serializeSyncPanelStatus(folder, buildFolderSyncStatusModel(folder)));
     }
     panels.sort((a, b) => a.folderPath.localeCompare(b.folderPath));
     return panels;
   }
 
-  private serializeSyncPanelStatus(folder: any, model: FolderSyncStatusModel): SyncPanelStatus {
+  private serializeSyncPanelStatus(folder: SharedFolder, model: FolderSyncStatusModel): SyncPanelStatus {
     const queue = this.serializeSyncPanelQueue(folder, model.queue);
     return {
       folderGuid: folder.guid,
@@ -1671,7 +1800,7 @@ export class RelayDebugAPI {
     };
   }
 
-  private serializeSyncPanelQueue(folder: any, queue: FolderQueueSnapshot): SyncPanelQueueSnapshot {
+  private serializeSyncPanelQueue(folder: SharedFolder, queue: FolderQueueSnapshot): SyncPanelQueueSnapshot {
     const byId = new Map<string, QueueWorkItem>();
     for (const item of queue.itemsByGuid.values()) {
       byId.set(`${item.guid}:${item.kind}:${item.phase}`, {
@@ -1700,7 +1829,7 @@ export class RelayDebugAPI {
     };
   }
 
-  private toPanelVaultPath(folder: any, path: string): string {
+  private toPanelVaultPath(folder: SharedFolder, path: string): string {
     if (!path) return path;
     const withoutSlash = path.replace(/^\/+/, '');
     const folderPath = String(folder.path ?? '').replace(/^\/+/, '');
@@ -1713,7 +1842,7 @@ export class RelayDebugAPI {
   private async clearLca(path: string): Promise<void> {
     const lookup = this.debugGlobal()?.lookupDocument?.(path);
     if (!lookup) throw new Error(`HSM not found: ${path}`);
-    (lookup.hsm as any)._lca = null;
+    this.hsmInternals(lookup.hsm)._lca = null;
   }
 
   /**
@@ -1724,9 +1853,9 @@ export class RelayDebugAPI {
   private sendConflictEvent(path: string, event: { type: string }): string {
     const lookup = this.debugGlobal()?.lookupDocument?.(path);
     if (!lookup) throw new Error(`HSM not found: ${path}`);
-    const hsm = lookup.hsm as any;
-    hsm.send(event);
-    return hsm._statePath || 'unknown';
+    const hsm = lookup.hsm;
+    hsm.send(event as Parameters<MergeHSM['send']>[0]);
+    return this.hsmInternals(hsm)._statePath || 'unknown';
   }
 
   private async resolveHunk(
@@ -1747,12 +1876,12 @@ export class RelayDebugAPI {
    * document can't be found or has no persistence metadata.
    */
   private resolveIdbTarget(path: string): {
-    hsm: any; guid: string; folder: any; filePath: string; dbName: string; hsmDbName: string;
+    hsm: MergeHSM; guid: string; folder: SharedFolder; filePath: string; dbName: string; hsmDbName: string;
   } {
     const lookup = this.debugGlobal()?.lookupDocument?.(path);
     if (!lookup) throw new Error(`HSM not found: ${path}`);
     const { hsm, guid, folder, filePath } = lookup;
-    const appId = (hsm as any)._persistenceMetadata?.appId;
+    const appId = this.hsmInternals(hsm)._persistenceMetadata?.appId;
     if (!appId) throw new Error('No appId in persistence metadata');
     return {
       hsm,
@@ -1807,7 +1936,7 @@ export class RelayDebugAPI {
         tx.objectStore('custom').getAll(),
         'read custom values',
       );
-      const metadata: Record<string, any> = {};
+      const metadata: Record<string, unknown> = {};
       for (let i = 0; i < customKeys.length; i++) {
         metadata[String(customKeys[i])] = customValues[i];
       }
@@ -1816,28 +1945,29 @@ export class RelayDebugAPI {
       // When hibernated, fall back to opening IndexeddbPersistence via
       // readIdbContent.
       let idbContent: string | null = null;
-      if ((hsm as any).localDoc) {
-        idbContent = (hsm as any).localDoc.getText('contents').toString();
+      const localYDoc = hsm.getLocalDoc();
+      if (localYDoc) {
+        idbContent = localYDoc.getText('contents').toString();
       } else {
         try {
-          const result = await readIdbContent(guid, (hsm as any)._persistenceMetadata?.appId, this.plugin?.timeProvider);
+          const result = await readIdbContent(guid, this.hsmInternals(hsm)._persistenceMetadata?.appId ?? '', this.plugin?.timeProvider);
           if (result) idbContent = result.content;
         } catch { /* noop */ }
       }
 
       // Read disk for comparison.
-      const vaultPath = (folder as any).path + filePath;
+      const vaultPath = folder.path + filePath;
       let diskContent: string | null = null;
       try {
-        diskContent = await this.plugin.app.vault.adapter.read(vaultPath);
-      } catch (e: any) {
-        diskContent = `[Error reading disk: ${e.message}]`;
+        diskContent = await this.requirePlugin().app.vault.adapter.read(vaultPath);
+      } catch (e) {
+        diskContent = `[Error reading disk: ${e instanceof Error ? e.message : String(e)}]`;
       }
 
       return {
         path: this.toVaultPath(folder, filePath),
         guid,
-        folder: (folder as any).name,
+        folder: folder.name,
         dbName,
         metadata,
         updatesCount: updates.length,
@@ -1864,7 +1994,7 @@ export class RelayDebugAPI {
         return {
           path: this.toVaultPath(folder, filePath),
           guid,
-          folder: (folder as any).name,
+          folder: folder.name,
           dbName,
           historyCount: 0,
           inMemoryCount: null,
@@ -1879,7 +2009,12 @@ export class RelayDebugAPI {
       const values = await this.awaitRequest(store.getAll(), 'read history values');
 
       const entries: IdbHistoryEntry[] = keys.map((key, i) => {
-        const v = values[i] as any;
+        const v = values[i] as {
+          origin?: unknown;
+          timestamp?: number | null;
+          insertions?: { byteLength?: number };
+          deletions?: { byteLength?: number };
+        };
         return {
           key,
           origin: v.origin ?? null,
@@ -1890,13 +2025,13 @@ export class RelayDebugAPI {
         };
       });
 
-      const persistence = (hsm as any)._persistenceMetadata?.persistence;
+      const persistence = this.hsmInternals(hsm)._persistenceMetadata?.persistence;
       const inMemoryCount = persistence?.opCapture?.entries?.length ?? null;
 
       return {
         path: this.toVaultPath(folder, filePath),
         guid,
-        folder: (folder as any).name,
+        folder: folder.name,
         dbName,
         historyCount: entries.length,
         inMemoryCount,
@@ -1913,7 +2048,7 @@ export class RelayDebugAPI {
   private async getIdbFork(path: string): Promise<IdbForkSnapshot> {
     const { hsm, guid, folder, filePath, hsmDbName } = this.resolveIdbTarget(path);
 
-    const toSnapshot = (f: any): ForkSnapshot => ({
+    const toSnapshot = (f: DebugForkRaw): ForkSnapshot => ({
       base: f.base ?? null,
       baseLength: f.base?.length ?? 0,
       origin: f.origin ?? null,
@@ -1924,7 +2059,7 @@ export class RelayDebugAPI {
       remoteSnapshotBytes: f.remoteSnapshot?.byteLength ?? 0,
     });
 
-    const inMemoryFork = (hsm as any)._fork;
+    const inMemoryFork = this.hsmInternals(hsm)._fork;
     const inMemory: ForkSnapshot | null = inMemoryFork ? toSnapshot(inMemoryFork) : null;
 
     // Read persisted fork from the shared HSM store. Swallow errors so
@@ -1939,15 +2074,18 @@ export class RelayDebugAPI {
           const state = await this.awaitRequest(
             tx.objectStore('states').get(guid),
             'read persisted state',
-          ) as any;
+          ) as {
+            fork?: DebugForkRaw;
+            lastStatePath?: string | null;
+          } & Record<string, unknown>;
           if (state?.fork) {
             persistedFork = toSnapshot(state.fork);
           }
           if (state) {
             persistedMeta = {
               lastStatePath: state.lastStatePath ?? null,
-              persistedAt: state.persistedAt ?? null,
-              persistedAtTime: state.persistedAt ? new Date(state.persistedAt).toISOString() : null,
+              persistedAt: typeof state.persistedAt === 'number' ? state.persistedAt : null,
+              persistedAtTime: typeof state.persistedAt === 'number' ? new Date(state.persistedAt).toISOString() : null,
               hasForkInPersistedState: !!state.fork,
             };
           }
@@ -1955,15 +2093,15 @@ export class RelayDebugAPI {
       } finally {
         db.close();
       }
-    } catch (e: any) {
-      persistedFork = { error: e.message };
+    } catch (e) {
+      persistedFork = { error: e instanceof Error ? e.message : String(e) };
     }
 
     return {
       path: this.toVaultPath(folder, filePath),
       guid,
-      folder: (folder as any).name,
-      statePath: (hsm as any)._statePath || 'unknown',
+      folder: folder.name,
+      statePath: this.hsmInternals(hsm)._statePath || 'unknown',
       hasFork: inMemoryFork != null,
       inMemoryFork: inMemory,
       persistedFork,
@@ -1985,10 +2123,10 @@ export class RelayDebugAPI {
     }
     this.bridges.clear();
     this.activeRecordingName = null;
-    this.plugin = null;
+    this.plugin = undefined;
 
     if (this.debugGlobal()?.__owner === this) {
-      delete (this.debugWindow() as any).__relayDebug;
+      delete (this.debugWindow() as unknown as { __relayDebug?: RelayDebugGlobal }).__relayDebug;
     }
   }
 }
