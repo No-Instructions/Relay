@@ -85,6 +85,31 @@ export function s3NetworkFailureFromUnknown(
 const NETWORK_FAILURE_PATTERN =
 	/net::ERR_|Failed to fetch|fetch failed|\bLoad failed\b|NetworkError|network error|socket hang up|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ENOTFOUND|EPIPE|EAI_AGAIN/i;
 
+/**
+ * Classify a failure thrown mid-transfer when no HTTP response was produced.
+ * Unlike the pattern-matched s3NetworkFailureFromUnknown, any non-abort
+ * failure is treated as transport-level and retryable: a transfer that
+ * produced no response cannot have been refused by policy, and parking it
+ * strands the file (the background queue only re-drives retryable failures).
+ * Aborts stay null so a cancelled transfer is not re-driven by the retry
+ * loop that was just cancelled.
+ */
+export function s3TransferFailureFromUnknown(
+	error: unknown,
+	operation?: string,
+): S3ApiError | null {
+	if (error instanceof S3ApiError) return null;
+	if (error instanceof DOMException && error.name === "AbortError") {
+		return null;
+	}
+	const text = errorText(error) ?? "";
+	if (/abort/i.test(text)) return null;
+	return new S3ApiError(
+		{ code: "NetworkingError", operation, message: text || undefined },
+		error,
+	);
+}
+
 function jsonErrorMessage(body: string): string | undefined {
 	try {
 		const parsed = JSON.parse(body) as { error?: unknown };
@@ -158,6 +183,9 @@ function userMessageForS3Error(details: S3ErrorDetails): string {
 
 	if (details.status === 429) {
 		return "Attachment storage is busy. Relay will retry the upload.";
+	}
+	if (details.status === 404) {
+		return "Attachment content not found in storage.";
 	}
 	if (details.status !== undefined && details.status >= 500) {
 		return "Attachment storage is temporarily unavailable. Relay will retry the upload.";

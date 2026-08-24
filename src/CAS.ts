@@ -10,6 +10,7 @@ import {
 	s3ApiErrorFromResponse,
 	s3ApiErrorFromUnknown,
 	s3NetworkFailureFromUnknown,
+	s3TransferFailureFromUnknown,
 } from "./S3Error";
 
 // In-attempt retry schedule for transient transfer failures: one retry per
@@ -120,7 +121,9 @@ export class ContentAddressedStore extends HasLogging {
 				return await request();
 			} catch (error) {
 				const classified =
-					s3NetworkFailureFromUnknown(error, operation) ?? error;
+					s3NetworkFailureFromUnknown(error, operation) ??
+					s3TransferFailureFromUnknown(error, operation) ??
+					error;
 				const delayCapMs = this.transferRetryDelaysMs[attempt];
 				if (!isRetryableS3Error(classified) || delayCapMs === undefined) {
 					throw classified;
@@ -143,36 +146,37 @@ export class ContentAddressedStore extends HasLogging {
 		if (!(content && hash)) {
 			throw new Error("invalid caf");
 		}
-		const token = await this.tokenStore.getFileToken(
-			S3RN.encode(syncFile.s3rn),
-			hash,
-			syncFile.mimetype,
-			content.byteLength,
-		);
-		const response = await customFetch(token.baseUrl + "/upload-url", {
-			method: "POST",
-			headers: { Authorization: `Bearer ${token.token}` },
-			relayNetworkDomain: "relay",
+		return this.withTransientRetry("upload attachment", async () => {
+			const token = await this.tokenStore.getFileToken(
+				S3RN.encode(syncFile.s3rn),
+				hash,
+				syncFile.mimetype,
+				content.byteLength,
+			);
+			const response = await customFetch(token.baseUrl + "/upload-url", {
+				method: "POST",
+				headers: { Authorization: `Bearer ${token.token}` },
+				relayNetworkDomain: "relay",
+			});
+			if (response.status !== 200) {
+				throw await this.s3ResponseError(response, "upload attachment url");
+			}
+			const responseJson = await response.json();
+			const presignedUrl = responseJson.uploadUrl;
+			const uploadResponse = await this.s3Request(
+				() =>
+					customFetch(presignedUrl, {
+						method: "PUT",
+						headers: { "Content-Type": syncFile.mimetype },
+						body: content,
+						relayNetworkDomain: "external",
+					}),
+				"upload attachment",
+			);
+			if (!uploadResponse.ok) {
+				throw await this.s3ResponseError(uploadResponse, "upload attachment");
+			}
 		});
-		if (response.status !== 200) {
-			throw await this.s3ResponseError(response, "upload attachment url");
-		}
-		const responseJson = await response.json();
-		const presignedUrl = responseJson.uploadUrl;
-		const uploadResponse = await this.s3Request(
-			() =>
-				customFetch(presignedUrl, {
-					method: "PUT",
-					headers: { "Content-Type": syncFile.mimetype },
-					body: content,
-					relayNetworkDomain: "external",
-				}),
-			"upload attachment",
-		);
-		if (!uploadResponse.ok) {
-			throw await this.s3ResponseError(uploadResponse, "upload attachment");
-		}
-		return;
 	}
 
 	private async s3Request(
