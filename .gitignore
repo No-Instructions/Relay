@@ -39,6 +39,10 @@ debug-tools/
 .claude/
 docs/
 infra/
+
+# Lint entries: private by default, public when whitelisted.
+lint.d/*
+!lint.d/product.json
 scripts/
 tickets/
 specs/
@@ -54,7 +58,6 @@ vision/
 # relay-harness overlay content (managed via igit, not relay-plugin git)
 .githooks/
 .memory/
-infra/
 playwright/
 scripts/
 templates/

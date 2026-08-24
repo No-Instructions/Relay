@@ -2,3 +2,5 @@ node_modules/
 
 main.js
 archive/
+__tests__/
+scripts/
