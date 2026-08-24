@@ -199,7 +199,7 @@ export class PolicyManager implements IPolicyManager {
 					principal: request.principal,
 				},
 			};
-		} catch (error) {
+		} catch {
 			return {
 				allowed: false,
 				policy: policyKey,

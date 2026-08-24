@@ -718,7 +718,7 @@ export class SharedFolder extends HasProvider {
 					this._persistence.set("relay", this.relayId || "");
 					this._persistence.set("appId", this.appId);
 					this._persistence.set("s3rn", S3RN.encode(this.s3rn));
-				} catch (e) {
+				} catch {
 					// pass
 				}
 			})
@@ -1225,7 +1225,7 @@ export class SharedFolder extends HasProvider {
 						}
 					}
 				}
-			} catch (e) {
+			} catch {
 				// File might have been deleted - ignore
 			}
 
@@ -1792,7 +1792,7 @@ export class SharedFolder extends HasProvider {
 			// FIXME: race condition because sharedFolder doesn't use postie
 			// for notifyListener updates.
 			this._remote?.relay;
-		} catch (e) {
+		} catch {
 			return undefined;
 		}
 		return this._remote;
@@ -4939,7 +4939,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 					childGuids.add(docGuid);
 					childDbNames.add(`${this.appId}-relay-doc-${docGuid}`);
 				});
-			} catch (e) {
+			} catch {
 				// An unreadable folder doc bounds cleanup to the folder-level
 				// databases and the path- and folder-keyed records below.
 			} finally {
@@ -4959,7 +4959,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 				if (stateMeta.folder !== guid) continue;
 				void this._hsmStore.deleteState(stateMeta.guid).catch(() => {});
 			}
-		} catch (e) {
+		} catch {
 			// App-wide store unavailable; the databases below still fall.
 		}
 		try {
@@ -4971,7 +4971,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 				if (!entry.path.startsWith(prefix)) continue;
 				void this.hashStore.removeHash(entry.path).catch(() => {});
 			}
-		} catch (e) {
+		} catch {
 			// Hash store unavailable; the databases below still fall.
 		}
 		indexedDB.deleteDatabase(`${this.appId}-relay-folder-${guid}`);

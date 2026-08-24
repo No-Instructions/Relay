@@ -562,7 +562,7 @@ class FileStatusVisitor extends BaseVisitor<DocumentStatus> {
 				if (!(document instanceof Document)) return null;
 				if (!document) return null;
 				return storage || new DocumentStatus(item.el, document, file);
-			} catch (e) {
+			} catch {
 				// document doesn't exist yet...
 				return null;
 			}
@@ -687,7 +687,7 @@ class FileConflictVisitor extends BaseVisitor<FileConflictDecoration> {
 					storage.destroy();
 				}
 				return this.createDecoration(item.selfEl, sharedFolder, guid);
-			} catch (e) {
+			} catch {
 				if (storage) storage.destroy();
 				return null;
 			}
@@ -732,7 +732,7 @@ class FileExplorerWalker {
 		try {
 			//@ts-expect-error this is a private API
 			return this.fileExplorer.view.fileItems[path];
-		} catch (e) {
+		} catch {
 			return null;
 		}
 	}
