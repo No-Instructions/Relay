@@ -1,5 +1,3 @@
-import type { EventRef } from "obsidian";
-
 export interface User {
 	id: string;
 	name: string;
