@@ -74,7 +74,7 @@ export class LocalAuthStore extends BaseAuthStore {
 			const rawValue = window.localStorage.getItem(key) || "";
 			try {
 				return JSON.parse(rawValue);
-			} catch (e) {
+			} catch {
 				// not a json
 				return rawValue;
 			}
