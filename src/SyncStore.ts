@@ -723,7 +723,7 @@ export class SyncStore extends Observable<SyncStore> {
 		super.destroy();
 		this.overlay.clear();
 		this.deleteSet.clear();
-		this.legacyIds = null as any;
-		this.meta = null as any;
+		this.legacyIds = null as unknown as typeof this.legacyIds;
+		this.meta = null as unknown as typeof this.meta;
 	}
 }

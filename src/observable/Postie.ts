@@ -497,7 +497,7 @@ export class PostOffice {
 		PostOffice._destroyed = true;
 		if (PostOffice.instance) {
 			// Clear all mailboxes
-			PostOffice.instance.mailboxes = null as any;
+			PostOffice.instance.mailboxes = null as unknown as typeof PostOffice.instance.mailboxes;
 
 			// Clear mail logs
 			PostOffice.instance.allMailLog = [];
@@ -505,7 +505,7 @@ export class PostOffice {
 
 			// Cancel any pending delivery
 			PostOffice.instance.timeProvider.destroy();
-			PostOffice.instance.timeProvider = null as any;
+			PostOffice.instance.timeProvider = null as unknown as typeof PostOffice.instance.timeProvider;
 
 			// Tear down the continuation port so a queued macrotask cannot fire on
 			// the destroyed singleton and the port stops keeping a headless event

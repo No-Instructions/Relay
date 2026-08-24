@@ -1499,15 +1499,15 @@ export class MergeManager {
 
     // These callbacks close over SharedFolder and related plugin services.
     // Clear them so a retained MergeManager shell does not pin the folder graph.
-    this._getVaultId = null as any;
-    this._getDocument = null as any;
-    this.timeProvider = null as any;
+    this._getVaultId = null as unknown as typeof this._getVaultId;
+    this._getDocument = null as unknown as typeof this._getDocument;
+    this.timeProvider = null as unknown as typeof this.timeProvider;
     this.hashFn = undefined;
     this.loadAllStates = undefined;
     this.onEffect = undefined;
     this.getDiskState = undefined;
     this.loadState = undefined;
-    this.createPersistence = null as any;
+    this.createPersistence = null as unknown as typeof this.createPersistence;
     this.getPersistenceMetadata = undefined;
     this._yaml = null;
     this._onTransition = undefined;

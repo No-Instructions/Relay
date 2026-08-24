@@ -49,8 +49,8 @@ export class AddToVaultModal extends Modal {
 		const { contentEl } = this;
 		contentEl.empty();
 		this.component?.$destroy();
-		this.onConfirm = null as any;
-		this.sharedFolders = null as any;
+		this.onConfirm = null as unknown as typeof this.onConfirm;
+		this.sharedFolders = null as unknown as typeof this.sharedFolders;
 		this.remoteFolder = undefined;
 		this.availableFolders.length = 0;
 	}

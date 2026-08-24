@@ -1334,12 +1334,12 @@ export class Document
 		// Note: super.destroy() calls destroyRemoteDoc() which handles ydoc cleanup.
 		// Do NOT call this.ydoc.destroy() here — it would trigger lazy creation.
 		this.whenSyncedPromise?.destroy();
-		this.whenSyncedPromise = null as any;
+		this.whenSyncedPromise = null;
 		this.readyPromise?.destroy();
-		this.readyPromise = null as any;
+		this.readyPromise = null as unknown as typeof this.readyPromise;
 		this._forkReconcileConnectPromise = null;
 		this._hsm = null;
-		this._parent = null as any;
+		this._parent = null as unknown as typeof this._parent;
 	}
 
 	public async read(): Promise<string> {

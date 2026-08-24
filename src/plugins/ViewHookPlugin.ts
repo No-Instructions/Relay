@@ -321,8 +321,8 @@ export class ViewHookPlugin extends HasLogging {
 		this.renderers.length = 0;
 
 		// Clear references
-		this._ytext = null as any;
-		this.view = null as any;
-		this.document = null as any;
+		this._ytext = null;
+		this.view = null as unknown as typeof this.view;
+		this.document = null as unknown as typeof this.document;
 	}
 }

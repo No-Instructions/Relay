@@ -274,7 +274,7 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 
 	override destroy(): void {
 		super.destroy();
-		this.loginManager = null as any;
-		this.deviceId = null as any;
+		this.loginManager = null as unknown as typeof this.loginManager;
+		this.deviceId = null as unknown as typeof this.deviceId;
 	}
 }

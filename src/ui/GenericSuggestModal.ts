@@ -38,8 +38,8 @@ export class GenericSuggestModal<T> extends Modal {
 	}
 
 	destroy() {
-		this.onSelect = null as any;
-		this.componentProps = null as any;
-		this.ComponentClass = null as any;
+		this.onSelect = null as unknown as typeof this.onSelect;
+		this.componentProps = null as unknown as typeof this.componentProps;
+		this.ComponentClass = null as unknown as typeof this.ComponentClass;
 	}
 }

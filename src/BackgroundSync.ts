@@ -1510,7 +1510,7 @@ export class BackgroundSync extends HasLogging {
 		if (existing) return existing;
 
 		const state: FolderSyncSnapshotSubscription = {
-			smoother: null as any,
+			smoother: null as unknown as FolderSyncSnapshotSmoother,
 			subscribers: new Set(),
 			latestSnapshot: null,
 			unsubscribers: [],
@@ -1648,8 +1648,8 @@ export class BackgroundSync extends HasLogging {
 		this.queueStatusChanged.destroy();
 
 		// Clean up references
-		this.loginManager = null as any;
-		this.timeProvider = null as any;
+		this.loginManager = null as unknown as typeof this.loginManager;
+		this.timeProvider = null as unknown as typeof this.timeProvider;
 
 		// Unsubscribe from all subscriptions
 		this.subscriptions.forEach((off) => off());

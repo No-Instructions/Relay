@@ -252,6 +252,6 @@ export class AwarenessViewPlugin extends HasLogging {
 		}
 
 		this.setPositioningParent(null);
-		this.host = null as any;
+		this.host = null as unknown as typeof this.host;
 	}
 }

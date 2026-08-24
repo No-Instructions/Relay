@@ -253,7 +253,7 @@ export class Settings<T> extends Observable<T> {
 	override destroy() {
 		if (this.destroyed) return;
 		super.destroy();
-		this.data = null as any;
+		this.data = null as unknown as typeof this.data;
 		this._loaded = false;
 		(this as any).storage = null;
 		(this as any).defaults = null;
