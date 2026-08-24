@@ -2,12 +2,15 @@
 
 // Resolve yjs paths dynamically so tests work in git worktrees where
 // node_modules may live in a parent directory rather than <rootDir>.
-const path = require("path");
+import path from "node:path";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
 const yjsDir = path.dirname(require.resolve("yjs/package.json"));
 const yjsIndex = path.join(yjsDir, "src/index.js");
 const yjsInternals = path.join(yjsDir, "src/internals.js");
 
-module.exports = {
+export default {
 	preset: "ts-jest/presets/default-esm",
 	moduleNameMapper: {
 		"^(\\.{1,2}/.*)\\.js$": "$1",
