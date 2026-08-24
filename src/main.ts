@@ -72,7 +72,7 @@ import {
 	detachSyncStatusViews,
 	openSyncStatusView,
 } from "./ui/SyncStatusView";
-import { NamespacedSettings, Settings } from "./SettingsStorage";
+import { type SettingsTree, NamespacedSettings, Settings } from "./SettingsStorage";
 import { ObsidianFileAdapter, ObsidianNotifier } from "./debugObsididan";
 import { BugReportModal } from "./ui/BugReportModal";
 import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
@@ -590,17 +590,15 @@ export default class Live extends Plugin {
 		this.settings = new Settings(this, DEFAULT_SETTINGS);
 		await this.settings.load();
 
-		this.featureSettings = new NamespacedSettings(this.settings, "(enable*)");
-		this.debugSettings = new NamespacedSettings(this.settings, "(debugging)");
-		this.folderSettings = new NamespacedSettings(
-			this.settings,
-			"sharedFolders",
-		);
-		this.releaseSettings = new NamespacedSettings(this.settings, "release");
-		this.loginSettings = new NamespacedSettings(this.settings, "login");
-		this.endpointSettings = new NamespacedSettings(this.settings, "endpoints");
+		const settingsTree = this.settings as unknown as SettingsTree;
+		this.featureSettings = new NamespacedSettings(settingsTree, "(enable*)");
+		this.debugSettings = new NamespacedSettings(settingsTree, "(debugging)");
+		this.folderSettings = new NamespacedSettings(settingsTree, "sharedFolders");
+		this.releaseSettings = new NamespacedSettings(settingsTree, "release");
+		this.loginSettings = new NamespacedSettings(settingsTree, "login");
+		this.endpointSettings = new NamespacedSettings(settingsTree, "endpoints");
 		this.pluginRegistrySettings = new NamespacedSettings(
-			this.settings,
+			settingsTree,
 			"plugins",
 		);
 
@@ -1142,7 +1140,7 @@ export default class Live extends Plugin {
 
 		// Initialize settings with pattern matching syntax
 		const folderSettings = new NamespacedSettings<SharedFolderSettings>(
-			this.settings,
+			this.settings as unknown as SettingsTree,
 			`sharedFolders/[guid=${guid}]`,
 		);
 		const settings: SharedFolderSettings = { guid: guid, path: path };

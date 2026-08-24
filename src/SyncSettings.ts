@@ -1,4 +1,4 @@
-import { NamespacedSettings, Settings } from "./SettingsStorage";
+import { NamespacedSettings, type SettingsTree } from "./SettingsStorage";
 
 export interface SyncCategory {
 	enabled: boolean;
@@ -104,7 +104,7 @@ export class SyncSettingsManager extends NamespacedSettings<
 	) as Record<keyof SyncFlags, boolean>;
 
 	constructor(
-		settings: Settings<Record<keyof SyncFlags, boolean>>,
+		settings: SettingsTree,
 		path: string,
 		public enabled = true,
 	) {
