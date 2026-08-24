@@ -158,7 +158,7 @@ export interface ISettingsStorage {
 }
 
 export class ObsidianSettingsStorage implements ISettingsStorage {
-	constructor(private plugin: StorageAdapter<any>) {}
+	constructor(private plugin: StorageAdapter<unknown>) {}
 
 	getData<T>(): T {
 		return this.plugin.loadData() as T;
@@ -176,7 +176,7 @@ export class ObsidianSettingsStorage implements ISettingsStorage {
 }
 
 export class MemorySettingsStorage implements ISettingsStorage {
-	private data: any = null;
+	private data: unknown = null;
 
 	getData<T>(): T {
 		return this.data as T;
@@ -260,9 +260,11 @@ export class Settings<T> extends Observable<T> {
 	}
 }
 
+export type SettingsTree = Settings<Record<string, unknown>>;
+
 export class NamespacedSettings<
-	T extends Record<string, any>,
-	Parent extends Record<string, any> = Record<string, any>,
+	T extends object,
+	Parent extends Record<string, unknown> = Record<string, unknown>,
 > extends Observable<T> {
 	private readonly path: string[];
 	private readonly basePath: string[];
@@ -271,7 +273,7 @@ export class NamespacedSettings<
 	private lastKnown?: T;
 
 	constructor(
-		public readonly settings: Settings<any>,
+		public readonly settings: SettingsTree,
 		namespace: string,
 	) {
 		super(`NamespacedSettings[${namespace}]`);
@@ -335,7 +337,9 @@ export class NamespacedSettings<
 			return {} as T;
 		}
 
-		const wildcardPattern = this.patterns.find(this.isWildcardPattern);
+		const wildcardPattern = this.patterns.find((pattern): pattern is WildcardPattern =>
+			this.isWildcardPattern(pattern),
+		);
 		if (wildcardPattern && this.path.length === 1) {
 			const regex = new RegExp(`^${wildcardPattern.wildcardPattern}$`);
 			const filtered = Object.entries(data)
@@ -345,7 +349,7 @@ export class NamespacedSettings<
 						obj[key] = value;
 						return obj;
 					},
-					{} as Record<string, any>,
+					{} as Record<string, unknown>,
 				);
 			return filtered as T;
 		}
@@ -369,7 +373,9 @@ export class NamespacedSettings<
 
 		try {
 			await this.settings.update((data) => {
-				const wildcardPattern = this.patterns.find(this.isWildcardPattern);
+				const wildcardPattern = this.patterns.find((pattern): pattern is WildcardPattern =>
+			this.isWildcardPattern(pattern),
+		);
 				if (wildcardPattern) {
 					if (this.path.length === 1) {
 						const regex = new RegExp(`^${wildcardPattern.wildcardPattern}$`);
@@ -387,7 +393,7 @@ export class NamespacedSettings<
 
 					this.path.forEach((key) => {
 						current[key] = current[key] || {};
-						current = current[key];
+						current = current[key] as Record<string, unknown>;
 					});
 
 					const regex = new RegExp(`^${wildcardPattern.wildcardPattern}$`);
@@ -475,22 +481,24 @@ export class NamespacedSettings<
 		return [path, basePath, patterns];
 	}
 
-	private getNestedValue(obj: Record<string, any>): T | undefined {
-		let current = obj;
+	private getNestedValue(obj: Record<string, unknown>): T | undefined {
+		let current: unknown = obj;
 
 		// Special case: if we have a wildcard pattern at this level
-		const wildcardPattern = this.patterns.find(this.isWildcardPattern);
+		const wildcardPattern = this.patterns.find((pattern): pattern is WildcardPattern =>
+			this.isWildcardPattern(pattern),
+		);
 		if (wildcardPattern && this.path.length === 1) {
 			const regex = new RegExp(`^${wildcardPattern.wildcardPattern}$`);
 			// Filter the object entries based on the wildcard pattern
-			const filtered = Object.entries(current)
+			const filtered = Object.entries(obj)
 				.filter(([key]) => regex.test(key))
 				.reduce(
 					(obj, [key, value]) => {
 						obj[key] = value;
 						return obj;
 					},
-					{} as Record<string, any>,
+					{} as Record<string, unknown>,
 				);
 			return filtered as T;
 		}
@@ -499,11 +507,11 @@ export class NamespacedSettings<
 		const firstPattern = this.patterns[0];
 		if (firstPattern?.type === "arrayMatch") {
 			const baseKey = this.basePath[0];
-			if (!Array.isArray(current[baseKey])) return undefined;
+			const entries = obj[baseKey];
+			if (!Array.isArray(entries)) return undefined;
 
-			const matchedItem = current[baseKey].find(
-				(item: Record<string, any>) =>
-					item[firstPattern.key] === firstPattern.value,
+			const matchedItem = (entries as Record<string, unknown>[]).find(
+				(item) => item[firstPattern.key] === firstPattern.value,
 			);
 
 			if (!matchedItem) return undefined;
@@ -511,10 +519,10 @@ export class NamespacedSettings<
 			// Handle remaining path after array pattern
 			const remainingPath = this.basePath.slice(firstPattern.level + 1);
 			if (remainingPath.length > 0) {
-				let result = matchedItem;
+				let result: unknown = matchedItem;
 				for (const key of remainingPath) {
 					if (!result || typeof result !== "object") return undefined;
-					result = result[key];
+					result = (result as Record<string, unknown>)[key];
 				}
 				return result as T;
 			}
@@ -525,16 +533,16 @@ export class NamespacedSettings<
 		// Handle regular nested paths
 		for (let i = 0; i < this.basePath.length; i++) {
 			if (!current) return undefined;
-			current = current[this.basePath[i]];
+			current = (current as Record<string, unknown>)[this.basePath[i]];
 		}
 
 		return current as T;
 	}
 
 	private setNestedValue(
-		obj: Record<string, any>,
+		obj: Record<string, unknown>,
 		value: T,
-	): Record<string, any> {
+	): Record<string, unknown> {
 		const result = { ...obj };
 
 		// Handle array pattern matching
@@ -546,10 +554,10 @@ export class NamespacedSettings<
 			if (!result[baseKey]) {
 				result[baseKey] = [];
 			}
+			const entries = result[baseKey] as Record<string, unknown>[];
 
-			const index = result[baseKey].findIndex(
-				(item: Record<string, any>) =>
-					item[arrayPattern.key] === arrayPattern.value,
+			const index = entries.findIndex(
+				(item) => item[arrayPattern.key] === arrayPattern.value,
 			);
 
 			// Get the remaining path after the array pattern
@@ -559,18 +567,18 @@ export class NamespacedSettings<
 				// Update existing item
 				if (remainingPath.length > 0) {
 					// Handle nested properties in array item
-					let current = result[baseKey][index];
+					let current = entries[index];
 					for (let i = 0; i < remainingPath.length - 1; i++) {
 						const key = remainingPath[i];
 						current[key] = current[key] || {};
-						current = current[key];
+						current = current[key] as Record<string, unknown>;
 					}
 					const lastKey = remainingPath[remainingPath.length - 1];
 					current[lastKey] = value;
 				} else {
 					// Update root level of array item
-					result[baseKey][index] = {
-						...result[baseKey][index],
+					entries[index] = {
+						...entries[index],
 						...value,
 						[arrayPattern.key]: arrayPattern.value,
 					};
@@ -579,21 +587,21 @@ export class NamespacedSettings<
 				// Add new item
 				if (remainingPath.length > 0) {
 					// Handle nested properties in new array item
-					const newItem: Record<string, any> = {
+					const newItem: Record<string, unknown> = {
 						[arrayPattern.key]: arrayPattern.value,
 					};
-					let current: Record<string, any> = newItem;
+					let current: Record<string, unknown> = newItem;
 					for (let i = 0; i < remainingPath.length - 1; i++) {
 						const key = remainingPath[i];
 						current[key] = {};
-						current = current[key];
+						current = current[key] as Record<string, unknown>;
 					}
 					const lastKey = remainingPath[remainingPath.length - 1];
 					current[lastKey] = value;
-					result[baseKey].push(newItem);
+					entries.push(newItem);
 				} else {
 					// Add new item at root level
-					result[baseKey].push({
+					entries.push({
 						...value,
 						[arrayPattern.key]: arrayPattern.value,
 					});
@@ -603,11 +611,11 @@ export class NamespacedSettings<
 		}
 
 		// Handle regular nested paths
-		let current = result;
+		let current: Record<string, unknown> = result;
 		for (let i = 0; i < this.basePath.length - 1; i++) {
 			const baseKey = this.basePath[i];
 			current[baseKey] = current[baseKey] || {};
-			current = current[baseKey];
+			current = current[baseKey] as Record<string, unknown>;
 		}
 
 		const lastKey = this.basePath[this.basePath.length - 1];
@@ -626,11 +634,11 @@ export class NamespacedSettings<
 	}
 
 	getChild<
-		C extends Record<string, any>,
+		C extends object,
 		R extends NamespacedSettings<C> = NamespacedSettings<C>,
 	>(
 		childPath: string,
-		factory?: (settings: Settings<any>, path: string) => R,
+		factory?: (settings: SettingsTree, path: string) => R,
 	): R {
 		const fullPath = [...this.path, childPath].join("/");
 		if (factory) {
@@ -668,13 +676,14 @@ export class NamespacedSettings<
 
 			if (arrayPattern) {
 				const baseKey = this.basePath[0];
-				if (Array.isArray(result[baseKey])) {
-					result[baseKey] = result[baseKey].filter(
-						(item: Record<string, any>) =>
-							item[arrayPattern.key] !== arrayPattern.value,
+				const entries = result[baseKey];
+				if (Array.isArray(entries)) {
+					const filtered = (entries as Record<string, unknown>[]).filter(
+						(item) => item[arrayPattern.key] !== arrayPattern.value,
 					);
+					result[baseKey] = filtered;
 
-					if (result[baseKey].length === 0) {
+					if (filtered.length === 0) {
 						delete result[baseKey];
 					}
 				}
@@ -687,7 +696,7 @@ export class NamespacedSettings<
 
 			for (const key of keys) {
 				if (!current[key]) return result;
-				current = current[key];
+				current = current[key] as Record<string, unknown>;
 			}
 
 			const lastKey = this.basePath[this.basePath.length - 1];
