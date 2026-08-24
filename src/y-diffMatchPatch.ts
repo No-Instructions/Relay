@@ -7,13 +7,13 @@ import { normalizeNoteText } from "./diskText";
 export function diffMatchPatch(
 	ydoc: Y.Doc,
 	diskBuffer: string,
-	origin?: any,
+	origin?: unknown,
 ): void {
 	// Get the YText from the YDoc
 	const ytext = ydoc.getText("contents");
 
 	// Get the current content of the YText
-	const currentContent = ytext.toString();
+	const currentContent = ytext.toJSON();
 
 	// The CRDT holds note text with canonical LF line endings; normalize the
 	// incoming buffer so a CRLF disk read does not diff as a change on every
@@ -34,7 +34,7 @@ export function diffMatchPatch(
 
 	const log = flags().enableDeltaLogging
 		? curryLog("[diffMatchPatch]", "debug")
-		: (...args: any) => {};
+		: (...args: unknown[]) => {};
 
 	// Log the overall change
 	log("Updating YDoc:");
@@ -63,12 +63,12 @@ export function diffMatchPatch(
 					ytext.delete(cursor, text.length);
 					break;
 			}
-			log("intermediate", ytext.toString());
+			log("intermediate", ytext.toJSON());
 		}
 	}, origin);
 
-	log("result", ytext.toString());
+	log("result", ytext.toJSON());
 
 	// Log the final state
-	log("Update complete. New content length:", ytext.toString().length);
+	log("Update complete. New content length:", ytext.toJSON().length);
 }

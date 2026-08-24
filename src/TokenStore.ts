@@ -437,7 +437,7 @@ export class TokenStore<TokenType extends HasToken> {
 			friendlyName: friendlyName,
 			expiryTime: 0,
 			attempts: existing?.attempts ?? 0,
-		} as TokenInfo<TokenType>);
+		});
 		this.callbacks.set(documentId, callback);
 		const sharedPromise = this.onRefresh(documentId)
 			.then((newToken: TokenType) => {

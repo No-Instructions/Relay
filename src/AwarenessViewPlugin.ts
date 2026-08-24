@@ -75,9 +75,9 @@ export class AwarenessViewPlugin extends HasLogging {
 	private awarenessElement?: HTMLElement;
 	private positioningParent?: HTMLElement;
 	private addedPositioningClass = false;
-	private relayUsersStore: any;
+	private relayUsersStore: unknown;
 
-	constructor(host: AwarenessHost, relayUsersStore: any) {
+	constructor(host: AwarenessHost, relayUsersStore: unknown) {
 		super();
 		this.host = host;
 		this.relayUsersStore = relayUsersStore;

@@ -792,7 +792,7 @@ export class HasProvider extends HasLogging {
 		const off = () => {
 			this._provider?.off("connection-close", f);
 		};
-		return { on, off } as Subscription;
+		return { on, off };
 	}
 
 	protected providerStateSubscription(
@@ -816,13 +816,13 @@ export class HasProvider extends HasLogging {
 		const off = () => {
 			this._provider?.off("synced", f);
 		};
-		return { on, off } as Subscription;
+		return { on, off };
 	}
 
 	destroy() {
 		this._offLoginManager?.();
 		this._offLoginManager = null;
 		this.destroyRemoteDoc();
-		this.loginManager = null as any;
+		this.loginManager = null as unknown as typeof this.loginManager;
 	}
 }

@@ -1573,7 +1573,7 @@ export class BackgroundSync extends HasLogging {
 		this.queueStatusChanged.notifyListeners();
 		this.drainAll();
 	}
-	start = this.resume;
+	start = (): void => this.resume();
 
 	/**
 	 * Gets the current status of the lanes

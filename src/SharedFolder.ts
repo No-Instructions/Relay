@@ -1791,7 +1791,7 @@ export class SharedFolder extends HasProvider {
 		try {
 			// FIXME: race condition because sharedFolder doesn't use postie
 			// for notifyListener updates.
-			this._remote?.relay;
+			void this._remote?.relay;
 		} catch {
 			return undefined;
 		}
@@ -1989,7 +1989,7 @@ export class SharedFolder extends HasProvider {
 			await this.mkdir(dir);
 			diffLog?.push(`creating directory ${dir}`);
 		}
-		if (meta.type === "markdown") {
+		if (meta.type === SyncType.Document) {
 			diffLog?.push(`creating local .md file for remotely added doc ${vpath}`);
 			const doc = await this.downloadDoc(vpath);
 			if (!doc) {
@@ -1999,14 +1999,14 @@ export class SharedFolder extends HasProvider {
 			}
 			return doc;
 		}
-		if (meta.type === "canvas") {
+		if (meta.type === SyncType.Canvas) {
 			diffLog?.push(
 				`created local .canvas file for remotely added canvas ${vpath}`,
 			);
 			const canvas = await this.downloadCanvas(vpath, false);
 			return canvas;
 		}
-		if (meta.type === "folder") {
+		if (meta.type === SyncType.Folder) {
 			diffLog?.push(`created local folder for remotely added folder ${vpath}`);
 			return this.getSyncFolder(vpath);
 		}
@@ -3629,13 +3629,13 @@ export class SharedFolder extends HasProvider {
 			// File exists in sync store but not loaded - check its type from metadata
 			const meta = this.syncStore.getMeta(vpath);
 			if (meta) {
-				if (meta.type === "markdown") {
+				if (meta.type === SyncType.Document) {
 					return this.getDoc(vpath);
 				}
-				if (meta.type === "canvas") {
+				if (meta.type === SyncType.Canvas) {
 					return this.getCanvas(vpath);
 				}
-				if (meta.type === "folder") {
+				if (meta.type === SyncType.Folder) {
 					return this.getSyncFolder(vpath);
 				}
 				// Default to sync file for other types

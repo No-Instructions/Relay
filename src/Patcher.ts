@@ -42,7 +42,10 @@ export class Patcher extends HasLogging {
 	 * Create a monkeypatch and register its cleanup function
 	 * Prevents duplicate patches of the same method on the same instance
 	 */
-	patch<T extends Record<string, any>>(target: T, patches: any): () => void {
+	patch<T extends object>(
+		target: T,
+		patches: Record<string, unknown>,
+	): () => void {
 		const existingMethods = this.patchedMethods.get(target) || new Set();
 		const requestedMethods = Object.keys(patches);
 		
@@ -53,10 +56,10 @@ export class Patcher extends HasLogging {
 			this.warn(`Methods [${conflicts.join(', ')}] already patched on ${target.constructor?.name}, skipping duplicates`);
 			
 			// Only patch non-conflicting methods
-			const safePatch: any = {};
+			const safePatch: Record<string, unknown> = {};
 			requestedMethods
 				.filter(method => !conflicts.includes(method))
-				.forEach(method => safePatch[method] = patches[method]);
+				.forEach((method) => (safePatch[method] = patches[method]));
 			
 			if (Object.keys(safePatch).length === 0) {
 				this.debug("All methods conflicted, returning no-op unsubscriber");
@@ -70,7 +73,10 @@ export class Patcher extends HasLogging {
 		this.patchedMethods.set(target, newMethodSet);
 		
 		// Apply patch
-		const unsubscribe = around(target, patches);
+		const unsubscribe = around(
+			target as unknown as Record<string, unknown>,
+			patches as Parameters<typeof around>[1],
+		);
 		this.unsubscribes.push(unsubscribe);
 		
 		// Also store on window for debugging
