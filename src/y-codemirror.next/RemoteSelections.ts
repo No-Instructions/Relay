@@ -165,7 +165,7 @@ type AwarenessChangeEvent = {
 
 type AwarenessChangeHandler = (
 	event: AwarenessChangeEvent,
-	origin: any, // The type of origin can be very broad, depending on what triggered the change.
+	origin: unknown, // The type of origin can be very broad, depending on what triggered the change.
 	awareness: Awareness,
 ) => void;
 

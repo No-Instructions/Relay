@@ -8,7 +8,7 @@
 import { BaseAuthStore, type AuthModel } from "pocketbase";
 
 export class LocalAuthStore extends BaseAuthStore {
-	private storageFallback: { [key: string]: any } = {};
+	private storageFallback: { [key: string]: unknown } = {};
 	private storageKey: string;
 
 	constructor(storageKey = "pocketbase_auth") {
@@ -22,7 +22,10 @@ export class LocalAuthStore extends BaseAuthStore {
 	 * @inheritdoc
 	 */
 	get token(): string {
-		const data = this._storageGet(this.storageKey) || {};
+		const data = (this._storageGet(this.storageKey) || {}) as {
+			token?: string;
+			model?: AuthModel;
+		};
 
 		return data.token || "";
 	}
@@ -31,7 +34,10 @@ export class LocalAuthStore extends BaseAuthStore {
 	 * @inheritdoc
 	 */
 	get model(): AuthModel {
-		const data = this._storageGet(this.storageKey) || {};
+		const data = (this._storageGet(this.storageKey) || {}) as {
+			token?: string;
+			model?: AuthModel;
+		};
 
 		return data.model || null;
 	}
@@ -69,7 +75,7 @@ export class LocalAuthStore extends BaseAuthStore {
 	 * Retrieves `key` from the browser's local storage
 	 * (or runtime/memory if local storage is undefined).
 	 */
-	private _storageGet(key: string): any {
+	private _storageGet(key: string): unknown {
 		if (typeof window !== "undefined" && window?.localStorage) {
 			const rawValue = window.localStorage.getItem(key) || "";
 			try {
@@ -88,14 +94,14 @@ export class LocalAuthStore extends BaseAuthStore {
 	 * Stores a new data in the browser's local storage
 	 * (or runtime/memory if local storage is undefined).
 	 */
-	private _storageSet(key: string, value: any) {
+	private _storageSet(key: string, value: unknown) {
 		if (typeof window !== "undefined" && window?.localStorage) {
 			// store in local storage
 			let normalizedVal = value;
 			if (typeof value !== "string") {
 				normalizedVal = JSON.stringify(value);
 			}
-			window.localStorage.setItem(key, normalizedVal);
+			window.localStorage.setItem(key, normalizedVal as string);
 		} else {
 			// store in fallback
 			this.storageFallback[key] = value;
@@ -120,7 +126,10 @@ export class LocalAuthStore extends BaseAuthStore {
 			return;
 		}
 
-		const data = this._storageGet(this.storageKey) || {};
+		const data = (this._storageGet(this.storageKey) || {}) as {
+			token?: string;
+			model?: AuthModel;
+		};
 
 		super.save(data.token || "", data.model || null);
 	};

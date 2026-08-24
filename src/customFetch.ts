@@ -215,7 +215,7 @@ export const customFetch = async (
 	const startMs = getNowMs();
 	try {
 		response = await obsidianRequestUrl(requestParams);
-	} catch (error: any) {
+	} catch (error) {
 		recordRequestMetrics({
 			domain,
 			method,
@@ -224,7 +224,11 @@ export const customFetch = async (
 			result: "error",
 		});
 		// Handle Electron networking errors gracefully to prevent complete networking failure
-		if (error?.message?.includes("net::ERR_FAILED")) {
+		if (
+			(error as { message?: string } | undefined)?.message?.includes(
+				"net::ERR_FAILED",
+			)
+		) {
 			// Return a proper error response instead of throwing
 			return new Response(JSON.stringify({ error: "Network request failed" }), {
 				status: 503,
@@ -258,7 +262,7 @@ export const customFetch = async (
 
 	// Add json method to the response
 	const json = async () => {
-		return JSON.parse(response!.text);
+		return JSON.parse(response.text);
 	};
 	Object.defineProperty(fetchResponse, "json", {
 		value: json,

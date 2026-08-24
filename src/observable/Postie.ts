@@ -46,13 +46,21 @@ export interface Mail<T> {
 	recipientOrigin?: string;
 }
 
+export interface MailLogEntry {
+	sender: { observableName?: string; constructor: { name: string } };
+	recipient: { name: string };
+	transactionId: number;
+	timestamp: number;
+	recipientOrigin?: string;
+}
+
 export class PostOffice {
 	private static _destroyed: boolean = false;
 	private static instance: PostOffice;
-	private mailboxes: Map<(value: any) => void, Set<IObservable<any>>> =
+	private mailboxes: Map<(value: never) => void, Set<IObservable<unknown>>> =
 		new Map();
-	private allMailLog: Mail<any>[] = [];
-	private deliveredMailLog: Mail<any>[] = [];
+	private allMailLog: MailLogEntry[] = [];
+	private deliveredMailLog: MailLogEntry[] = [];
 	private isDelivering: boolean = false;
 	private deadlineTimer: number | null = null;
 	private windowStartedAt: number | null = null;
@@ -360,7 +368,7 @@ export class PostOffice {
 					return;
 				}
 				try {
-					recipient(sender);
+					(recipient as (value: IObservable<unknown>) => void)(sender);
 					metrics.incPostieDeliveries();
 					// Per-delivery diagnostics are opt-in behind the debug flag:
 					// building a mail-log entry stringifies the recipient closure
@@ -404,14 +412,14 @@ export class PostOffice {
 		return false;
 	}
 
-	private deleteMailboxIfEmpty(recipient: (value: any) => void): void {
+	private deleteMailboxIfEmpty(recipient: (value: never) => void): void {
 		const senders = this.mailboxes.get(recipient);
 		if (senders && senders.size === 0) {
 			this.mailboxes.delete(recipient);
 		}
 	}
 
-	private recordMail(logArray: Mail<any>[], mail: Mail<any>): void {
+	private recordMail(logArray: MailLogEntry[], mail: MailLogEntry): void {
 		logArray.push(mail);
 		// Trim in batches (drop to the cap only after growing to 2x) so the hot
 		// path stays amortized O(1) rather than O(n) on every push.
@@ -420,11 +428,11 @@ export class PostOffice {
 		}
 	}
 
-	getAllMailLog(): Mail<any>[] {
+	getAllMailLog(): MailLogEntry[] {
 		return [...this.allMailLog];
 	}
 
-	getDeliveredMailLog(): Mail<any>[] {
+	getDeliveredMailLog(): MailLogEntry[] {
 		return [...this.deliveredMailLog];
 	}
 
@@ -440,7 +448,7 @@ export class PostOffice {
 		);
 	}
 
-	private prettyPrintMailLog(log: Mail<any>[]): string {
+	private prettyPrintMailLog(log: MailLogEntry[]): string {
 		let text = "";
 		const _log = (msg: string) => {
 			text += `${msg}\n`;
@@ -461,7 +469,7 @@ export class PostOffice {
 		return text;
 	}
 
-	getFunctionOrigin(func: (...args: any[]) => any): string {
+	getFunctionOrigin(func: (...args: never[]) => unknown): string {
 		// If the function has a name, return it
 		if (func.name) {
 			return func.name;
@@ -529,7 +537,7 @@ export class PostOffice {
 			PostOffice._destroyed = true;
 
 			// Remove the singleton instance
-			PostOffice.instance = undefined as any;
+			PostOffice.instance = undefined as unknown as typeof PostOffice.instance;
 		}
 	}
 
@@ -549,7 +557,7 @@ export class PostOffice {
 			}
 		}
 		PostOffice._destroyed = false;
-		PostOffice.instance = undefined as any;
+		PostOffice.instance = undefined as unknown as typeof PostOffice.instance;
 		if (timeProvider) {
 			PostOffice.instance = new PostOffice(timeProvider);
 			if (maxFlushMs !== undefined) {

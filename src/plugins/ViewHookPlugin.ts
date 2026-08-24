@@ -115,8 +115,8 @@ export class ViewHookPlugin extends HasLogging {
 		this.unsubscribes.push(
 			getPatcher().patch(view, {
 				// @ts-ignore
-				saveFrontmatter(old: any) {
-					return function (data: any) {
+				saveFrontmatter(old: unknown) {
+					return function (data: unknown) {
 						that.debug("saveFrontmatter hook triggered");
 						that.document.hsm?.send({
 							type: 'OBSIDIAN_SAVE_FRONTMATTER',
@@ -136,7 +136,7 @@ export class ViewHookPlugin extends HasLogging {
 		this.unsubscribes.push(
 			getPatcher().patch(view, {
 				// @ts-ignore
-				save(old: any) {
+				save(old: unknown) {
 					return function (this: any, ...args: any[]) {
 						// @ts-ignore
 						const result = old.apply(this, args);
@@ -164,8 +164,8 @@ export class ViewHookPlugin extends HasLogging {
 
 		// Hook 3: Preview mode direct edits.
 		this.unsubscribes.push(
-			getPatcher().patch(view.previewMode as any, {
-				edit(old: any) {
+			getPatcher().patch(view.previewMode as unknown as Record<string, unknown>, {
+				edit(old: unknown) {
 					return function (data: string) {
 						that.debug("Preview edit hook triggered");
 						//@ts-ignore

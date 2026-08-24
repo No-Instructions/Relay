@@ -34,7 +34,7 @@ export class CanvasPlugin extends HasLogging {
 	unsubscribes: Array<() => void>;
 	relayCanvasView: RelayCanvasView;
 	observedTextNodes: Set<string>;
-	trackedEmbedViews: Set<any>;
+	trackedEmbedViews: Set<unknown>;
 	/**
 	 * True once the view's rendered data is known to belong to view.file.
 	 * Obsidian reuses canvas views across file switches: between the file
@@ -149,7 +149,7 @@ export class CanvasPlugin extends HasLogging {
 			const _textObserver = (event: Y.YTextEvent) => {
 				const node = this.canvas.nodes.get(nodeId);
 				if (node) {
-					node.setText(ytext.toString());
+					node.setText(ytext.toJSON());
 					this.canvas.markDirty(node);
 				}
 			};
@@ -177,7 +177,7 @@ export class CanvasPlugin extends HasLogging {
 		}
 	}
 
-	private isEmbedAlreadyTracked(embedView: any): boolean {
+	private isEmbedAlreadyTracked(embedView: unknown): boolean {
 		return this.trackedEmbedViews.has(embedView);
 	}
 
@@ -612,7 +612,7 @@ export class CanvasPlugin extends HasLogging {
 
 		this.unsubscribes.push(
 			getPatcher().patch(this.canvas, {
-				requestSave(old: any) {
+				requestSave(old: unknown) {
 					return function () {
 						const plugin = owner();
 						// @ts-ignore

@@ -255,7 +255,7 @@ export class Document
 				let log = "";
 				log += `Transaction origin: ${event.transaction.origin} ${event.transaction.origin?.constructor?.name}\n`;
 				for (const delta of event.changes.delta) {
-					log += `insert: ${delta.insert}\n\nretain: ${delta.retain}\n\ndelete: ${delta.delete}\n`;
+					log += `insert: ${String(delta.insert)}\n\nretain: ${delta.retain}\n\ndelete: ${delta.delete}\n`;
 				}
 				this.debug(log);
 			};
@@ -1016,7 +1016,7 @@ export class Document
 		if (!this.ytext) {
 			return "";
 		}
-		return this.ytext.toString();
+		return this.ytext.toJSON();
 	}
 
 	// ===========================================================================
@@ -1288,7 +1288,7 @@ export class Document
 		this.sendExternalDiskChange(observed);
 	}
 
-	requestSave = debounce(this.save, 2000);
+	requestSave = debounce(() => this.save(), 2000);
 
 	async markSynced(): Promise<void> {
 		return this.lifetime.guard(async () => {
