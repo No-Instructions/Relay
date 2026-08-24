@@ -78,7 +78,7 @@ import { BugReportModal } from "./ui/BugReportModal";
 import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
 
 import { UpdateManager } from "./UpdateManager";
-import type { PluginWithVersion, Release } from "./UpdateManager";
+import type { Release } from "./UpdateManager";
 import { ReleaseManager } from "./ui/ReleaseManager";
 import type { ReleaseSettings } from "./UpdateManager";
 import { SyncSettingsManager } from "./SyncSettings";
@@ -514,9 +514,9 @@ export default class Live extends Plugin {
 		// PostOffice deliveries, and other ghost-plugin symptoms. Loud
 		// error is the point — silent leaks used to manifest as
 		// flaky test runs days later.
-		const w = window as any;
+		const w = window as unknown as { __relayInstances?: Set<string> };
 		if (!w.__relayInstances) w.__relayInstances = new Set<string>();
-		const leaked: string[] = Array.from(w.__relayInstances);
+		const leaked: string[] = Array.from(w.__relayInstances ?? []);
 		if (leaked.length > 0) {
 			console.error(
 				`[Relay] leaked plugin instance(s) from a previous lifecycle: ${leaked.join(", ")}. ` +
@@ -526,9 +526,9 @@ export default class Live extends Plugin {
 			);
 		}
 		this._instanceId = Math.random().toString(36).slice(2, 10);
-		w.__relayInstances.add(this._instanceId);
+		w.__relayInstances?.add(this._instanceId);
 
-		this.appId = (this.app as any).appId;
+		this.appId = (this.app as unknown as { appId: string }).appId;
 		setPluginRequestConfig({ pluginId: this.manifest.id });
 		const start = moment.now();
 		RelayInstances.set(this, "plugin");
@@ -646,7 +646,7 @@ export default class Live extends Plugin {
 
 		// Initialize update manager
 		this.updateManager = new UpdateManager(
-			this as unknown as PluginWithVersion,
+			this,
 			this.timeProvider,
 			this.releaseSettings,
 		);
@@ -1237,7 +1237,18 @@ export default class Live extends Plugin {
 				return;
 			}
 
-			const webviewer = (this.app as any).internalPlugins?.plugins?.webviewer;
+			const webviewer = (
+				this.app as unknown as {
+					internalPlugins?: {
+						plugins?: {
+							webviewer?: {
+								instance?: { options?: Record<string, unknown> };
+								enabled?: boolean;
+							};
+						};
+					};
+				}
+			).internalPlugins?.plugins?.webviewer;
 			if (!webviewer?.instance?.options || !webviewer.enabled) {
 				this.warn("Webviewer plugin not found or not initialized");
 				return;
@@ -1257,7 +1268,9 @@ export default class Live extends Plugin {
 			Object.defineProperty(options, "openExternalURLs", {
 				get() {
 					const plugin = owner();
-					const currentEvent = window.event as any;
+					const currentEvent = window.event as unknown as
+						| { type?: string; detail?: { url?: string } }
+						| undefined;
 					if (currentEvent?.type === "open-url" && currentEvent?.detail?.url) {
 						const url = currentEvent.detail.url;
 						for (const pattern of plugin.interceptedUrls) {
@@ -1519,7 +1532,7 @@ export default class Live extends Plugin {
 
 		getPatcher().patch(MarkdownView.prototype, {
 			// When this is called, the active editors haven't yet updated.
-			onUnloadFile(old: any) {
+			onUnloadFile(old: unknown) {
 				return function (this: MarkdownView, file: TFile) {
 					if (file instanceof TFile) {
 						try {
@@ -1649,12 +1662,12 @@ export default class Live extends Plugin {
 		});
 
 		getPatcher().patch(this.app.vault, {
-			process(old: any) {
+			process(old: (...args: unknown[]) => unknown) {
 				return async function (
 					this: any,
 					tfile: any,
 					fn: (data: string) => string,
-					options: any,
+					options: unknown,
 				) {
 					try {
 						const folder = plugin.sharedFolders.lookup(tfile.path);
@@ -1667,7 +1680,7 @@ export default class Live extends Plugin {
 								}
 							}
 						}
-					} catch (e: any) {
+					} catch (e: unknown) {
 						plugin.log(e);
 					}
 
@@ -1706,13 +1719,13 @@ export default class Live extends Plugin {
 					old: (
 						file: TFile,
 						sourcePath: string,
-						omitMdExtension?: boolean | undefined,
+						omitMdExtension?: boolean,
 					) => string,
 				) {
 					return function (
 						file: TFile,
 						sourcePath: string,
-						omitMdExtension?: boolean | undefined,
+						omitMdExtension?: boolean,
 					) {
 						const folder = plugin.sharedFolders.lookup(file.path);
 						if (folder) {
@@ -1726,7 +1739,11 @@ export default class Live extends Plugin {
 									: file.name;
 							const normalizedFileName = normalizePath(file.name);
 							const destinationFiles = (
-								plugin.app.metadataCache as any
+								plugin.app.metadataCache as unknown as {
+					uniqueFileLookup: {
+						get(key: string): TFile[] | undefined;
+					};
+				}
 							).uniqueFileLookup.get(normalizedFileName.toLowerCase());
 
 							// If there are no conflicts (unique file), return the fileName
@@ -1796,7 +1813,15 @@ export default class Live extends Plugin {
 			// @ts-ignore
 			super.removeCommand(command);
 		} else {
-			const appAny = this.app as any;
+			const appAny = this.app as unknown as {
+				commands: {
+					commands: Record<string, unknown>;
+					editorCommands: Record<string, unknown>;
+				};
+				hotkeyManager: {
+					removeDefaultHotkeys(id: string): boolean;
+				};
+			};
 			const appCommands = appAny.commands;
 			const qualifiedCommand = `system3-relay:${command}`;
 			if (

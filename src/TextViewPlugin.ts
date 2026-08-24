@@ -244,8 +244,12 @@ export class TextFileViewPlugin extends HasLogging {
 
 		this.unsubscribes.push(
 			getPatcher().patch(this.view.view, {
-				setViewData(old: any) {
-					return function (this: any, data: string, clear: boolean) {
+				setViewData(old: (...args: unknown[]) => unknown) {
+					return function (
+						this: { getViewType(): string },
+						data: string,
+						clear: boolean,
+					) {
 						const plugin = owner();
 						plugin.warn("instance hook: setViewData", this.getViewType());
 
@@ -279,7 +283,7 @@ export class TextFileViewPlugin extends HasLogging {
 						return result;
 					};
 				},
-				requestSave(old: any) {
+				requestSave(old: (...args: unknown[]) => unknown) {
 					return function (this: any) {
 						const plugin = owner();
 						plugin.warn("instance hook: requestSave called", this.getViewType());

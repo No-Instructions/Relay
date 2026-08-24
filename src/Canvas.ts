@@ -189,8 +189,8 @@ export class Canvas
 		size: number;
 	};
 	unsubscribes: Unsubscriber[] = [];
-	private _awaitingUpdates: any;
-	private _canvas: any;
+	private _awaitingUpdates?: boolean;
+	private _canvas: unknown;
 
 	constructor(
 		path: string,

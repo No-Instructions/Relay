@@ -168,12 +168,7 @@ export class S3RN {
 			}
 			s3rn += `:file:${entity.fileId}`;
 
-			if (
-				"hash" in entity &&
-				entity.hash &&
-				"contentType" in entity &&
-				"contentLength" in entity
-			) {
+			if (entity instanceof S3RemoteBlob && entity.hash) {
 				if (!this.validateUUID(entity.fileId)) {
 					throw new Error("Invalid document UUID");
 				}

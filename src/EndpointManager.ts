@@ -91,7 +91,7 @@ function isLicense(obj: unknown): obj is License {
 	return typeof obj === 'object' && 
 		obj !== null && 
 		'license' in obj && 
-		typeof (obj as any).license === 'string';
+		typeof (obj as { license?: unknown }).license === 'string';
 }
 
 function isLicenseArray(data: unknown): data is License[] {
@@ -418,7 +418,7 @@ export class EndpointManager {
 		for (const lic of licenses) {
 			try {
 				// Decode the JWT to check if it matches our endpoint
-				const payload = decodeJwt(lic.license) as EndpointJWTPayload;
+				const payload = decodeJwt(lic.license);
 
 				// Check if this license is for the right endpoint type and URL
 				if (payload.endpointType === endpointType && payload.url === endpointUrl) {
@@ -520,7 +520,7 @@ export class EndpointManager {
 		// Check endpoint type
 		if (payload.endpointType !== endpointType) {
 			throw new ValidationError(
-				`License endpoint type mismatch: expected ${endpointType}, got ${payload.endpointType}`,
+				`License endpoint type mismatch: expected ${endpointType}, got ${String(payload.endpointType)}`,
 				ValidationErrorType.LICENSE_INVALID
 			);
 		}
@@ -528,7 +528,7 @@ export class EndpointManager {
 		// Check endpoint URL
 		if (payload.url !== endpointUrl) {
 			throw new ValidationError(
-				`License URL mismatch: expected ${endpointUrl}, got ${payload.url}`,
+				`License URL mismatch: expected ${endpointUrl}, got ${String(payload.url)}`,
 				ValidationErrorType.LICENSE_INVALID
 			);
 		}
@@ -544,7 +544,7 @@ export class EndpointManager {
 				algorithms: ['RS256'], // Explicitly only allow RS256
 			});
 			
-			return payload as EndpointJWTPayload;
+			return payload;
 		} catch (error) {
 			this.log("JWT verification failed:", error);
 			throw new ValidationError(

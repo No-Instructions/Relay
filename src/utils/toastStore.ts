@@ -58,28 +58,35 @@ export function showServerToast(
  * Parse server error response and show appropriate toast
  * Example: HTTP 403 with custom message from server
  */
+interface ServerErrorLike {
+	status?: number;
+	message?: string;
+	body?: { message?: string; details?: string };
+}
+
 export function handleServerError(
-	error: any,
+	error: unknown,
 	fallbackMessage: string = "An error occurred",
 ) {
 	const key = `server-error-${Date.now()}`;
+	const err = (error ?? {}) as ServerErrorLike;
 
-	if (error.status === 403) {
+	if (err.status === 403) {
 		// Server sent permission denial
 		const serverMessage =
-			error.body?.message || error.message || "Permission denied";
-		const serverDetails = error.body?.details;
+			err.body?.message || err.message || "Permission denied";
+		const serverDetails = err.body?.details;
 		showServerToast(key, serverMessage, serverDetails, "error", 7000);
-	} else if (error.status >= 400 && error.status < 500) {
+	} else if (err.status !== undefined && err.status >= 400 && err.status < 500) {
 		// Client error with potential server message
 		const serverMessage =
-			error.body?.message || error.message || fallbackMessage;
+			err.body?.message || err.message || fallbackMessage;
 		showServerToast(key, serverMessage, undefined, "error", 5000);
-	} else if (error.status >= 500) {
+	} else if (err.status !== undefined && err.status >= 500) {
 		// Server error
-		showServerToast(key, "Server error occurred", error.message, "error", 8000);
+		showServerToast(key, "Server error occurred", err.message, "error", 8000);
 	} else {
 		// Unknown error
-		showServerToast(key, fallbackMessage, error.message, "error", 5000);
+		showServerToast(key, fallbackMessage, err.message, "error", 5000);
 	}
 }
