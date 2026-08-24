@@ -146,7 +146,7 @@ messageHandlers[messageEvent] = (
 	const cborData = decoding.readUint8Array(decoder, cborLength);
 
 	try {
-		const eventMessage = decodeCBOR(cborData);
+		const eventMessage = decodeCBOR(cborData) as EventMessage;
 
 		// Only process if we're subscribed to this event type
 		if (provider.eventSubscriptions.has(eventMessage.event_type)) {
@@ -297,7 +297,11 @@ const setupWS = (provider: YSweetProvider) => {
 				return;
 			}
 			provider.wsLastMessageReceived = time.getUnixTime();
-			const encoder = readMessage(provider, new Uint8Array(event.data), true);
+			const encoder = readMessage(
+				provider,
+				new Uint8Array(event.data as ArrayBuffer),
+				true,
+			);
 			if (encoding.length(encoder) > 1) {
 				websocket.send(encoding.toUint8Array(encoder));
 			}
@@ -476,7 +480,7 @@ export interface EventMessage {
 	doc_id: string;
 	timestamp: number;
 	user?: string;
-	metadata?: Record<string, any>;
+	metadata?: Record<string, unknown>;
 	update?: Uint8Array;
 }
 
@@ -615,15 +619,18 @@ export class YSweetProvider extends Observable<string> {
 	wsConnectStartTime: number;
 	shouldConnect: boolean;
 	_resyncInterval: ReturnType<typeof setInterval> | number; // TODO: is setting this to 0 used as null?
-	_bcSubscriber: (...args: any[]) => any;
+	_bcSubscriber: (data: ArrayBuffer, origin: unknown) => void;
 	_updateHandler: (
-		arg0: Uint8Array,
-		arg1: any,
-		arg2: Y.Doc,
-		arg3: Y.Transaction,
+		update: Uint8Array,
+		origin: unknown,
+		doc: Y.Doc,
+		tr: Y.Transaction,
 	) => void;
-	_awarenessUpdateHandler: (...args: any[]) => any;
-	_unloadHandler: (...args: any[]) => any;
+	_awarenessUpdateHandler: (
+		changes: { added: number[]; updated: number[]; removed: number[] },
+		origin: unknown,
+	) => void;
+	_unloadHandler: () => void;
 	_checkInterval: ReturnType<typeof setInterval> | number;
 	_reconnectTimeout: ReturnType<typeof setTimeout> | null;
 	/** Timer that marks a held connection healthy and resets the backoff. */
@@ -766,7 +773,7 @@ export class YSweetProvider extends Observable<string> {
 			}, resyncInterval);
 		}
 
-		this._bcSubscriber = (data: ArrayBuffer, origin: any) => {
+		this._bcSubscriber = (data: ArrayBuffer, origin: unknown) => {
 			if (origin !== this) {
 				const encoder = readMessage(this, new Uint8Array(data), false);
 				if (encoding.length(encoder) > 1) {
@@ -778,7 +785,7 @@ export class YSweetProvider extends Observable<string> {
 		/**
 		 * Listens to Yjs updates and sends them to remote peers (ws and broadcastchannel)
 		 */
-		this._updateHandler = (update: Uint8Array, origin: any) => {
+		this._updateHandler = (update: Uint8Array, origin: unknown) => {
 			if (origin !== this) {
 				if (this.readOnly) {
 					return;
@@ -793,7 +800,7 @@ export class YSweetProvider extends Observable<string> {
 			}
 		};
 
-		this.doc.on("update", this._updateHandler as any);
+		this.doc.on("update", this._updateHandler);
 
 		// TODO: I think we can get more specific with the array types.
 		// They are not documented here so we need to do some digging.
@@ -803,8 +810,8 @@ export class YSweetProvider extends Observable<string> {
 				added,
 				updated,
 				removed,
-			}: { added: Array<any>; updated: Array<any>; removed: Array<any> },
-			_origin: any,
+			}: { added: Array<number>; updated: Array<number>; removed: Array<number> },
+			_origin: unknown,
 		) => {
 			if (this.readOnly) {
 				return;
@@ -831,9 +838,9 @@ export class YSweetProvider extends Observable<string> {
 		};
 
 		if (typeof window !== "undefined") {
-			window.addEventListener("unload", this._unloadHandler as any);
+			window.addEventListener("unload", this._unloadHandler);
 		} else if (typeof process !== "undefined") {
-			process.on("exit", this._unloadHandler as any);
+			process.on("exit", this._unloadHandler);
 		}
 
 		awareness.on("update", this._awarenessUpdateHandler);
@@ -909,7 +916,7 @@ export class YSweetProvider extends Observable<string> {
 	/**
 	 * Override once to handle race condition where synced event already fired
 	 */
-	once(name: string, f: (...args: any[]) => void) {
+	once(name: string, f: (...args: unknown[]) => void) {
 		if (name === "synced" && this._synced) {
 			queueMicrotask(() => {
 				if (this._synced) f(this._synced);
@@ -984,10 +991,10 @@ export class YSweetProvider extends Observable<string> {
 		this.lastSubdocIndex = null;
 
 		if (typeof window !== "undefined") {
-			window.removeEventListener("unload", this._unloadHandler as any);
+			window.removeEventListener("unload", this._unloadHandler);
 			window.clearInterval(this.awareness._checkInterval);
 		} else if (typeof process !== "undefined") {
-			process.off("exit", this._unloadHandler as any);
+			process.off("exit", this._unloadHandler);
 		}
 		this.awareness.off("update", this._awarenessUpdateHandler);
 		this.doc.off("update", this._updateHandler);
@@ -999,7 +1006,7 @@ export class YSweetProvider extends Observable<string> {
 			return;
 		}
 		if (!this.bcconnected) {
-			bc.subscribe(this.bcChannel, this._bcSubscriber as any);
+			bc.subscribe(this.bcChannel, this._bcSubscriber);
 			this.bcconnected = true;
 		}
 		// send sync step1 to bc
@@ -1042,7 +1049,7 @@ export class YSweetProvider extends Observable<string> {
 	disconnectBc() {
 		if (this.readOnly) {
 			if (this.bcconnected) {
-				bc.unsubscribe(this.bcChannel, this._bcSubscriber as any);
+				bc.unsubscribe(this.bcChannel, this._bcSubscriber);
 				this.bcconnected = false;
 			}
 			return;
@@ -1060,7 +1067,7 @@ export class YSweetProvider extends Observable<string> {
 		);
 		broadcastMessage(this, encoding.toUint8Array(encoder), false);
 		if (this.bcconnected) {
-			bc.unsubscribe(this.bcChannel, this._bcSubscriber as any);
+			bc.unsubscribe(this.bcChannel, this._bcSubscriber);
 			this.bcconnected = false;
 		}
 	}
