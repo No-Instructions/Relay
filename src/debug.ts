@@ -1,4 +1,10 @@
 import type { TimeProvider } from "./TimeProvider";
+import type { App, EventRef } from "obsidian";
+
+/** Render a thrown value for a log line. */
+export function describeError(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
 
 type LogLevel = "debug" | "warn" | "log" | "error";
 
@@ -238,7 +244,7 @@ function serializeArg(arg: unknown): string {
 			return redactSensitiveText(
 				JSON.stringify(
 					arg,
-					(key, value) => {
+					(key, value: unknown) => {
 						if (typeof value === "object" && value !== null) {
 							if (seen.has(value)) {
 								return "[Circular]";
@@ -968,8 +974,8 @@ class RelayMetrics {
  * Sets up event listener for tsdb:ready and checks if already available.
  */
 export function initializeMetrics(
-	app: any,
-	registerEvent: (eventRef: any) => void,
+	app: App,
+	registerEvent: (eventRef: EventRef) => void,
 	registerDomEvent?: (
 		el: Document,
 		type: "visibilitychange",
@@ -1016,7 +1022,10 @@ export function initializeMetrics(
 	}
 
 	// Also try to get it immediately in case the metrics plugin loaded first
-	const metricsPlugin = app.plugins?.plugins?.["tsdb"] as
+	const pluginRegistry = app as unknown as {
+		plugins?: { plugins?: Record<string, unknown> };
+	};
+	const metricsPlugin = pluginRegistry.plugins?.plugins?.["tsdb"] as
 		| ObsidianMetricsPlugin
 		| undefined;
 	if (metricsPlugin?.api) {
@@ -1228,7 +1237,7 @@ export async function getHSMBootEntries(): Promise<object[]> {
 
 			for (const line of lines) {
 				try {
-					const entry = JSON.parse(line);
+					const entry = JSON.parse(line) as { boot?: string };
 					if (entry.boot === hsmBootId) {
 						entries.push(entry);
 					}

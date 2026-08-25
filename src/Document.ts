@@ -1,4 +1,5 @@
 "use strict";
+import { describeOrigin } from "./merge-hsm/undo/origins";
 import { IndexeddbPersistence } from "./storage/y-indexeddb";
 import * as Y from "yjs";
 import { HasProvider } from "./HasProvider";
@@ -253,7 +254,7 @@ export class Document
 			if (!this.isRemoteDocLoaded) return;
 			const logObserver = (event: Y.YTextEvent) => {
 				let log = "";
-				log += `Transaction origin: ${event.transaction.origin} ${event.transaction.origin?.constructor?.name}\n`;
+				log += `Transaction origin: ${describeOrigin(event.transaction.origin)}\n`;
 				for (const delta of event.changes.delta) {
 					log += `insert: ${String(delta.insert)}\n\nretain: ${delta.retain}\n\ndelete: ${delta.delete}\n`;
 				}

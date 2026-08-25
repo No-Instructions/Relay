@@ -50,7 +50,7 @@ import {
   updateHasDeleteSet,
   type YjsSnapshot,
 } from './snapshots';
-import { curryLog } from '../debug';
+import { curryLog, describeError } from '../debug';
 import { trackPromise } from '../trackPromise';
 import { ResidencyPool, WakePriority } from './ResidencyPool';
 import type { HibernationState, WakeRequest } from './ResidencyPool';
@@ -684,7 +684,7 @@ export class MergeManager {
       try {
         listener(guid, path, info);
       } catch (error) {
-        this._error(`transition listener error for ${guid}: ${error}`);
+        this._error(`transition listener error for ${guid}: ${describeError(error)}`);
       }
     }
   }

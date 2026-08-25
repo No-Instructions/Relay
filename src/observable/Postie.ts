@@ -135,7 +135,7 @@ export class PostOffice {
 	 * Cancel any pending deliveries for a recipient.
 	 * Call this when unsubscribing to prevent stale notifications.
 	 */
-	cancel(recipient: (value: any) => void): void {
+	cancel(recipient: (value: never) => void): void {
 		this.mailboxes.delete(recipient);
 		// If that was the last pending mail, retire the coalescing window and any
 		// armed deadline so the next batch starts a fresh, full window rather than

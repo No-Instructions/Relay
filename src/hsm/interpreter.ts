@@ -225,7 +225,7 @@ function startInvoke<
 			if (controller.signal.aborted) return; // State exited while async was running
 			host.send({ type: `done.invoke.${src}`, data: result } as never);
 		})
-		.catch((error) => {
+		.catch((error: unknown) => {
 			if (controller.signal.aborted) return;
 			host.send({ type: `error.invoke.${src}`, data: error } as never);
 		});
@@ -288,7 +288,7 @@ export function startEffect<
 				data: result,
 			} as never);
 		})
-		.catch((error) => {
+		.catch((error: unknown) => {
 			if (controller.signal.aborted) return;
 			host.activeEffects.delete(effectId(kind, instance));
 			host.send({

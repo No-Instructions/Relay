@@ -26,7 +26,7 @@ export class EndpointConfigModal extends Modal {
 				},
 				onApply: () => {
 					this.close();
-					new Notice("Reload the Relay plugin to apply endpoint changes.", 8000);
+					new Notice("Reload the plugin to apply endpoint changes.", 8000);
 				},
 			},
 		});
