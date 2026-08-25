@@ -4,6 +4,11 @@ import type { MetadataCache } from "obsidian";
 import { Observable } from "./observable/Observable";
 import type { TimeProvider } from "./TimeProvider";
 
+/** The undocumented member of MetadataCache that holds its IndexedDB handle. */
+interface MetadataCacheInternals {
+	db?: IDBDatabase;
+}
+
 export type MetadataHealthStatus = "ok" | "metadata-db-locked";
 
 export interface MetadataHealthState {
@@ -61,7 +66,9 @@ export class MetadataHealth extends Observable<MetadataHealth> {
 
 	private inspect(): MetadataHealthState {
 		const checkedAt = this.timeProvider.now();
-		const db = (this.metadataCache as any)?.db;
+		const db = (
+			this.metadataCache as unknown as MetadataCacheInternals | undefined
+		)?.db;
 		if (!db || typeof db.transaction !== "function") {
 			return { ...OK_STATE, checkedAt };
 		}
