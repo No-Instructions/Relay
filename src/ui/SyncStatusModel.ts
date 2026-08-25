@@ -5,7 +5,7 @@ import {
 } from "../BackgroundSyncProgress";
 import type { SharedFolder } from "../SharedFolder";
 import { formatUserFacingError } from "../UserFacingError";
-import type { StatePath, SyncStatus } from "../merge-hsm/types";
+import type { SyncStatus } from "../merge-hsm/types";
 import type { MergeHSM } from "src/merge-hsm/MergeHSM";
 
 export type FileSyncUiStatus = "synced" | "syncing" | "conflict" | "error";
@@ -62,7 +62,7 @@ export interface FolderSyncStatusModel {
 }
 
 interface DeriveFileSyncStatusInput {
-	statePath?: StatePath | string;
+	statePath?: string;
 	syncStatus?: Pick<SyncStatus, "status"> | null;
 	hasConflictData?: boolean;
 	errorMessage?: string | null;
@@ -348,18 +348,18 @@ function getHsmErrorMessage(hsm: MergeHSM | null | undefined): string | null {
 function getBackgroundSyncFailures(
 	sharedFolder: SharedFolder,
 ): BackgroundSyncFailure[] {
-	const getFailures = sharedFolder.backgroundSync.getFailures;
-	if (typeof getFailures !== "function") return [];
-	return getFailures.call(sharedFolder.backgroundSync, sharedFolder);
+	const { backgroundSync } = sharedFolder;
+	if (typeof backgroundSync.getFailures !== "function") return [];
+	return backgroundSync.getFailures(sharedFolder);
 }
 
 function getFolderSyncSnapshot(
 	sharedFolder: SharedFolder,
 	queue: FolderQueueSnapshot,
 ): FolderSyncSnapshot {
-	const getSnapshot = sharedFolder.backgroundSync.getFolderSyncSnapshot;
-	if (typeof getSnapshot === "function") {
-		return getSnapshot.call(sharedFolder.backgroundSync, sharedFolder);
+	const { backgroundSync } = sharedFolder;
+	if (typeof backgroundSync.getFolderSyncSnapshot === "function") {
+		return backgroundSync.getFolderSyncSnapshot(sharedFolder);
 	}
 	return buildFolderSyncSnapshot({
 		group: null,

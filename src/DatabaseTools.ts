@@ -55,7 +55,8 @@ export async function analyzeIndexedDB(options: {
 
 				const dbAppId = await new Promise<string>((resolve) => {
 					const request = customStore.get("appId");
-					request.onsuccess = () => resolve(request.result || "");
+					request.onsuccess = () =>
+						resolve(typeof request.result === "string" ? request.result : "");
 				});
 
 				// Always count totals if it's a relay database structure
@@ -101,12 +102,14 @@ export async function analyzeIndexedDB(options: {
 					) {
 						const path = await new Promise<string>((resolve) => {
 							const request = customStore.get("path");
-							request.onsuccess = () => resolve(request.result || "");
+							request.onsuccess = () =>
+						resolve(typeof request.result === "string" ? request.result : "");
 						});
 
 						const relay = await new Promise<string>((resolve) => {
 							const request = customStore.get("relay");
-							request.onsuccess = () => resolve(request.result || "");
+							request.onsuccess = () =>
+						resolve(typeof request.result === "string" ? request.result : "");
 						});
 
 						const isLegacy = !dbInfo.name.startsWith(`${appId}-relay`);

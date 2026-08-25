@@ -23,7 +23,7 @@ class ActivityRingBuffer<T> {
 	private count = 0;
 
 	constructor(private readonly capacity: number) {
-		this.slots = new Array(capacity);
+		this.slots = new Array<T | undefined>(capacity);
 	}
 
 	push(entry: T): void {
@@ -254,7 +254,7 @@ export class SyncStatusActivityStore {
 		const awareness = this.sharedFolder._provider?.awareness;
 		if (awareness) {
 			for (const [, state] of awareness.getStates()) {
-				const user = state?.user;
+				const user = (state as { user?: { id?: string; name?: string } }).user;
 				if (user?.id === userId && user?.name) {
 					return user.name;
 				}
