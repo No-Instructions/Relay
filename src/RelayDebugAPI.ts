@@ -1069,7 +1069,7 @@ export class RelayDebugAPI {
 
       if (baseText !== before) {
         const patches = dmp.patch_make(baseText, content);
-        const [rebased, applied] = dmp.patch_apply(patches, before) as [string, boolean[]];
+        const [rebased, applied] = dmp.patch_apply(patches, before);
         if (!applied.every(Boolean)) {
           return { success: false, error: 'base snapshot patch no longer applies to editor' };
         }

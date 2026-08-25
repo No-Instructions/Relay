@@ -1844,7 +1844,8 @@ export default class Live extends Plugin {
 			const qualifiedCommand = `system3-relay:${command}`;
 			if (
 				// eslint-disable-next-line no-prototype-builtins -- Obsidian's command registry owns its command entries.
-				appCommands.commands.hasOwnProperty(qualifiedCommand) ||
+				appCommands.
+				commands.hasOwnProperty(qualifiedCommand) ||
 				appAny.hotkeyManager.removeDefaultHotkeys(qualifiedCommand)
 			) {
 				delete appCommands.commands[qualifiedCommand];

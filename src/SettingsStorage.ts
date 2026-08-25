@@ -546,9 +546,9 @@ export class NamespacedSettings<
 		const result = { ...obj };
 
 		// Handle array pattern matching
-		const arrayPattern = this.patterns.find((p) => p.type === "arrayMatch") as
-			| ArrayMatchPattern
-			| undefined;
+		const arrayPattern = this.patterns.find(
+			(p): p is ArrayMatchPattern => p.type === "arrayMatch",
+		);
 		if (arrayPattern) {
 			const baseKey = this.basePath[0];
 			if (!result[baseKey]) {
@@ -671,8 +671,8 @@ export class NamespacedSettings<
 
 			// Handle array pattern matching
 			const arrayPattern = this.patterns.find(
-				(p) => p.type === "arrayMatch",
-			) as ArrayMatchPattern | undefined;
+				(p): p is ArrayMatchPattern => p.type === "arrayMatch",
+			);
 
 			if (arrayPattern) {
 				const baseKey = this.basePath[0];

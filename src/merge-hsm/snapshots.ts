@@ -523,8 +523,6 @@ export function restoreTextAtSnapshot(
 
 // ---- Snapshot head construction and comparison ----
 
-type YDeleteSet = ConstructorParameters<typeof Y.Snapshot>[0];
-
 function encodeDecodedSnapshot(sv: DecodedSV, ds: DecodedDeleteSet): Uint8Array {
 	const clients = new Map<number, DeleteRange[]>();
 	for (const [client, ranges] of ds) {
@@ -534,7 +532,7 @@ function encodeDecodedSnapshot(sv: DecodedSV, ds: DecodedDeleteSet): Uint8Array 
 		);
 	}
 	return Y.encodeSnapshot(
-		new Y.Snapshot({ clients } as unknown as YDeleteSet, new Map(sv)),
+		new Y.Snapshot({ clients }, new Map(sv)),
 	);
 }
 

@@ -133,7 +133,7 @@ function parseCanvasData(raw: string): CanvasData | null {
 
 async function defaultHashFn(contents: string): Promise<string> {
 	const encoder = new TextEncoder();
-	return generateHash(encoder.encode(contents).buffer as ArrayBuffer);
+	return generateHash(encoder.encode(contents).buffer);
 }
 
 function freshContext(): CanvasContext {
@@ -601,7 +601,7 @@ export class CanvasHSM implements SyncMachine {
 			const mergedContents = this.config.formatData({
 				...parseCanvasExtras(raw),
 				...mergedData,
-			} as CanvasData);
+			});
 			return {
 				...base,
 				verdict: "ingest",
@@ -625,7 +625,7 @@ export class CanvasHSM implements SyncMachine {
 		const unionContents = this.config.formatData({
 			...parseCanvasExtras(raw),
 			...unionData,
-		} as CanvasData);
+		});
 		return {
 			...base,
 			verdict: "ingest",

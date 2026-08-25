@@ -902,7 +902,7 @@ export class Document
 			this._providerIntegration = new ProviderIntegration(
 				hsm,
 				remoteDoc,
-				this._provider! as YjsProvider,
+				this._provider!,
 				{ onSyncedRemoteHead: this.recordProviderSyncedRemoteHead },
 			);
 		} else {
@@ -1882,7 +1882,7 @@ export class Document
 		this._providerIntegration = new ProviderIntegration(
 			hsm,
 			remoteDoc,
-			this._provider as YjsProvider,
+			this._provider,
 			{ onSyncedRemoteHead: this.recordProviderSyncedRemoteHead },
 		);
 		return true;

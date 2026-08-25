@@ -45,7 +45,7 @@ export function resolveMarkdownAwarenessAnchor(
 ): AwarenessAnchor | null {
 	const modeRoot = containerEl.querySelector(
 		mode === "preview" ? ".markdown-reading-view" : ".markdown-source-view",
-	) as HTMLElement | null;
+	);
 	const inlineTitle = modeRoot?.querySelector(
 		".inline-title",
 	) as HTMLElement | null;
@@ -60,9 +60,7 @@ export function resolveMarkdownAwarenessAnchor(
 		return { anchor: modeContent, position: "afterbegin" };
 	}
 
-	const viewContent = containerEl.querySelector(
-		".view-content",
-	) as HTMLElement | null;
+	const viewContent = containerEl.querySelector<HTMLElement>(".view-content");
 	return viewContent
 		? { anchor: viewContent, position: "afterbegin" }
 		: null;

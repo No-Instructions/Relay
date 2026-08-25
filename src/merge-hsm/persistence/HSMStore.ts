@@ -212,7 +212,7 @@ export class HSMStore {
     return this._read<PersistedHSMRecord[]>([], async db => {
       const [store] = idb.transact(db, [STORES.states], 'readonly');
       const states = await idb.getAll(store);
-      return (states as unknown as PersistedHSMRecord[]) ?? [];
+      return (states) ?? [];
     });
   }
 

@@ -164,7 +164,7 @@ export function buildFolderSyncStatusModel(
 
 	for (const [guid, file] of sharedFolder.files) {
 		const hsm = (file as { hsm?: MergeHSM | null }).hsm;
-		const statePath = hsm?.statePath as StatePath | undefined;
+		const statePath = hsm?.statePath;
 		const syncStatus = hsm?.getSyncStatus();
 		const derived = deriveFileSyncStatus({
 			statePath,

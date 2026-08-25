@@ -294,7 +294,7 @@ type MergeEventDataPayload = {
 const dataOf = (event: MergeEvent): MergeEventDataPayload | undefined => {
 	const data = payload(event).data;
 	return typeof data === "object" && data !== null
-		? (data as MergeEventDataPayload)
+		? (data)
 		: undefined;
 };
 
@@ -1225,16 +1225,16 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	}
 
 	async getPersistenceServerSynced(): Promise<boolean> {
-		const persistence = this.localPersistence as
+		const persistence:
 			| (IYDocPersistence & { getServerSynced?: () => Promise<boolean> })
-			| null;
+			| null = this.localPersistence;
 		return (await persistence?.getServerSynced?.()) ?? false;
 	}
 
 	async markPersistenceServerSynced(): Promise<void> {
-		const persistence = this.localPersistence as
+		const persistence:
 			| (IYDocPersistence & { markServerSynced?: () => Promise<void> })
-			| null;
+			| null = this.localPersistence;
 		await persistence?.markServerSynced?.();
 	}
 
@@ -3430,7 +3430,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			// === Active entering/tracking actions ===
 			accumulateRemoteUpdate: (_hsm, event) => {
 				const update = payload(event).update as Uint8Array;
-				const affectsText = payload(event).affectsText as boolean | undefined;
+				const affectsText = payload(event).affectsText;
 				const existingIdx = this._accumulatedEvents.findIndex(
 					(e) => e.type === "REMOTE_UPDATE",
 				);
