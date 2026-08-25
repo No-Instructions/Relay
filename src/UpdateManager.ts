@@ -129,7 +129,7 @@ export class UpdateManager extends Observable<UpdateManager> {
 			throw new Error(`GitHub API error: ${response.status}`);
 		}
 
-		const releases = await response.json();
+		const releases = (await response.json()) as Release[];
 
 		if (flags().enableNetworkLogging) {
 			this.debug("GitHub releases fetched:", releases);
@@ -153,8 +153,7 @@ export class UpdateManager extends Observable<UpdateManager> {
 			if (!response.ok) {
 				throw new Error(`GitHub API error: ${response.status}`);
 			}
-			const latestRelease = await response.json();
-			return latestRelease;
+			return (await response.json()) as Release;
 		} catch (error) {
 			this.error(`Failed to fetch latest release:`, error);
 			return null;
@@ -334,7 +333,7 @@ export class UpdateManager extends Observable<UpdateManager> {
 			if (!response.ok) {
 				throw new Error("unable to fetch manifest");
 			}
-			return await response.json();
+			return (await response.json()) as Manifest;
 		} catch (error) {
 			this.error("Failed to fetch:", error);
 			return null;
@@ -368,7 +367,7 @@ export class UpdateManager extends Observable<UpdateManager> {
 				throw new Error(`Failed to fetch manifest asset: ${response.status}`);
 			}
 
-			const manifest = await response.json();
+			const manifest = (await response.json()) as Manifest;
 			if (flags().enableNetworkLogging) {
 				this.debug("manifest fetched:", manifest);
 			}

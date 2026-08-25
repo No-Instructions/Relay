@@ -154,7 +154,10 @@ export class ContentAddressedFileStore extends HasLogging {
 			const request = store.get(path);
 
 			request.onsuccess = () => {
-				resolve(request.result || null);
+				const record = request.result as
+					| { hash: string; modifiedAt: number; guid?: string }
+					| undefined;
+				resolve(record ?? null);
 			};
 
 			request.onerror = () => {

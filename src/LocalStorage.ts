@@ -65,7 +65,7 @@ export class LocalStorage<T> implements Map<string, T> {
 	public get(key: string): T | undefined {
 		const storageKey = this.fullKey(key);
 		const item = this.storage.getItem(storageKey);
-		return item ? JSON.parse(item) : undefined;
+		return item ? (JSON.parse(item) as T) : undefined;
 	}
 
 	public has(key: string): boolean {

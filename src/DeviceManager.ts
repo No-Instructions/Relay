@@ -118,9 +118,10 @@ export class DeviceManager extends Observable<DeviceManager> {
 				user: userId,
 			});
 			this.log("Created new device record:", deviceId);
-		} catch (e: any) {
+		} catch (e) {
 			// Record may already exist, try to update
-			if (e.status === 400 || e.status === 409) {
+			const status = (e as { status?: number }).status;
+			if (status === 400 || status === 409) {
 				try {
 					await pb.collection("devices").update(deviceId, {
 						platform: platform,
@@ -152,9 +153,10 @@ export class DeviceManager extends Observable<DeviceManager> {
 				user: userId,
 			});
 			this.log("Created new vault record:", vaultId);
-		} catch (e: any) {
+		} catch (e) {
 			// Record may already exist, try to update
-			if (e.status === 400 || e.status === 409) {
+			const status = (e as { status?: number }).status;
+			if (status === 400 || status === 409) {
 				try {
 					await pb.collection("vaults").update(vaultId, {
 						device: deviceId,
