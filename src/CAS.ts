@@ -88,7 +88,7 @@ export class ContentAddressedStore extends HasLogging {
 				);
 				throw await this.s3ResponseError(response, "download attachment url");
 			}
-			const responseJson = await response.json();
+			const responseJson = (await response.json()) as { downloadUrl: string };
 			const presignedUrl = responseJson.downloadUrl;
 			const downloadResponse = await this.s3Request(
 				() => customFetch(presignedUrl, { relayNetworkDomain: "external" }),
@@ -159,7 +159,7 @@ export class ContentAddressedStore extends HasLogging {
 		if (response.status !== 200) {
 			throw await this.s3ResponseError(response, "upload attachment url");
 		}
-		const responseJson = await response.json();
+		const responseJson = (await response.json()) as { uploadUrl: string };
 		const presignedUrl = responseJson.uploadUrl;
 		const uploadResponse = await this.s3Request(
 			() =>

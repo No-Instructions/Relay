@@ -303,8 +303,8 @@ export const customFetch = async (
 	});
 
 	// Add json method to the response
-	const json = async () => {
-		return JSON.parse(response.text);
+	const json = async (): Promise<unknown> => {
+		return JSON.parse(response.text) as unknown;
 	};
 	Object.defineProperty(fetchResponse, "json", {
 		value: json,
@@ -320,11 +320,11 @@ export const customFetch = async (
 					: "debug";
 		const response_text = response.text;
 
-		let response_json;
+		let response_json: unknown;
 		const contentType = response.headers["content-type"] || "";
 		if (!streamerMode && contentType.includes("application/json")) {
 			try {
-				response_json = JSON.parse(response_text);
+				response_json = JSON.parse(response_text) as unknown;
 			} catch {
 				// pass
 			}

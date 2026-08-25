@@ -76,5 +76,5 @@ export function decodeClientToken(token: string): ClientToken {
 		base64 += "=";
 	}
 	const jsonString = base64ToString(base64);
-	return JSON.parse(jsonString);
+	return JSON.parse(jsonString) as ClientToken;
 }

@@ -33,7 +33,7 @@ export function createProtectionProxy<T extends object>(
 				if (cached && cached.original === value) {
 					return cached.bound;
 				}
-				const bound = value.bind(target);
+				const bound: unknown = value.bind(target);
 				bindings.set(prop, { original: value, bound });
 				return bound;
 			}
