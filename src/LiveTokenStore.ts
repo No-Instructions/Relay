@@ -180,7 +180,7 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 					...existing,
 					token: newToken,
 					expiryTime,
-				} as TokenInfo<FileToken>);
+				});
 				return newToken;
 			})
 			.catch((err: Error) => {

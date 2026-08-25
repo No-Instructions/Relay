@@ -116,12 +116,12 @@ function refreshLeafViewForUnload(
 		mode?: string;
 	},
 ): void {
-	const rawLeaf = leaf as
+	const rawLeaf:
 		| (WorkspaceLeaf & {
 				view?: { getMode?: () => string };
 				rebuildView?: () => Promise<void>;
 			})
-		| undefined;
+		| undefined = leaf;
 	if (!rawLeaf) return;
 
 	const cleanup = (async () => {
@@ -329,7 +329,7 @@ export class RelayCanvasView implements S3View {
 				}
 				this._viewActions = mountComponent(ViewActions, {
 					target: viewActionsElement,
-					anchor: viewActionsElement.firstChild as Element,
+					anchor: viewActionsElement.firstChild,
 					props: {
 						view: this,
 						state: this.canvas.state,
@@ -397,18 +397,16 @@ export class RelayCanvasView implements S3View {
 					view: this.view,
 					doc: this.canvas,
 					resolveAnchor: (containerEl) => {
-						const viewContent = containerEl.querySelector(
-							".view-content",
-						) as HTMLElement | null;
+						const viewContent =
+							containerEl.querySelector<HTMLElement>(".view-content");
 						return viewContent
 							? { anchor: viewContent, position: "afterbegin" }
 							: null;
 					},
 					vertical: true,
 					configureContainer: (el) => {
-						const controls = viewEl.querySelector(
-							".canvas-controls",
-						) as HTMLElement | null;
+						const controls =
+							viewEl.querySelector<HTMLElement>(".canvas-controls");
 						const gap = 12;
 						const top = controls
 							? controls.offsetTop + controls.offsetHeight + gap
@@ -740,7 +738,7 @@ export class LiveView<ViewType extends TextFileView>
 				}
 				this._viewActions = mountComponent(ViewActions, {
 					target: viewActionsElement,
-					anchor: viewActionsElement.firstChild as Element,
+					anchor: viewActionsElement.firstChild,
 					props: {
 						view: this,
 						state: this.document.state,
@@ -873,7 +871,7 @@ export class LiveView<ViewType extends TextFileView>
 		if (!this._hasLock) {
 			this._parent.acquireDocumentLock(
 				this.document,
-				this.view as unknown as EditorViewRef,
+				this.view,
 				this.view.leaf ?? this._fallbackViewer,
 			);
 			this._hasLock = true;

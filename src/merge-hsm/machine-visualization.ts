@@ -53,7 +53,7 @@ export function toMermaid(machine: MachineDefinition): string {
 	}
 
 	// Initial state
-	lines.push(`  [*] --> ${mermaidId("unloaded" as StatePath)}`);
+	lines.push(`  [*] --> ${mermaidId("unloaded")}`);
 
 	// Edges
 	for (const edge of edges) {

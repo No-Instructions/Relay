@@ -40,7 +40,7 @@ type EditorConnectionManager = {
 };
 
 function getConnectionManager(editor: EditorView): EditorConnectionManager | null {
-  return getLiveViews(editor) as EditorConnectionManager | null;
+  return getLiveViews(editor);
 }
 
 /**

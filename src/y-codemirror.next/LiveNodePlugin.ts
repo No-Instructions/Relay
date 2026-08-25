@@ -29,7 +29,7 @@ type LiveViewManagerBridge = {
 };
 
 function getConnectionManager(editor: EditorView): LiveViewManagerBridge | null {
-	return getLiveViews(editor) as LiveViewManagerBridge | null;
+	return getLiveViews(editor);
 }
 
 export class LiveNodePluginValue implements PluginValue {

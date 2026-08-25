@@ -76,7 +76,7 @@ export function adaptiveDiff3Merge(
 ): Diff3Region[] {
 	if (usesExactKernel(Math.max(a.length, o.length, b.length))) {
 		try {
-			return diff3Merge(a, o, b) as Diff3Region[];
+			return diff3Merge(a, o, b);
 		} catch (error) {
 			// Exact kernel crashed (prototype-colliding token); fall through.
 			if (!(error instanceof TypeError)) throw error;

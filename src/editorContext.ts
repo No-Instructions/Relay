@@ -32,10 +32,9 @@ export function getSharedFolders(editor: EditorView): SharedFolders | null {
 }
 
 export function getLiveViews(editor: EditorView): LiveViewManager | null {
-	return (
-		(getRelayPlugin(editor) as (RelayPlugin & { _liveViews?: LiveViewManager }) | null)
-			?._liveViews ?? null
-	);
+	const plugin: (RelayPlugin & { _liveViews?: LiveViewManager }) | null =
+		getRelayPlugin(editor);
+	return plugin?._liveViews ?? null;
 }
 
 export function getApp(editor: EditorView): App | null {
