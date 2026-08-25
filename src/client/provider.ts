@@ -12,7 +12,7 @@ import * as decoding from "lib0/decoding";
 import * as syncProtocol from "y-protocols/sync";
 import * as authProtocol from "y-protocols/auth";
 import * as awarenessProtocol from "y-protocols/awareness";
-import { Observable } from "lib0/observable";
+import { ObservableV2 } from "lib0/observable";
 import * as math from "lib0/math";
 import * as url from "lib0/url";
 import { decode as decodeCBOR } from "cbor-x";
@@ -474,6 +474,20 @@ export interface PermissionDeniedEvent {
 	reason: string;
 }
 
+/** The close details the provider reports, from a socket or its own disconnect. */
+export type CloseEventLike = Pick<CloseEvent, "code" | "reason" | "wasClean">;
+
+/** The events the provider emits, with each listener's signature. */
+export interface YSweetProviderEvents {
+	status: (state: ConnectionState) => void;
+	synced: (synced: boolean) => void;
+	sync: (synced: boolean) => void;
+	"connection-error": (error: unknown, provider: YSweetProvider) => void;
+	"connection-close": (event: CloseEventLike, provider: YSweetProvider) => void;
+	"permission-denied": (event: PermissionDeniedEvent) => void;
+	event: (message: EventMessage) => void;
+}
+
 export interface EventMessage {
 	event_id: string;
 	event_type: string;
@@ -596,9 +610,8 @@ function normalizeSubdocLastSeen(value: unknown): number | undefined {
  * import { YSweetProvider } from 'y-websocket'
  * const doc = new Y.Doc()
  * const provider = new YSweetProvider('http://localhost:1234', 'my-document-name', doc)
- * @extends {Observable<string>}
  */
-export class YSweetProvider extends Observable<string> {
+export class YSweetProvider extends ObservableV2<YSweetProviderEvents> {
 	maxBackoffTime: number;
 	bcChannel: string;
 	url: string;
@@ -914,14 +927,18 @@ export class YSweetProvider extends Observable<string> {
 	/**
 	 * Override once to handle race condition where synced event already fired
 	 */
-	once(name: string, f: (...args: unknown[]) => void) {
+	once<Name extends keyof YSweetProviderEvents>(
+		name: Name,
+		f: YSweetProviderEvents[Name],
+	): void {
 		if (name === "synced" && this._synced) {
+			const onSynced = f as YSweetProviderEvents["synced"];
 			queueMicrotask(() => {
-				if (this._synced) f(this._synced);
+				if (this._synced) onSynced(this._synced);
 			});
-			return this;
+			return;
 		}
-		return super.once(name, f);
+		super.once(name, f);
 	}
 
 	/**
@@ -990,7 +1007,10 @@ export class YSweetProvider extends Observable<string> {
 
 		if (typeof window !== "undefined") {
 			window.removeEventListener("unload", this._unloadHandler);
-			window.clearInterval(this.awareness._checkInterval);
+			const checkInterval: unknown = this.awareness._checkInterval;
+			if (typeof checkInterval === "number") {
+				window.clearInterval(checkInterval);
+			}
 		}
 		this.awareness.off("update", this._awarenessUpdateHandler);
 		this.doc.off("update", this._updateHandler);
