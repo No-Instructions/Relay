@@ -471,7 +471,7 @@ export class HasProvider extends HasLogging {
 
 	get intent(): ConnectionIntent {
 		if (!this._provider) {
-			return "disconnected" as ConnectionIntent;
+			return "disconnected";
 		}
 		return this._provider.intent;
 	}
@@ -780,7 +780,7 @@ export class HasProvider extends HasLogging {
 		const off = () => {
 			this._provider?.off("connection-error", f);
 		};
-		return { on, off } as Subscription;
+		return { on, off };
 	}
 
 	private providerConnectionCloseSubscription(
@@ -804,7 +804,7 @@ export class HasProvider extends HasLogging {
 		const off = () => {
 			this._provider?.off("status", f);
 		};
-		return { on, off } as Subscription;
+		return { on, off };
 	}
 
 	private providerSyncedSubscription(

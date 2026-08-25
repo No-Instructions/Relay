@@ -145,7 +145,7 @@ export function serializeEvent(event: MergeEvent): SerializableEvent {
     case 'PERSISTENCE_SYNCED':
     case 'MERGE_CONFLICT':
     case 'REMOTE_DOC_UPDATED':
-      return event as unknown as SerializableEvent;
+      return event;
 
     default:
       return event as unknown as SerializableEvent;
@@ -207,7 +207,7 @@ export function deserializeEvent(event: SerializableEvent): MergeEvent {
 
     // Events without binary data pass through
     default:
-      return event as MergeEvent;
+      return event;
   }
 }
 
@@ -244,7 +244,7 @@ export function serializeEffect(effect: MergeEffect): SerializableEffect {
     case 'DISPATCH_CM6':
     case 'SET_CM6':
     case 'WRITE_DISK':
-      return effect as unknown as SerializableEffect;
+      return effect;
 
     default:
       return effect as unknown as SerializableEffect;
@@ -277,7 +277,7 @@ export function deserializeEffect(effect: SerializableEffect): MergeEffect {
       };
 
     default:
-      return effect as MergeEffect;
+      return effect;
   }
 }
 

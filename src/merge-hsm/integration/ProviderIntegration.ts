@@ -232,8 +232,8 @@ export class ProviderIntegration {
   destroy(): void {
     // Unsubscribe from provider events
     this.provider.off('sync', this.onSync as (...args: unknown[]) => void);
-    this.provider.off('connection-close', this.onDisconnect as (...args: unknown[]) => void);
-    this.provider.off('connection-error', this.onError as (...args: unknown[]) => void);
+    this.provider.off('connection-close', this.onDisconnect);
+    this.provider.off('connection-error', this.onError);
 
     // Unobserve remoteDoc
     this.remoteDoc.off('update', this.onRemoteUpdate);

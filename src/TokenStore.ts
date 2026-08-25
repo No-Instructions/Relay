@@ -331,7 +331,7 @@ export class TokenStore<TokenType extends HasToken> {
 				token,
 				expiryTime,
 				refreshTime: this.timeProvider.now(),
-			} as TokenInfo<TokenType>);
+			});
 			if (callback) {
 				callback(token);
 			}
