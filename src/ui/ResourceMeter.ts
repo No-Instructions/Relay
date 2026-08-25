@@ -1,5 +1,6 @@
 import { Workspace, WorkspaceLeaf } from "obsidian";
 import ResourceMeterContent from "../components/ResourceMeterContent.svelte";
+import { mountComponent, type MountedComponent } from "./svelteHost.svelte";
 import { flags } from "../flagManager";
 import type { SharedFolders } from "../SharedFolder";
 
@@ -11,7 +12,7 @@ import type { SharedFolders } from "../SharedFolder";
  * Reads document hibernation pressure from SharedFolders' MergeManagers on each layout change.
  */
 export class ResourceMeterMount {
-	private component: ResourceMeterContent | null = null;
+	private component: MountedComponent | null = null;
 	private containerEl: HTMLElement | null = null;
 	private workspace: Workspace;
 	private sharedFolders: SharedFolders;
@@ -65,7 +66,7 @@ export class ResourceMeterMount {
 			const stats = folder.mergeManager.getWakeQueueStats();
 			folders.push({ name: folder.name, ...stats });
 		});
-		this.component?.$set({ folders });
+		this.component?.set({ folders });
 	}
 
 	private mount(): void {
@@ -84,7 +85,7 @@ export class ResourceMeterMount {
 		});
 		target.insertBefore(this.containerEl, target.firstChild);
 
-		this.component = new ResourceMeterContent({
+		this.component = mountComponent(ResourceMeterContent, {
 			target: this.containerEl,
 			props: {
 				label: "Hibernation stats",
@@ -94,7 +95,7 @@ export class ResourceMeterMount {
 	}
 
 	private unmount(): void {
-		this.component?.$destroy();
+		this.component?.destroy();
 		this.component = null;
 		this.containerEl?.remove();
 		this.containerEl = null;

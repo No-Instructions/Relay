@@ -12,6 +12,7 @@ import {
 	type CachedMetadata,
 } from "obsidian";
 import ViewActions from "src/components/ViewActions.svelte";
+import { mountComponent, type MountedComponent } from "src/ui/svelteHost.svelte";
 import * as Y from "yjs";
 import { Document, isDocument } from "./Document";
 import type { EditorViewRef } from "./merge-hsm/types";
@@ -252,7 +253,7 @@ export class RelayCanvasView implements S3View {
 	plugin?: CanvasPlugin;
 	document: Canvas;
 
-	private _viewActions?: ViewActions;
+	private _viewActions?: MountedComponent;
 	private offConnectionStatusSubscription?: () => void;
 	private _parent: LiveViewManager;
 	private _banner?: Banner;
@@ -326,7 +327,7 @@ export class RelayCanvasView implements S3View {
 				if (this.offConnectionStatusSubscription) {
 					this.offConnectionStatusSubscription();
 				}
-				this._viewActions = new ViewActions({
+				this._viewActions = mountComponent(ViewActions, {
 					target: viewActionsElement,
 					anchor: viewActionsElement.firstChild as Element,
 					props: {
@@ -340,7 +341,7 @@ export class RelayCanvasView implements S3View {
 				this.offConnectionStatusSubscription = this.canvas.subscribe(
 					viewActionsElement,
 					(state: ConnectionState) => {
-						this._viewActions?.$set({
+						this._viewActions?.set({
 							view: this,
 							state: state,
 							remote: this.canvas.sharedFolder.remote,
@@ -350,7 +351,7 @@ export class RelayCanvasView implements S3View {
 					},
 				);
 			}
-			this._viewActions.$set({
+			this._viewActions.set({
 				view: this,
 				state: this.canvas.state,
 				remote: this.canvas.sharedFolder.remote,
@@ -466,7 +467,7 @@ export class RelayCanvasView implements S3View {
 		this.plugin = undefined;
 		this._awarenessPlugin?.destroy();
 		this._awarenessPlugin = undefined;
-		this._viewActions?.$destroy();
+		this._viewActions?.destroy();
 		this._viewActions = undefined;
 		this._banner?.destroy();
 		this._banner = undefined;
@@ -511,7 +512,7 @@ export class LiveView<ViewType extends TextFileView>
 	private _plugin?: TextFileViewPlugin;
 	private _viewHookPlugin?: ViewHookPlugin;
 
-	private _viewActions?: ViewActions;
+	private _viewActions?: MountedComponent;
 	private offConnectionStatusSubscription?: () => void;
 	private _parent: LiveViewManager;
 	private _banner?: Banner;
@@ -737,7 +738,7 @@ export class LiveView<ViewType extends TextFileView>
 				if (this.offConnectionStatusSubscription) {
 					this.offConnectionStatusSubscription();
 				}
-				this._viewActions = new ViewActions({
+				this._viewActions = mountComponent(ViewActions, {
 					target: viewActionsElement,
 					anchor: viewActionsElement.firstChild as Element,
 					props: {
@@ -755,7 +756,7 @@ export class LiveView<ViewType extends TextFileView>
 				this.offConnectionStatusSubscription = this.document.subscribe(
 					viewActionsElement,
 					(state: ConnectionState) => {
-						this._viewActions?.$set({
+						this._viewActions?.set({
 							view: this,
 							state: state,
 							remote: this.document.sharedFolder.remote,
@@ -774,7 +775,7 @@ export class LiveView<ViewType extends TextFileView>
 			if (hsm && !this._hsmStateUnsubscribe) {
 				this._hsmStateUnsubscribe = hsm.stateChanges.subscribe((state) => {
 					if (!this.document.sharedFolder) return;
-					this._viewActions?.$set({
+					this._viewActions?.set({
 						tracking: state.statePath === "active.tracking",
 						localOnly: this.document.hsm?.isLocalOnly ?? false,
 						enableDraftMode: flags().enableDraftMode,
@@ -797,7 +798,7 @@ export class LiveView<ViewType extends TextFileView>
 					}
 				});
 			}
-			this._viewActions.$set({
+			this._viewActions.set({
 				view: this,
 				state: this.document.state,
 				remote: this.document.sharedFolder.remote,
@@ -974,7 +975,7 @@ export class LiveView<ViewType extends TextFileView>
 			this.view.containerEl.removeClass("relay-live-editor");
 		}
 
-		this._viewActions?.$destroy();
+		this._viewActions?.destroy();
 		this._viewActions = undefined;
 		this._banner?.destroy();
 		this._banner = undefined;

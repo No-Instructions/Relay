@@ -1,9 +1,10 @@
 import { Workspace } from "obsidian";
 import MetadataHealthNotice from "../components/MetadataHealthNotice.svelte";
+import { mountComponent, type MountedComponent } from "./svelteHost.svelte";
 import type { MetadataHealth } from "../MetadataHealth";
 
 export class MetadataHealthSidebarNoticeMount {
-	private component: MetadataHealthNotice | null = null;
+	private component: MountedComponent | null = null;
 	private containerEl: HTMLElement | null = null;
 	private offLayoutChange: (() => void) | null = null;
 	private refreshInterval: number | null = null;
@@ -55,7 +56,7 @@ export class MetadataHealthSidebarNoticeMount {
 		});
 		target.insertBefore(this.containerEl, vaultProfile);
 
-		this.component = new MetadataHealthNotice({
+		this.component = mountComponent(MetadataHealthNotice, {
 			target: this.containerEl,
 			props: {
 				metadataHealth: this.metadataHealth,
@@ -70,7 +71,7 @@ export class MetadataHealthSidebarNoticeMount {
 	}
 
 	private unmount(): void {
-		this.component?.$destroy();
+		this.component?.destroy();
 		this.component = null;
 		this.containerEl?.remove();
 		this.containerEl = null;

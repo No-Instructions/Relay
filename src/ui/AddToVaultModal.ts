@@ -1,10 +1,11 @@
 import { App, Modal } from "obsidian";
 import type { RemoteSharedFolder } from "src/Relay";
 import AddToVaultModalContent from "../components/AddToVaultModalContent.svelte";
+import { mountComponent, type MountedComponent } from "./svelteHost.svelte";
 import type { SharedFolder, SharedFolders } from "src/SharedFolder";
 
 export class AddToVaultModal extends Modal {
-	private component?: AddToVaultModalContent;
+	private component?: MountedComponent;
 
 	constructor(
 		app: App,
@@ -25,7 +26,7 @@ export class AddToVaultModal extends Modal {
 	onOpen() {
 		const { contentEl } = this;
 
-		this.component = new AddToVaultModalContent({
+		this.component = mountComponent(AddToVaultModalContent, {
 			target: contentEl,
 			props: {
 				remoteFolder: this.remoteFolder,
@@ -48,7 +49,7 @@ export class AddToVaultModal extends Modal {
 	onClose() {
 		const { contentEl } = this;
 		contentEl.empty();
-		this.component?.$destroy();
+		this.component?.destroy();
 		this.onConfirm = null as unknown as typeof this.onConfirm;
 		this.sharedFolders = null as unknown as typeof this.sharedFolders;
 		this.remoteFolder = undefined;

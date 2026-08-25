@@ -1,11 +1,13 @@
 import { App, Modal } from "obsidian";
+import type { Component } from "svelte";
+import { mountComponent, type MountedComponent } from "./svelteHost.svelte";
 
 export class GenericSuggestModal<T> extends Modal {
-	private component?: { $destroy(): void };
+	private component?: MountedComponent;
 
 	constructor(
 		app: App,
-		private ComponentClass: new (options: { target: Element; props: Record<string, unknown> }) => { $destroy(): void },
+		private content: Component<Record<string, unknown>>,
 		private componentProps: Record<string, unknown>,
 		private onSelect: (item: T) => void,
 	) {
@@ -20,7 +22,7 @@ export class GenericSuggestModal<T> extends Modal {
 		modalEl.addClass("relay-hidden-modal-wrapper");
 		const contentEl = modalContainer || modalEl;
 
-		this.component = new this.ComponentClass({
+		this.component = mountComponent(this.content, {
 			target: contentEl,
 			props: {
 				...this.componentProps,
@@ -34,12 +36,12 @@ export class GenericSuggestModal<T> extends Modal {
 	}
 
 	onClose() {
-		this.component?.$destroy();
+		this.component?.destroy();
 	}
 
 	destroy() {
 		this.onSelect = null as unknown as typeof this.onSelect;
 		this.componentProps = null as unknown as typeof this.componentProps;
-		this.ComponentClass = null as unknown as typeof this.ComponentClass;
+		this.content = null as unknown as typeof this.content;
 	}
 }
