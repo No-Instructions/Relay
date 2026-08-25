@@ -26,13 +26,8 @@ import type {
 
 /**
  * Encode a Uint8Array to base64 string.
- * Works in both Node.js and browser environments.
  */
 export function uint8ArrayToBase64(arr: Uint8Array): string {
-  if (typeof Buffer !== 'undefined') {
-    return Buffer.from(arr).toString('base64');
-  }
-  // Browser fallback
   let binary = '';
   const len = arr.byteLength;
   for (let i = 0; i < len; i++) {
@@ -43,13 +38,8 @@ export function uint8ArrayToBase64(arr: Uint8Array): string {
 
 /**
  * Decode a base64 string to Uint8Array.
- * Works in both Node.js and browser environments.
  */
 export function base64ToUint8Array(base64: string): Uint8Array {
-  if (typeof Buffer !== 'undefined') {
-    return new Uint8Array(Buffer.from(base64, 'base64'));
-  }
-  // Browser fallback
   const binary = atob(base64);
   const len = binary.length;
   const bytes = new Uint8Array(len);

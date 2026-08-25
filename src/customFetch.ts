@@ -4,6 +4,7 @@ import { Platform } from "obsidian";
 import type { RequestUrlParam, RequestUrlResponse } from "obsidian";
 import { curryLog, metrics, type NetworkDomain, type NetworkResult } from "./debug";
 import { flags } from "./flagManager";
+import EventSourcePolyfill from "eventsource";
 
 declare const GIT_TAG: string;
 declare const API_URL: string;
@@ -217,8 +218,7 @@ if (globalThis.EventSource === undefined) {
 		);
 	} else {
 		console.warn("[Relay] Polyfilling EventSource API");
-		// eslint-disable-next-line @typescript-eslint/no-require-imports -- Electron loads this fallback only when EventSource is unavailable.
-		globalThis.EventSource = require("eventsource");
+		globalThis.EventSource = EventSourcePolyfill as unknown as typeof EventSource;
 	}
 }
 

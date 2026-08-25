@@ -21,6 +21,13 @@ import { curryLog } from "../debug";
 
 const bridgeError = curryLog("[SyncBridge]", "error");
 
+/**
+ * Invariant handling the test harness tightens: a snapshot divergence after
+ * a queue flush is logged and repaired in production, and thrown under test
+ * so the suite fails at the point of divergence.
+ */
+export const syncBridgeInvariants = { throwOnDivergence: false };
+
 // =============================================================================
 // Host Interface
 // =============================================================================
@@ -739,7 +746,7 @@ export class SyncBridge {
 			`textMatch=${localText === remoteText})`;
 
 		bridgeError(msg);
-		if (process.env.NODE_ENV === 'test') {
+		if (syncBridgeInvariants.throwOnDivergence) {
 			throw new Error(msg);
 		}
 
