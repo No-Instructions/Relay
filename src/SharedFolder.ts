@@ -539,7 +539,7 @@ export class SharedFolder extends HasProvider {
 		// If folder is authoritative (local-only, not awaiting server updates),
 		// mark it as server synced so it's considered "ready" even after reload
 		if (this.authoritative) {
-			this._persistence.markServerSynced();
+			void this._persistence.markServerSynced();
 		}
 
 		// Connecting is deferred to startupConnect(), below: the disk scan
@@ -674,7 +674,7 @@ export class SharedFolder extends HasProvider {
 				if (this.destroyed) return;
 				await this.mergeManager.initialize();
 				if (this.destroyed) return;
-				this.syncFileTree();
+				void this.syncFileTree();
 			})
 			.catch((e) => this.error("folder ready failed", e));
 
@@ -716,10 +716,10 @@ export class SharedFolder extends HasProvider {
 				this.folderMachine.send({ type: "DISK_SCANNED" });
 				await this.syncFileTree();
 				try {
-					this._persistence.set("path", this.path);
-					this._persistence.set("relay", this.relayId || "");
-					this._persistence.set("appId", this.appId);
-					this._persistence.set("s3rn", S3RN.encode(this.s3rn));
+					void this._persistence.set("path", this.path);
+					void this._persistence.set("relay", this.relayId || "");
+					void this._persistence.set("appId", this.appId);
+					void this._persistence.set("s3rn", S3RN.encode(this.s3rn));
 				} catch {
 					// pass
 				}
@@ -1444,9 +1444,9 @@ export class SharedFolder extends HasProvider {
 			return token.token?.folder === this.guid;
 		});
 		if (shouldConnect) {
-			this.connect();
+			void this.connect();
 			reconnect.forEach((file) => {
-				file.connect();
+				void file.connect();
 			});
 		}
 		this._server = value;
@@ -1523,7 +1523,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	public set shouldConnect(connect: boolean) {
-		this._settings.update((current) => ({
+		void this._settings.update((current) => ({
 			...current,
 			connect,
 		}));
@@ -1537,7 +1537,7 @@ export class SharedFolder extends HasProvider {
 	public set localOnly(value: boolean) {
 		if (this._localOnly === value) return;
 		this._localOnly = value;
-		this._settings.update((current) => ({
+		void this._settings.update((current) => ({
 			...current,
 			localOnly: value,
 		}));
@@ -1595,7 +1595,7 @@ export class SharedFolder extends HasProvider {
 	/** Plan for an occasion and admit the result as one batch. */
 	private admitPlannedWork(occasion: PlanOccasion): number {
 		const requests = this.planSyncWork(occasion);
-		if (requests.length > 0) this.backgroundSync.admitAll(requests);
+		if (requests.length > 0) void this.backgroundSync.admitAll(requests);
 		return requests.length;
 	}
 
@@ -1699,7 +1699,7 @@ export class SharedFolder extends HasProvider {
 				this.warn("unable to persist remote activity", error);
 			});
 		trackAsyncCleanup(persist);
-		trackPromise(`folder:remoteActivityPersist:${this.guid}`, persist);
+		void trackPromise(`folder:remoteActivityPersist:${this.guid}`, persist);
 	}
 
 	private notifyRemoteActivitySubscribers(): void {
@@ -1829,7 +1829,7 @@ export class SharedFolder extends HasProvider {
 		this.s3rn = this.relayId
 			? new S3RemoteFolder(this.relayId, this.guid)
 			: new S3Folder(this.guid);
-		this._settings.update((current) => ({
+		void this._settings.update((current) => ({
 			...current,
 			...{ relay: this.relayId },
 		}));
@@ -2780,7 +2780,7 @@ export class SharedFolder extends HasProvider {
 				this.bootSnapshot = null;
 				this.folderMachine.send({ type: "INITIAL_RECONCILE_COMPLETE" });
 			});
-		trackPromise(`folder:initialReconcile:${this.guid}`, reconcile);
+		void trackPromise(`folder:initialReconcile:${this.guid}`, reconcile);
 	}
 
 	/**
@@ -3109,7 +3109,7 @@ export class SharedFolder extends HasProvider {
 			// not ours to enroll content into.
 			if (this.destroyed) return;
 			await file.enrollLocal(contents);
-			file.markOrigin("local");
+			void file.markOrigin("local");
 		}
 	}
 
@@ -3213,13 +3213,13 @@ export class SharedFolder extends HasProvider {
 				const ops: Operation[] = [];
 				const diffLog: string[] = [];
 
-				this.folderDoc.transact(async () => {
+				void this.folderDoc.transact(async () => {
 					// Sync folder operations first because renames/moves also affect files
 					this.syncStore.migrateUp();
 					this.syncByType(this.syncStore, diffLog, ops, [SyncType.Folder]);
 				}, this);
 				await Promise.all(ops.map((op) => op.promise));
-				this.folderDoc.transact(async () => {
+				void this.folderDoc.transact(async () => {
 					this.syncByType(
 						this.syncStore,
 						diffLog,
@@ -3296,7 +3296,7 @@ export class SharedFolder extends HasProvider {
 	move(path: string) {
 		this.path = path;
 		this.setLoggers(`[SharedFile](${this.path})`);
-		this._settings.update((current) => ({
+		void this._settings.update((current) => ({
 			...current,
 			path,
 		}));
@@ -3803,9 +3803,9 @@ export class SharedFolder extends HasProvider {
 			throw new Error(`called download on item that is not in ids ${vpath}`);
 		}
 		const canvas = this.getOrCreateCanvas(guid, vpath);
-		canvas.markOrigin("remote");
+		void canvas.markOrigin("remote");
 
-		this.backgroundSync.enqueueDownload(canvas, userVisible);
+		void this.backgroundSync.enqueueDownload(canvas, userVisible);
 
 		this.files.set(guid, canvas);
 		this.fset.add(canvas);
@@ -3825,7 +3825,7 @@ export class SharedFolder extends HasProvider {
 		}
 		const canvas = this.getOrCreateCanvas(guid, vpath);
 
-		(async () => {
+		void (async () => {
 			const exists = await this.exists(canvas);
 			// Same shape as uploadDoc: a detached dispatch with no rejection
 			// handler, resuming on a folder that may since have been torn
@@ -3881,7 +3881,7 @@ export class SharedFolder extends HasProvider {
 			.then(async () => {
 				const synced = await canvas.getServerSynced();
 				if (canvas.stat.size === 0 && !synced) {
-					this.backgroundSync.enqueueDownload(canvas);
+					void this.backgroundSync.enqueueDownload(canvas);
 				} else if (this.pendingUpload.get(canvas.path)) {
 					await this.applyPendingUpload(canvas.path).promise;
 				}
@@ -4269,7 +4269,7 @@ export class SharedFolder extends HasProvider {
 		}
 		const doc = this.getOrCreateDoc(guid, vpath);
 
-		(async () => {
+		void (async () => {
 			const exists = await this.exists(doc);
 			// Re-check where the dispatch resumes, above the existence
 			// failure: a folder is usually torn down because its file went
@@ -4310,7 +4310,7 @@ export class SharedFolder extends HasProvider {
 			.then(async () => {
 				const synced = await doc.getServerSynced();
 				if (doc.tfile?.stat.size === 0 && !synced) {
-					this.backgroundSync.enqueueDownload(doc, false);
+					void this.backgroundSync.enqueueDownload(doc, false);
 				} else if (this.pendingUpload.get(doc.path)) {
 					await this.applyPendingUpload(doc.path).promise;
 				}
@@ -4954,7 +4954,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 				// An unreadable folder doc bounds cleanup to the folder-level
 				// databases and the path- and folder-keyed records below.
 			} finally {
-				persistence.destroy();
+				void persistence.destroy();
 				ydoc.destroy();
 			}
 		}

@@ -201,7 +201,7 @@ export class TextFileViewPlugin extends HasLogging {
 			const hasConflict = this.doc.hasHSMConflict();
 			if (hasConflict && this.view) {
 				this.warn("Document has HSM conflict - showing merge banner");
-				this.view.checkStale(); // This will show the merge banner via HSM
+				void this.view.checkStale(); // This will show the merge banner via HSM
 			} else {
 				// The document is authoritative, so force the view to match its CRDT state.
 				this.warn("Document is authoritative - syncing view to CRDT state");
@@ -283,7 +283,7 @@ export class TextFileViewPlugin extends HasLogging {
 
 						// Call resync AFTER original setViewData succeeds
 						if (clear) {
-							plugin.resync();
+							void plugin.resync();
 						}
 
 						return result;
@@ -310,7 +310,7 @@ export class TextFileViewPlugin extends HasLogging {
 								return old.call(this);
 							} else {
 								plugin.warn("not tracking - resync");
-								plugin.resync();
+								void plugin.resync();
 							}
 						}
 						return old.call(this);
@@ -343,7 +343,7 @@ export class TextFileViewPlugin extends HasLogging {
 				}
 				if (!this.view.tracking) {
 					this.warn("resync from update, not tracking");
-					this.resync();
+					void this.resync();
 				}
 				this.warn("setting view data");
 				this.applyDataToView(this.doc.localText);
@@ -352,7 +352,7 @@ export class TextFileViewPlugin extends HasLogging {
 			}
 			};
 
-		this.resync();
+		void this.resync();
 
 		// Use the dynamically retrieved document for ytext
 		this.doc = this.getDocument();

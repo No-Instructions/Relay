@@ -232,12 +232,12 @@ export class OpCapture {
 					const lastOp = this.entries[this.entries.length - 1];
 					const serialized = this.serializeEntry(lastOp);
 					if (lastOp._storeKey !== null) {
-						this._storage.update(lastOp._storeKey, serialized);
+						void this._storage.update(lastOp._storeKey, serialized);
 					} else if (lastOp._pendingKey) {
 						// Key not resolved yet — chain the update
-						lastOp._pendingKey.then((key) => {
+						void lastOp._pendingKey.then((key) => {
 							if (this._storage) {
-								this._storage.update(key, serialized);
+								void this._storage.update(key, serialized);
 							}
 						});
 					}
@@ -246,7 +246,7 @@ export class OpCapture {
 					const serialized = this.serializeEntry(entry);
 					const keyPromise = this._storage.append(serialized);
 					entry._pendingKey = keyPromise;
-					keyPromise.then((key) => {
+					void keyPromise.then((key) => {
 						entry._storeKey = key;
 						entry._pendingKey = null;
 					});
@@ -434,12 +434,12 @@ export class OpCapture {
 
 		if (this._storage) {
 			if (keysToRemove.length > 0) {
-				this._storage.remove(keysToRemove);
+				void this._storage.remove(keysToRemove);
 			}
 			if (pendingKeysToAwait.length > 0) {
-				Promise.all(pendingKeysToAwait).then((keys) => {
+				void Promise.all(pendingKeysToAwait).then((keys) => {
 					if (this._storage) {
-						this._storage.remove(keys);
+						void this._storage.remove(keys);
 					}
 				});
 			}
@@ -587,12 +587,12 @@ export class OpCapture {
 
 		if (this._storage) {
 			if (keysToRemove.length > 0) {
-				this._storage.remove(keysToRemove);
+				void this._storage.remove(keysToRemove);
 			}
 			if (pendingKeysToAwait.length > 0) {
-				Promise.all(pendingKeysToAwait).then((keys) => {
+				void Promise.all(pendingKeysToAwait).then((keys) => {
 					if (this._storage) {
-						this._storage.remove(keys);
+						void this._storage.remove(keys);
 					}
 				});
 			}
@@ -651,12 +651,12 @@ export class OpCapture {
 
 		if (this._storage) {
 			if (keysToRemove.length > 0) {
-				this._storage.remove(keysToRemove);
+				void this._storage.remove(keysToRemove);
 			}
 			if (pendingKeysToAwait.length > 0) {
-				Promise.all(pendingKeysToAwait).then((keys) => {
+				void Promise.all(pendingKeysToAwait).then((keys) => {
 					if (this._storage) {
-						this._storage.remove(keys);
+						void this._storage.remove(keys);
 					}
 				});
 			}
@@ -688,7 +688,7 @@ export class OpCapture {
 
 		this.entries.length = 0;
 
-		this._storage?.clear();
+		void this._storage?.clear();
 	}
 
 	// -----------------------------------------------------------------------

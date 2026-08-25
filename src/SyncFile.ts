@@ -954,12 +954,12 @@ export class SyncFile
 	}
 
 	public async write(content: string): Promise<void> {
-		this.vault.adapter.write(this.tfile.path, content);
+		void this.vault.adapter.write(this.tfile.path, content);
 		await this.caf.hash();
 	}
 
 	public async append(content: string): Promise<void> {
-		this.vault.append(this.tfile, content);
+		void this.vault.append(this.tfile, content);
 		await this.caf.hash();
 	}
 

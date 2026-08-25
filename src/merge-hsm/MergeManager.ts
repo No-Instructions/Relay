@@ -741,7 +741,7 @@ export class MergeManager {
     const unsubscribeEffects = hsm.subscribe((effect) => {
       if (effect.type === 'REQUEST_HIBERNATE') {
         // Hibernate on next microtask so the current transition completes first
-        Promise.resolve().then(() => this.hibernate(guid));
+        void Promise.resolve().then(() => this.hibernate(guid));
         return;
       }
       if (effect.type === 'REQUEST_PROVIDER_SYNC') {
@@ -758,7 +758,7 @@ export class MergeManager {
         if (this._getDocument(guid)) {
           connect();
         } else {
-          Promise.resolve().then(connect);
+          void Promise.resolve().then(connect);
         }
       }
       // Forward all effects to onEffect handler for IDB persistence etc.

@@ -93,7 +93,7 @@ export async function openDiffView(
 
 	// Opens a new leaf (view) of the type VIEW_TYPE_DIFFERENCES
 	const leaf = workspace.getLeaf(true);
-	leaf.setViewState({
+	void leaf.setViewState({
 		type: VIEW_TYPE_DIFFERENCES,
 		active: true,
 		state,
@@ -150,7 +150,7 @@ export class DifferencesView extends ItemView {
 		state: ViewState,
 		result: ViewStateResult,
 	): Promise<void> {
-		super.setState(state, result);
+		void super.setState(state, result);
 		this.state = state;
 		this.installSourceGuards();
 
