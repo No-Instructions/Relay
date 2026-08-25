@@ -39,5 +39,5 @@ export function createProtectionProxy<T extends object>(
 			}
 			return value;
 		},
-	}) as T;
+	});
 }
