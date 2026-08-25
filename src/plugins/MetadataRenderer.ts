@@ -1,4 +1,18 @@
 import { MarkdownView, getFrontMatterInfo, parseYaml } from "obsidian";
+
+/** One rendered property row inside Obsidian's internal metadata editor. */
+interface MetadataPropertyLike {
+	entry: unknown;
+	containerEl?: HTMLElement;
+	renderProperty(entry: unknown, force: boolean): void;
+}
+
+/** The internal metadata editor surface this renderer drives. */
+interface MetadataEditorLike {
+	contentEl: HTMLElement;
+	rendered: MetadataPropertyLike[];
+	synchronize(frontmatter: unknown): void;
+}
 import type { Document } from "../Document";
 import type { ViewRenderer } from "./ViewRenderer";
 import { HasLogging } from "../debug";
@@ -10,8 +24,8 @@ import { HasLogging } from "../debug";
 export class MetadataRenderer extends HasLogging implements ViewRenderer {
 	private view: MarkdownView;
 	private destroyed = false;
-	private pendingFocusedProps: any[] = [];
-	private focusoutEl: any = null;
+	private pendingFocusedProps: MetadataPropertyLike[] = [];
+	private focusoutEl: HTMLElement | null = null;
 	private readonly focusoutHandler = () => {
 		Promise.resolve().then(() => this.flushPendingFocusedProps());
 	};
@@ -29,8 +43,9 @@ export class MetadataRenderer extends HasLogging implements ViewRenderer {
 		}
 
 		try {
-			// @ts-ignore - accessing internal Obsidian API
-			const metadataEditor = this.view.metadataEditor;
+			const metadataEditor = (
+				this.view as MarkdownView & { metadataEditor?: MetadataEditorLike }
+			).metadataEditor;
 
 			if (!metadataEditor) {
 				return;
@@ -50,7 +65,7 @@ export class MetadataRenderer extends HasLogging implements ViewRenderer {
 			// Re-render each property, but defer rows where the user is
 			// actively typing so we don't destroy their input context.
 			const focused = this.getActiveElement(metadataEditor.contentEl);
-			const skipped: any[] = [];
+			const skipped: MetadataPropertyLike[] = [];
 			for (const prop of metadataEditor.rendered) {
 				if (this.shouldDeferPropertyRender(focused, prop)) {
 					skipped.push(prop);
@@ -64,16 +79,19 @@ export class MetadataRenderer extends HasLogging implements ViewRenderer {
 		}
 	}
 
-	private shouldDeferPropertyRender(focused: any, prop: any): boolean {
+	private shouldDeferPropertyRender(
+		focused: Element | null,
+		prop: MetadataPropertyLike,
+	): boolean {
 		if (!focused || !prop.containerEl?.contains(focused)) return false;
 		return this.isTextEditingElement(focused);
 	}
 
-	private isTextEditingElement(el: any): boolean {
+	private isTextEditingElement(el: Element | null): boolean {
 		const tagName = String(el?.tagName ?? "").toUpperCase();
 		if (tagName === "TEXTAREA") return true;
 		if (tagName === "INPUT") {
-			const type = String(el.type ?? "text").toLowerCase();
+			const type = String((el as HTMLInputElement).type ?? "text").toLowerCase();
 			return ![
 				"button",
 				"checkbox",
@@ -86,14 +104,21 @@ export class MetadataRenderer extends HasLogging implements ViewRenderer {
 				"submit",
 			].includes(type);
 		}
-		return el?.isContentEditable === true || el?.contentEditable === "true";
+		const editable = el as HTMLElement | null;
+		return (
+			editable?.isContentEditable === true ||
+			editable?.contentEditable === "true"
+		);
 	}
 
-	private getActiveElement(contentEl: any): Element | null {
+	private getActiveElement(contentEl: HTMLElement | null): Element | null {
 		return contentEl?.ownerDocument?.activeElement ?? null;
 	}
 
-	private setPendingFocusedProps(props: any[], contentEl: any): void {
+	private setPendingFocusedProps(
+		props: MetadataPropertyLike[],
+		contentEl: HTMLElement | null,
+	): void {
 		this.pendingFocusedProps = props;
 		if (props.length > 0) {
 			if (this.focusoutEl !== contentEl) {
@@ -110,7 +135,7 @@ export class MetadataRenderer extends HasLogging implements ViewRenderer {
 		if (this.destroyed || this.pendingFocusedProps.length === 0) return;
 
 		const focused = this.getActiveElement(this.focusoutEl);
-		const stillPending: any[] = [];
+		const stillPending: MetadataPropertyLike[] = [];
 		for (const prop of this.pendingFocusedProps) {
 			if (this.shouldDeferPropertyRender(focused, prop)) {
 				stillPending.push(prop);

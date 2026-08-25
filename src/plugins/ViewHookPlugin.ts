@@ -1,5 +1,6 @@
 import { MarkdownView } from "obsidian";
 import { getPatcher } from "../Patcher";
+import type { EditorView } from "@codemirror/view";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import type { Document } from "../Document";
 import type { ViewRenderer } from "./ViewRenderer";
@@ -40,7 +41,7 @@ export class ViewHookPlugin extends HasLogging {
 	}
 
 	private runWithRelaySaving<T>(fn: () => T): T {
-		const view = this.view as any;
+		const view = this.view as MarkdownView & { __relaySaving?: boolean };
 		const hadOwnFlag = Object.prototype.hasOwnProperty.call(view, "__relaySaving");
 		const previous = view.__relaySaving;
 		view.__relaySaving = true;
@@ -95,8 +96,11 @@ export class ViewHookPlugin extends HasLogging {
 
 		// Perform initial render using localDoc content
 		this.runWithRelaySaving(() => {
-			// @ts-ignore
-			this.view.previewMode.renderer.set(this.document.localText);
+			(
+				this.view.previewMode as unknown as {
+					renderer: { set(text: string): void };
+				}
+			).renderer.set(this.document.localText);
 		});
 		this.renderAll();
 
@@ -115,15 +119,14 @@ export class ViewHookPlugin extends HasLogging {
 		this.unsubscribes.push(
 			getPatcher().patch(view, {
 				// @ts-ignore
-				saveFrontmatter(old: unknown) {
-					return function (data: unknown) {
+				saveFrontmatter(old: (...args: unknown[]) => unknown) {
+					return function (this: unknown, data: unknown) {
 						that.debug("saveFrontmatter hook triggered");
 						that.document.hsm?.send({
 							type: 'OBSIDIAN_SAVE_FRONTMATTER',
 							path: that.document.path,
 						});
 						that.saving = true;
-						// @ts-ignore
 						const result = old.call(this, data);
 						that.saving = false;
 						return result;
@@ -136,12 +139,10 @@ export class ViewHookPlugin extends HasLogging {
 		this.unsubscribes.push(
 			getPatcher().patch(view, {
 				// @ts-ignore
-				save(old: unknown) {
-					return function (this: any, ...args: any[]) {
-						// @ts-ignore
+				save(old: (...args: unknown[]) => unknown) {
+					return function (this: unknown, ...args: unknown[]) {
 						const result = old.apply(this, args);
 						try {
-							// @ts-ignore
 							const viewMode = that.view.getMode?.() ?? "unknown";
 							if (viewMode === "preview" && that.saving) {
 								that.debug("Syncing metadata changes through HSM during save");
@@ -150,8 +151,10 @@ export class ViewHookPlugin extends HasLogging {
 									path: that.document.path,
 									mode: viewMode,
 								});
-								// @ts-ignore
-								that.syncViewTextToHsm(that.view.text, "preview.save");
+								that.syncViewTextToHsm(
+									(that.view as MarkdownView & { text?: string }).text ?? "",
+									"preview.save",
+								);
 							}
 						} catch (e) {
 							that.error("Error syncing during save:", e);
@@ -165,17 +168,20 @@ export class ViewHookPlugin extends HasLogging {
 		// Hook 3: Preview mode direct edits.
 		this.unsubscribes.push(
 			getPatcher().patch(view.previewMode as unknown as Record<string, unknown>, {
-				edit(old: unknown) {
-					return function (data: string) {
+				edit(old: (...args: unknown[]) => unknown) {
+					return function (this: unknown, data: string) {
 						that.debug("Preview edit hook triggered");
 						//@ts-ignore
 						if (that.view.getMode?.() === "preview") {
-							//@ts-ignore
-							if (that.view.editor) {
+							const editor = (
+								that.view as MarkdownView & {
+									editor?: { cm?: EditorView };
+								}
+							).editor;
+							if (editor?.cm) {
 								// If CodeMirror editor is available, dispatch changes there
 								const changes = that.incrementalBufferChange(data);
-								// @ts-ignore
-								that.view.editor.cm.dispatch({
+								editor.cm.dispatch({
 									changes,
 								});
 								that.debug("Dispatched preview edit to CodeMirror");
@@ -187,7 +193,6 @@ export class ViewHookPlugin extends HasLogging {
 							return;
 						}
 
-						// @ts-ignore
 						return old.call(this, data);
 					};
 				},
@@ -245,8 +250,10 @@ export class ViewHookPlugin extends HasLogging {
 	 * Calculate incremental buffer changes using diff-match-patch
 	 */
 	private incrementalBufferChange(newBuffer: string): ChangeSpec[] {
-		// @ts-ignore
-		const currentBuffer = this.view.editor.cm.state.doc.toString();
+		const currentBuffer =
+			(
+				this.view as MarkdownView & { editor?: { cm?: EditorView } }
+			).editor?.cm?.state.doc.toString() ?? "";
 		const dmp = new diff_match_patch();
 		const diffs = dmp.diff_main(currentBuffer, newBuffer);
 		dmp.diff_cleanupSemantic(diffs);
