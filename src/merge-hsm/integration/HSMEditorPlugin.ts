@@ -34,7 +34,9 @@ import {
 } from "./replayBufferedEdits";
 
 type EditorConnectionManager = {
-  sharedFolders: { lookup(path: string): any };
+  sharedFolders: {
+    lookup(path: string): { getFile(file: TFile): unknown } | null;
+  };
   findCanvas(editor: EditorView): unknown;
   findView(editor: EditorView): { document: Document } | undefined;
 };
@@ -120,7 +122,7 @@ export class HSMEditorPluginValue implements PluginValue {
     this.pendingRestores = [];
   }
 
-  private replayPendingEdits(hsm: { send: (event: any) => void }, viewId: string): boolean {
+  private replayPendingEdits(hsm: Pick<MergeHSM, "send">, viewId: string): boolean {
     if (this.pendingEdits.length === 0) return false;
 
     for (const event of buildBufferedCM6ReplayEvents(this.pendingEdits, viewId)) {
