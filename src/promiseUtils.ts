@@ -12,7 +12,7 @@ export type LifetimeOperation<T> =
 
 export class Lifetime {
 	private ended = false;
-	private endReason: unknown;
+	private endReason: Error | undefined;
 	private controller = new AbortController();
 	private endListeners = new Set<(reason: unknown) => void>();
 
@@ -41,7 +41,7 @@ export class Lifetime {
 
 	public guard<T>(operation: LifetimeOperation<T>): Promise<T> {
 		if (this.ended) {
-			return Promise.reject(this.endReason);
+			return Promise.reject(this.endReason ?? new Error("lifetime ended"));
 		}
 
 		let promise: Promise<T>;
@@ -51,7 +51,9 @@ export class Lifetime {
 					? operation(this.signal)
 					: operation;
 		} catch (error) {
-			return Promise.reject(error);
+			return Promise.reject(
+				error instanceof Error ? error : new Error(String(error)),
+			);
 		}
 
 		if (this.ended) {
@@ -59,7 +61,7 @@ export class Lifetime {
 			// eventual settlement so a later rejection does not surface as an
 			// unhandled rejection; the result itself is discarded.
 			void promise.catch(() => {});
-			return Promise.reject(this.endReason);
+			return Promise.reject(this.endReason ?? new Error("lifetime ended"));
 		}
 
 		return new Promise<T>((resolve, reject) => {
@@ -74,18 +76,20 @@ export class Lifetime {
 				fn();
 			};
 			const onEnd = () => {
-				finish(() => reject(this.endReason));
+				finish(() =>
+					reject(this.endReason ?? new Error("lifetime ended")),
+				);
 			};
 
 			this.signal.addEventListener("abort", onEnd, { once: true });
 			promise.then(
 				(value) => finish(() => resolve(value)),
-				(error) => finish(() => reject(error)),
+				(error: Error) => finish(() => reject(error)),
 			);
 		});
 	}
 
-	public end(reason: unknown): void {
+	public end(reason: Error): void {
 		if (this.ended) return;
 		this.ended = true;
 		this.endReason = reason;
@@ -164,7 +168,7 @@ export class Dependency<T> {
 						this.rejecter = undefined;
 						resolve(result);
 					},
-					(error) => {
+					(error: Error) => {
 						this.clearStuckTimeout();
 						this.currentPromise = null; // Reset on failure
 						this.rejecter = undefined;
@@ -230,7 +234,7 @@ export class SharedPromise<T> {
 						this.rejecter = undefined;
 						resolve(result);
 					},
-					(error) => {
+					(error: Error) => {
 						this.clearStuckTimeout();
 						this.currentPromise = null;
 						this.rejecter = undefined;
@@ -270,7 +274,7 @@ export function withTimeoutWarning<T>(
 				clearWarningTimeout();
 				resolve(result);
 			},
-			(error) => {
+			(error: Error) => {
 				clearWarningTimeout();
 				reject(error);
 			},

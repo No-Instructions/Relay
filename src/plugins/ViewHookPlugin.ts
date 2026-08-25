@@ -206,7 +206,8 @@ export class ViewHookPlugin extends HasLogging {
 	private setupDocumentObserver(): void {
 		if (!this._ytext) return;
 
-		this.observer = async (event: YTextEvent, tr: Transaction) => {
+		this.observer = (event: YTextEvent, tr: Transaction) => {
+			void (async () => {
 			if (!this.active()) {
 				this.debug("Received yjs event against a non-active view");
 				return;
@@ -217,6 +218,7 @@ export class ViewHookPlugin extends HasLogging {
 			}
 
 			this.renderAll();
+			})();
 		};
 
 		this._ytext.observe(this.observer);

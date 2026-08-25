@@ -410,7 +410,7 @@ export class SyncStore extends Observable<SyncStore> {
 			});
 		});
 
-		const syncFileObserver = async (event: Y.YMapEvent<Meta>) => {
+		const syncFileObserver = (event: Y.YMapEvent<Meta>) => {
 			if (event.changes.keys.size === 0) {
 				this.log("no changes detected");
 				return;
@@ -453,7 +453,7 @@ export class SyncStore extends Observable<SyncStore> {
 			}
 			this.notifyListeners();
 		};
-		const legacyListener = async (event: Y.YMapEvent<string>) => {
+		const legacyListener = (event: Y.YMapEvent<string>) => {
 			// Old clients write the docs map alone: their deletion of a
 			// path tombstones it (getMeta's meta-without-legacy check), and
 			// their later re-add of the same path must clear that tombstone

@@ -274,7 +274,7 @@ export class HSMStore {
         });
         cursor.continue();
       };
-      req.onerror = () => reject(req.error);
+      req.onerror = () => reject(req.error ?? new Error("IndexedDB open failed"));
     });
   }
 
@@ -420,6 +420,7 @@ export async function deleteDatabase(appId: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.deleteDatabase(getDbName(appId));
     request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    request.onerror = () =>
+				reject(request.error ?? new Error("IndexedDB request failed"));
   });
 }

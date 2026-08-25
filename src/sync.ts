@@ -31,7 +31,9 @@ export async function getSyncInfo(
 
 		request.onerror = (event) => {
 			reject(
-				`Error opening database: ${(event.target as IDBOpenDBRequest).error}`,
+				new Error(
+					`Error opening database: ${(event.target as IDBOpenDBRequest).error}`,
+				),
 			);
 		};
 
@@ -51,7 +53,9 @@ export async function getSyncInfo(
 
 			getRequest.onerror = (event) => {
 				db.close();
-				reject(`Error reading data: ${(event.target as IDBRequest).error}`);
+				reject(
+				new Error(`Error reading data: ${(event.target as IDBRequest).error}`),
+			);
 			};
 
 			getRequest.onsuccess = (event) => {

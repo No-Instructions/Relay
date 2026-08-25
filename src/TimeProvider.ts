@@ -12,7 +12,7 @@ export class DefaultTimeProvider implements TimeProvider {
 		return Date.now();
 	}
 
-	setInterval(callback: () => void, ms: number): number {
+	setInterval(callback: () => unknown, ms: number): number {
 		const timer = window.setInterval(callback, ms);
 		this.intervals.push(timer);
 		return timer;
@@ -67,7 +67,7 @@ export class DefaultTimeProvider implements TimeProvider {
 
 export interface TimeProvider {
 	now: () => number;
-	setInterval: (callback: () => void, ms: number) => number;
+	setInterval: (callback: () => unknown, ms: number) => number;
 	clearInterval: (timerId: number) => void;
 	setTimeout: (callback: () => void, ms: number) => number;
 	clearTimeout: (timerId: number) => void;
