@@ -20,6 +20,12 @@ import { getLiveViews } from "../editorContext";
 
 import * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness.js";
+
+/** The awareness fields the selection plugin reads from each peer. */
+interface CursorAwarenessState {
+	cursor?: { anchor: Y.RelativePosition; head: Y.RelativePosition } | null;
+	user?: { color?: string; name?: string; colorLight?: string } | null;
+}
 import { curryLog } from "src/debug";
 import { editorInfoField, type TFile } from "obsidian";
 import { isDocument, type Document } from "../Document";
@@ -344,7 +350,8 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 
 		const ydoc: Y.Doc = ytext.doc;
 		const decorations: Array<Range<Decoration>> = [];
-		const localAwarenessState = awareness.getLocalState();
+		const localAwarenessState =
+			awareness.getLocalState() as CursorAwarenessState | null;
 
 		// set local awareness state (update cursors)
 		if (localAwarenessState != null) {
@@ -390,10 +397,11 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 		}
 
 		// update decorations (remote selections)
-		awareness.getStates().forEach((state, clientid) => {
+		awareness.getStates().forEach((rawState, clientid) => {
 			if (clientid === awareness.doc.clientID) {
 				return;
 			}
+			const state = rawState as CursorAwarenessState;
 			const cursor = state.cursor;
 			if (cursor == null || cursor.anchor == null || cursor.head == null) {
 				return;
@@ -427,8 +435,8 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 				this.decorations = Decoration.none;
 				return;
 			}
-			const { color = "#30bced", name = "Anonymous" } = state.user || {};
-			const colorLight = (state.user && state.user.colorLight) || color + "33";
+			const { color = "#30bced", name = "Anonymous" } = state.user ?? {};
+			const colorLight = state.user?.colorLight ?? color + "33";
 			const start = math.min(anchor.index, head.index);
 			const end = math.max(anchor.index, head.index);
 			const startLine = update.view.state.doc.lineAt(start);

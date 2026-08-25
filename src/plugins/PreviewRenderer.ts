@@ -3,6 +3,14 @@ import type { Document } from "../Document";
 import type { ViewRenderer } from "./ViewRenderer";
 import { HasLogging } from "../debug";
 
+/** The undocumented markdown view members the preview refresh reaches. */
+interface PreviewViewInternals {
+	text?: string;
+	previewMode: { renderer: { set(text: string): void } };
+	editor?: { cm?: unknown };
+	onInternalDataChange?: () => void;
+}
+
 /**
  * Pure UI rendering logic for preview mode synchronization.
  * Updates preview UI when document changes occur.
@@ -34,21 +42,19 @@ export class PreviewRenderer extends HasLogging implements ViewRenderer {
 			// Use localText to get editor state from localDoc
 			const text = document.localText;
 
+			const internals = this.view as unknown as PreviewViewInternals;
+
 			// Update the view's internal text state
-			// @ts-ignore - accessing internal Obsidian API
-			this.view.text = text;
+			internals.text = text;
 
 			// Update the preview renderer
-			// @ts-ignore - accessing internal Obsidian API
-			this.view.previewMode.renderer.set(text);
+			internals.previewMode.renderer.set(text);
 
 			// Live preview already applies Relay updates through CM6. Re-entering
 			// Obsidian's internal quick-preview pipeline from here can bounce back
 			// into setViewData while the view is mid-update.
-			// @ts-ignore - accessing internal Obsidian API
-			if (!this.view.editor?.cm) {
-				// @ts-ignore - accessing internal Obsidian API
-				this.view.onInternalDataChange?.();
+			if (!internals.editor?.cm) {
+				internals.onInternalDataChange?.();
 			}
 
 			this.debug("Preview render completed");
