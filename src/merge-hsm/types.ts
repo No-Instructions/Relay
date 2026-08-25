@@ -533,11 +533,11 @@ export interface ObsidianLoadFileInternalEvent {
 	/** True if this is the initial file load (not a reload) */
 	isInitialLoad: boolean;
 	/** True if the editor has unsaved changes */
-	dirty: boolean;
+	dirty?: boolean;
 	/** True if disk content differs from lastSavedData */
 	contentChanged: boolean;
 	/** True if three-way merge will be triggered (dirty && contentChanged && isPlaintext) */
-	willMerge: boolean;
+	willMerge?: boolean;
 }
 
 /**
