@@ -3072,7 +3072,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			storeDiskMetadataForLoad: (_hsm, event) => {
 				const e = payload(event);
 				if (typeof e.hash === "string") {
-					this._disk = { hash: e.hash!, mtime: e.mtime! };
+					this._disk = { hash: e.hash, mtime: e.mtime! };
 					this._needsDiskContentLoad = false;
 					return;
 				}
@@ -3504,7 +3504,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			drainFrontmatterMap: () => this.drainFrontmatterMapIfSynced(),
 			repairFrontmatter: () => this.repairFrontmatterFromMap(),
 			absorbTextPreservingRemoteUpdate: (_hsm, event) =>
-				this.absorbTextPreservingRemoteUpdate(event as MergeEvent),
+				this.absorbTextPreservingRemoteUpdate(event),
 			assertConvergence: () => this._bridge.assertConvergence(),
 			replayAccumulatedEvents: () => this.replayAccumulatedEvents(),
 			applyThreeWayMergeResult: (_hsm, event) => {
@@ -6579,7 +6579,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 		if (candidates.size !== 1) return;
 		const [onlyCandidate] = candidates.values();
-		this.applyChangesToLocalDoc(onlyCandidate!);
+		this.applyChangesToLocalDoc(onlyCandidate);
 	}
 
 	/**
