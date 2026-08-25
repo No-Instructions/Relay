@@ -3,9 +3,10 @@ import type { Relay } from "src/Relay";
 import type { SharedFolder, SharedFolders } from "src/SharedFolder";
 import type { RelayManager } from "src/RelayManager";
 import ShareFolderModalContent from "../components/ShareFolderModalContent.svelte";
+import { mountComponent, type MountedComponent } from "./svelteHost.svelte";
 
 export class ShareFolderModal extends Modal {
-	private component?: ShareFolderModalContent;
+	private component?: MountedComponent;
 
 	constructor(
 		app: App,
@@ -26,7 +27,7 @@ export class ShareFolderModal extends Modal {
 		const { contentEl } = this;
 		this.setTitle("Share local folder");
 
-		this.component = new ShareFolderModalContent({
+		this.component = mountComponent(ShareFolderModalContent, {
 			target: contentEl,
 			props: {
 				app: this.app,
@@ -56,7 +57,7 @@ export class ShareFolderModal extends Modal {
 	onClose() {
 		const { contentEl } = this;
 		contentEl.empty();
-		this.component?.$destroy();
+		this.component?.destroy();
 	}
 
 	destroy() {

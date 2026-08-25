@@ -3,10 +3,11 @@
 import { App, PluginSettingTab } from "obsidian";
 import Live from "src/main";
 import PluginSettings from "src/components/PluginSettings.svelte";
+import { mountComponent, type MountedComponent } from "src/ui/svelteHost.svelte";
 
 export class LiveSettingsTab extends PluginSettingTab {
 	plugin: Live;
-	component?: PluginSettings;
+	component?: MountedComponent;
 	targetEl!: HTMLElement;
 	constructor(app: App, plugin: Live) {
 		super(app, plugin);
@@ -17,7 +18,7 @@ export class LiveSettingsTab extends PluginSettingTab {
 		this.targetEl = containerEl.parentElement as HTMLElement;
 		this.targetEl.empty();
 		void this.plugin.relayManager.update();
-		this.component = new PluginSettings({
+		this.component = mountComponent(PluginSettings, {
 			target: this.targetEl,
 			props: {
 				plugin: this.plugin,
@@ -33,14 +34,14 @@ export class LiveSettingsTab extends PluginSettingTab {
 	}
 
 	navigateTo(path: string) {
-		this.component?.$set({
+		this.component?.set({
 			path: path,
 		});
 	}
 
 	hide(): void {
 		try {
-			this.component?.$destroy();
+			this.component?.destroy();
 			//(this as any).setting.close();
 		} catch (e) {
 			console.warn(e);

@@ -8,6 +8,7 @@ import {
 } from "obsidian";
 import SyncStatusModalContent from "../components/SyncStatusModalContent.svelte";
 import Pill from "../components/Pill.svelte";
+import { mountComponent, type MountedComponent } from "./svelteHost.svelte";
 import { FeatureFlagManager, flags } from "../flagManager";
 import { flag } from "../flags";
 import type { FolderSyncVisibleState } from "../BackgroundSyncProgress";
@@ -36,8 +37,8 @@ export interface SyncStatusViewContext {
 }
 
 export class SyncStatusView extends ItemView {
-	private component?: SyncStatusModalContent;
-	private headerPill?: Pill;
+	private component?: MountedComponent;
+	private headerPill?: MountedComponent;
 	private binding: SyncStatusViewBinding | null = null;
 	private headerUnsubscribers: (() => void)[] = [];
 	private followActiveFile = true;
@@ -136,7 +137,7 @@ export class SyncStatusView extends ItemView {
 	}
 
 	async onClose(): Promise<void> {
-		this.component?.$destroy();
+		this.component?.destroy();
 		this.component = undefined;
 		this.destroyNoteState();
 		this.destroyFolderHeader();
@@ -228,7 +229,7 @@ export class SyncStatusView extends ItemView {
 		const container = this.containerEl.children[1] as HTMLElement;
 		if (!container) return;
 
-		this.component?.$destroy();
+		this.component?.destroy();
 		this.component = undefined;
 		this.destroyFolderHeader();
 		container.empty();
@@ -249,7 +250,7 @@ export class SyncStatusView extends ItemView {
 		});
 
 		const boundFolder = this.binding.sharedFolder;
-		this.component = new SyncStatusModalContent({
+		this.component = mountComponent(SyncStatusModalContent, {
 			target: contentEl,
 			props: {
 				sharedFolder: boundFolder,
@@ -300,7 +301,7 @@ export class SyncStatusView extends ItemView {
 			text: this.folderOptionLabel(folder),
 		});
 
-		this.headerPill = new Pill({
+		this.headerPill = mountComponent(Pill, {
 			target: headerEl,
 			props: {
 				status: folder.state.status,
@@ -316,7 +317,7 @@ export class SyncStatusView extends ItemView {
 
 		this.headerUnsubscribers.push(
 			folder.subscribe(headerEl, (state) => {
-				this.headerPill?.$set({
+				this.headerPill?.set({
 					status: state.status,
 					relayId: folder.relayId,
 					remote: folder.remote,
@@ -328,7 +329,7 @@ export class SyncStatusView extends ItemView {
 
 		this.headerUnsubscribers.push(
 			folder.backgroundSync.subscribeToFolderSyncSnapshot(folder, (snapshot) => {
-				this.headerPill?.$set({
+				this.headerPill?.set({
 					progress: snapshot.percent,
 					showProgress: snapshot.showProgress,
 					syncStatus: snapshot.progressStatus,
@@ -338,7 +339,7 @@ export class SyncStatusView extends ItemView {
 	}
 
 	private destroyFolderHeader(): void {
-		this.headerPill?.$destroy();
+		this.headerPill?.destroy();
 		this.headerPill = undefined;
 		this.headerUnsubscribers.forEach((unsubscribe) => unsubscribe());
 		this.headerUnsubscribers = [];
