@@ -283,7 +283,7 @@ export class RelayCanvasView implements S3View {
 	toggleConnection() {
 		this.shouldConnect = !this.shouldConnect;
 		if (this.shouldConnect) {
-			this.canvas.connect().then((connected) => {
+			void this.canvas.connect().then((connected) => {
 				if (!connected) {
 					// If we couldn't connect, ensure their next press tries again.
 					this.shouldConnect = false;
@@ -304,7 +304,7 @@ export class RelayCanvasView implements S3View {
 				this.view,
 				{ short: "Offline", long: "You're offline -- click to reconnect" },
 				async () => {
-					this._parent.networkStatus.checkStatus();
+					void this._parent.networkStatus.checkStatus();
 					this.connect();
 					return this._parent.networkStatus.online;
 				},
@@ -453,7 +453,7 @@ export class RelayCanvasView implements S3View {
 	}
 
 	connect() {
-		this.canvas.connect();
+		void this.canvas.connect();
 	}
 
 	release() {
@@ -545,7 +545,7 @@ export class LiveView<ViewType extends TextFileView>
 	toggleConnection() {
 		this.shouldConnect = !this.shouldConnect;
 		if (this.shouldConnect) {
-			this.document.connect().then((connected) => {
+			void this.document.connect().then((connected) => {
 				if (!connected) {
 					// If we couldn't connect, ensure their next press tries again.
 					this.shouldConnect = false;
@@ -562,7 +562,7 @@ export class LiveView<ViewType extends TextFileView>
 			const wasLocalOnly = hsm.isLocalOnly;
 			hsm.setLocalOnly(!wasLocalOnly);
 			if (wasLocalOnly && !this.document.connected) {
-				this.document.connect();
+				void this.document.connect();
 			}
 			void this.attach().catch((error) => {
 				this.warn("toggleLocalOnly attach failed", error);
@@ -715,7 +715,7 @@ export class LiveView<ViewType extends TextFileView>
 				this.view,
 				{ short: "Offline", long: "You're offline -- click to reconnect" },
 				async () => {
-					this._parent.networkStatus.checkStatus();
+					void this._parent.networkStatus.checkStatus();
 					this.connect();
 					return this._parent.networkStatus.online;
 				},
@@ -959,7 +959,7 @@ export class LiveView<ViewType extends TextFileView>
 	}
 
 	connect() {
-		this.document.connect();
+		void this.document.connect();
 	}
 
 	release() {
@@ -1084,7 +1084,7 @@ export class LiveViewManager {
 
 		const folderSub = (folder: SharedFolder) => {
 			if (!folder.ready) {
-				(async () => {
+				void (async () => {
 					trackPromise(
 						`liveViews:folderReady:${folder.guid}`,
 						folder.whenReady(),
@@ -1153,7 +1153,7 @@ export class LiveViewManager {
 	}
 
 	openDiffView(state: Differ.ViewState) {
-		Differ.openDiffView(this.workspace, state);
+		void Differ.openDiffView(this.workspace, state);
 	}
 
 	goOffline() {
@@ -1166,7 +1166,7 @@ export class LiveViewManager {
 		this.log("[System 3][Relay][Live Views] going online");
 		void this.refresh("[NetworkStatus]");
 		this.sharedFolders.items().forEach((folder: SharedFolder) => {
-			folder.connect();
+			void folder.connect();
 		});
 		void this.viewsAttachedWithConnectionPool(this.views).catch((error) => {
 			this.warn("[LiveViews] online attach failed", error);
@@ -1297,7 +1297,7 @@ export class LiveViewManager {
 				return true;
 			}
 			document.userLock = false;
-			document.releaseLock();
+			void document.releaseLock();
 			return false;
 		}
 
@@ -1313,7 +1313,7 @@ export class LiveViewManager {
 			return true;
 		}
 		document.userLock = false;
-		document.releaseLock();
+		void document.releaseLock();
 		return false;
 	}
 
@@ -1760,7 +1760,7 @@ export class LiveViewManager {
 
 		if (this.loginManager.loggedIn && this.networkStatus.online) {
 			activeDocumentFolders.forEach((folder) => {
-				folder.connect();
+				void folder.connect();
 			});
 		} else {
 			this.sharedFolders.forEach((folder) => {

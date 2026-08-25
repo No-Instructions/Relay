@@ -104,7 +104,7 @@ export class ViewHookPlugin extends HasLogging {
 		});
 		this.renderAll();
 
-		this.document.connect();
+		void this.document.connect();
 		this.debug("initialized");
 	}
 

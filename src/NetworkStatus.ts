@@ -71,7 +71,7 @@ class NetworkStatus {
 			return Promise.resolve(true);
 		}
 		return new Promise((resolve) => {
-			this._checkStatus().then(() => {
+			void this._checkStatus().then(() => {
 				resolve(this.online);
 			});
 		});
@@ -112,7 +112,7 @@ class NetworkStatus {
 					// This doesn't necessarily imply a disconnect,
 					// We should immediately try again to get a name resolution error.
 					this._networkChangedRetries++;
-					this._checkStatus();
+					void this._checkStatus();
 					return;
 				}
 				this._networkChangedRetries = 0;

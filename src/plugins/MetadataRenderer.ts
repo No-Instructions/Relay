@@ -27,7 +27,7 @@ export class MetadataRenderer extends HasLogging implements ViewRenderer {
 	private pendingFocusedProps: MetadataPropertyLike[] = [];
 	private focusoutEl: HTMLElement | null = null;
 	private readonly focusoutHandler = () => {
-		Promise.resolve().then(() => this.flushPendingFocusedProps());
+		void Promise.resolve().then(() => this.flushPendingFocusedProps());
 	};
 
 	constructor(view: MarkdownView) {
