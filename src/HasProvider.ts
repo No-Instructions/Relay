@@ -4,6 +4,7 @@ import {
 	YSweetProvider,
 	type ConnectionState,
 	type ConnectionIntent,
+	type CloseEventLike,
 } from "./client/provider";
 export type { ConnectionState, ConnectionIntent };
 import { User } from "./User";
@@ -92,7 +93,7 @@ type ConnectionCloseDetails = {
 	wasClean: boolean | null;
 };
 
-function connectionCloseDetails(event: CloseEvent): ConnectionCloseDetails {
+function connectionCloseDetails(event: CloseEventLike): ConnectionCloseDetails {
 	return {
 		code: typeof event.code === "number" ? event.code : null,
 		reason: typeof event.reason === "string" ? event.reason : "",
@@ -772,7 +773,7 @@ export class HasProvider extends HasLogging {
 
 
 	private providerConnectionErrorSubscription(
-		f: (event: Event) => void,
+		f: (error: unknown) => void,
 	): Subscription {
 		const on = () => {
 			this._provider?.on("connection-error", f);
@@ -784,7 +785,7 @@ export class HasProvider extends HasLogging {
 	}
 
 	private providerConnectionCloseSubscription(
-		f: (event: CloseEvent) => void,
+		f: (event: CloseEventLike) => void,
 	): Subscription {
 		const on = () => {
 			this._provider?.on("connection-close", f);
