@@ -255,5 +255,6 @@ if (watch) {
 	if (!develop && out !== ".") {
 		updateManifest();
 	}
+	await context.dispose();
 	process.exit(0);
 }
