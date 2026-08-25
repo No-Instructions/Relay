@@ -78,7 +78,7 @@ export class ContentAddressedFileStore extends HasLogging {
 					"Error opening ContentAddressedFile database:",
 					request.error,
 				);
-				reject(request.error);
+				reject(request.error ?? new Error("IndexedDB request failed"));
 			};
 		});
 	}
@@ -107,7 +107,7 @@ export class ContentAddressedFileStore extends HasLogging {
 			request.onsuccess = () => resolve();
 			request.onerror = () => {
 				this.error("Error saving hash:", request.error);
-				reject(request.error);
+				reject(request.error ?? new Error("IndexedDB request failed"));
 			};
 		});
 	}
@@ -135,7 +135,7 @@ export class ContentAddressedFileStore extends HasLogging {
 			request.onsuccess = () => resolve(request.result ?? []);
 			request.onerror = () => {
 				this.error("Error listing hash entries:", request.error);
-				reject(request.error);
+				reject(request.error ?? new Error("IndexedDB request failed"));
 			};
 		});
 	}
@@ -159,7 +159,7 @@ export class ContentAddressedFileStore extends HasLogging {
 
 			request.onerror = () => {
 				this.error("Error retrieving hash:", request.error);
-				reject(request.error);
+				reject(request.error ?? new Error("IndexedDB request failed"));
 			};
 		});
 	}
@@ -178,7 +178,7 @@ export class ContentAddressedFileStore extends HasLogging {
 			request.onsuccess = () => resolve();
 			request.onerror = () => {
 				this.error("Error removing hash:", request.error);
-				reject(request.error);
+				reject(request.error ?? new Error("IndexedDB request failed"));
 			};
 		});
 	}

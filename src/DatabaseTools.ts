@@ -37,7 +37,8 @@ export async function analyzeIndexedDB(options: {
 		try {
 			const db = await new Promise<IDBDatabase>((resolve, reject) => {
 				const request = indexedDB.open(dbInfo.name!);
-				request.onerror = () => reject(request.error);
+				request.onerror = () =>
+				reject(request.error ?? new Error("IndexedDB request failed"));
 				request.onsuccess = (event) =>
 					resolve((event.target as IDBRequest<IDBDatabase>).result);
 			});
@@ -63,7 +64,8 @@ export async function analyzeIndexedDB(options: {
 				const count = await new Promise<number>((resolve, reject) => {
 					const countRequest = store.count();
 					countRequest.onsuccess = () => resolve(countRequest.result);
-					countRequest.onerror = () => reject(countRequest.error);
+					countRequest.onerror = () =>
+					reject(countRequest.error ?? new Error("IndexedDB count failed"));
 				});
 
 				totalItems += count;
@@ -86,7 +88,8 @@ export async function analyzeIndexedDB(options: {
 								resolve();
 							}
 						};
-						cursorRequest.onerror = () => reject(cursorRequest.error);
+						cursorRequest.onerror = () =>
+						reject(cursorRequest.error ?? new Error("IndexedDB cursor failed"));
 					});
 
 					totalSize += storeSize;
@@ -150,7 +153,8 @@ export async function deleteBySlug(slug: string): Promise<void> {
 
 	const db = await new Promise<IDBDatabase>((resolve, reject) => {
 		const request = indexedDB.open(dbName);
-		request.onerror = () => reject(request.error);
+		request.onerror = () =>
+				reject(request.error ?? new Error("IndexedDB request failed"));
 		request.onsuccess = () => resolve(request.result);
 	});
 
@@ -161,7 +165,8 @@ export async function deleteBySlug(slug: string): Promise<void> {
 		await new Promise<void>((resolve, reject) => {
 			const request = store.clear();
 			request.onsuccess = () => resolve();
-			request.onerror = () => reject(request.error);
+			request.onerror = () =>
+				reject(request.error ?? new Error("IndexedDB clear failed"));
 		});
 	} catch (error) {
 		console.error(`Error deleting store: ${slug}`, error);

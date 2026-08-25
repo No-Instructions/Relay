@@ -1048,7 +1048,9 @@ export class BackgroundSync extends HasLogging {
 				try {
 					work = this.execute(item);
 				} catch (error) {
-					work = Promise.reject(error);
+					work = Promise.reject(
+						error instanceof Error ? error : new Error(String(error)),
+					);
 				}
 
 				work
