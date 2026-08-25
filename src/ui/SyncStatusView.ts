@@ -377,9 +377,11 @@ export class SyncStatusView extends ItemView {
 			const menuEl = menus[menus.length - 1];
 			if (!menuEl) return;
 			menuEl.addClass("system3-sync-status-folder-menu");
-			menuEl.setCssProps({
-				"--system3-sync-status-menu-left": `${rect.left}px`,
-				"--system3-sync-status-menu-width": `${rect.width}px`,
+			menuEl.setCssStyles({
+				left: `${rect.left}px`,
+				right: "auto",
+				width: `${rect.width}px`,
+				minWidth: `${rect.width}px`,
 			});
 		});
 	}

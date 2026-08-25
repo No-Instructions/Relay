@@ -17,7 +17,7 @@
 
 .remote-caret {
 	position: absolute;
-	border-left: black;
+	border-left: #000;
 	border-left-style: solid;
 	border-left-width: 2px;
 	height: 1em;
@@ -33,19 +33,20 @@
 	font-weight: normal;
 	line-height: normal;
 	user-select: none;
-	color: white;
+	color: #fff;
 	padding-left: 2px;
 	padding-right: 2px;
 	z-index: 3;
 }
 
-.system3-pill {
-	padding-inline-end: 0px !important;
+/* Matches the specificity of Obsidian's collapsible tree-item padding. */
+.tree-item-self.system3-pill {
+	padding-inline-end: 0px;
 }
 
 .system3-pill:hover > .system3-folder-icons {
 	background-color: var(--color-base-05);
-	width: auto !important;
+	width: auto;
 }
 
 .system3-pill:hover > .system3-folder-icons > .system3-icon {
@@ -71,11 +72,11 @@
 	min-height: 0;
 	overflow: visible;
 }
-.system3-sync-status-folder {
+.tree-item-self.system3-sync-status-folder {
 	position: relative;
 	cursor: pointer;
-	margin-inline-start: 0px !important;
-	padding-inline-start: 24px !important;
+	margin-inline-start: 0px;
+	padding-inline-start: 24px;
 }
 
 .system3-sync-status-folder .nav-folder-title-content {
@@ -84,13 +85,6 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-}
-
-.system3-sync-status-folder-menu {
-	left: var(--system3-sync-status-menu-left) !important;
-	right: auto !important;
-	width: var(--system3-sync-status-menu-width) !important;
-	min-width: var(--system3-sync-status-menu-width) !important;
 }
 
 .relay-folder-create-actions {
@@ -128,10 +122,8 @@
 
 .workspace-split.mod-root
 	.workspace-leaf:nth-child(n)
-	.workspace-leaf-content[data-type="markdown"]:has(
-		.system3-banner-box
-	)::before {
-	top: 4em !important;
+	.workspace-leaf-content[data-type="markdown"].system3-has-banner::before {
+	top: 4em;
 }
 
 .obsidian-live-banner {
@@ -177,11 +169,12 @@
 	font: var(--font-interface-theme);
 }
 
-.system3-header-button,
-.system3-login-button {
-	background: var(--interactive-accent) !important;
-	color: var(--text-on-accent) !important;
-	border: var(--modal-border-width) solid var(--pill-border-color-hover) !important;
+/* Element-qualified to outrank Obsidian's button:not(.clickable-icon) styling. */
+button.system3-header-button,
+button.system3-login-button {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	border: var(--modal-border-width) solid var(--pill-border-color-hover);
 	cursor: pointer;
 	font-weight: bold;
 	font-size: var(--font-ui-medium);
@@ -244,7 +237,7 @@
 
 .nav-folder > .nav-folder-children.system3-live {
 	border-inline-start: var(--nav-indentation-guide-width) solid
-		var(--color-accent) !important;
+		var(--color-accent);
 }
 
 .nav-file.system3-connected {
@@ -269,8 +262,7 @@
 .file-diff__link {
 	border-radius: 0.1875rem;
 	color: var(--link-color);
-	text-decoration-line: underline;
-	text-decoration-thickness: var(--link-decoration-thickness, auto);
+	text-decoration: underline;
 	text-underline-offset: 0.125em;
 }
 
@@ -281,8 +273,6 @@
 .file-diff__link--unresolved {
 	background-color: color-mix(in srgb, var(--text-error) 10%, transparent);
 	color: var(--link-unresolved-color, var(--text-error));
-	text-decoration-style: dotted;
-	text-decoration-color: var(--link-unresolved-color, var(--text-error));
 }
 
 .file-diff__link-warning {
@@ -344,11 +334,11 @@
 }
 
 .no-decoration {
-	text-decoration-line: none;
+	text-decoration: none;
 }
 
 .no-decoration:hover {
-	text-decoration-line: none;
+	text-decoration: none;
 }
 
 .text-xxs {
@@ -371,7 +361,7 @@
 
 /* Fix button width on mobile in setting items for our components */
 .is-phone .modal .setting-item-control button.system3-button {
-	width: auto !important;
+	width: auto;
 }
 
 /* Held-deletion decision modal: a fixed-width confirmation dialog whose
