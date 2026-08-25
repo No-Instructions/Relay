@@ -8,7 +8,7 @@
  */
 
 import * as Y from 'yjs';
-import { TFile } from 'obsidian';
+import { TFile, View } from 'obsidian';
 import type { WorkspaceLeaf } from 'obsidian';
 import type { EditorView } from '@codemirror/view';
 import { diff_match_patch } from 'diff-match-patch';
@@ -897,7 +897,7 @@ export class RelayDebugAPI {
     // Let Obsidian finish any async view replacement caused by mode switches.
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
-    const activeLeaf = app.workspace.activeLeaf;
+    const activeLeaf = app.workspace.getActiveViewOfType(View)?.leaf;
     const candidates = this.findLeavesByPath(path);
     const activeFile = (activeLeaf?.view as { file?: { path?: string } } | undefined)?.file;
     const resolvedLeaf = (
@@ -928,7 +928,7 @@ export class RelayDebugAPI {
       };
     }
     const info = this.leafViewInfo(leaf);
-    const active = this.plugin?.app?.workspace?.activeLeaf === leaf;
+    const active = this.plugin?.app?.workspace?.getActiveViewOfType(View)?.leaf === leaf;
     return {
       handle,
       currentPath: info.currentPath,
@@ -940,7 +940,7 @@ export class RelayDebugAPI {
 
   private listEditors(): EditorInfo[] {
     const out: EditorInfo[] = [];
-    const activeLeaf = this.plugin?.app?.workspace?.activeLeaf;
+    const activeLeaf = this.plugin?.app?.workspace?.getActiveViewOfType(View)?.leaf;
     this.plugin?.app?.workspace?.iterateAllLeaves?.((leaf) => {
       const info = this.leafViewInfo(leaf);
       // Only markdown leaves have an editor; other view types can't be targeted
