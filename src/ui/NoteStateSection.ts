@@ -1,6 +1,11 @@
 import { diff_match_patch } from "diff-match-patch";
 import { MarkdownView, type App, type Editor, type EventRef } from "obsidian";
-import type { HsmStateSnapshot, RelayDebugAPI } from "../RelayDebugAPI";
+import type {
+	DebugDocumentLookup,
+	HsmStateSnapshot,
+	RelayDebugAPI,
+} from "../RelayDebugAPI";
+import type { MergeHSM } from "../merge-hsm/MergeHSM";
 import { generateHash } from "../hashing";
 import type { MergeEffect, MergeState } from "../merge-hsm/types";
 import type { TimeProvider } from "../TimeProvider";
@@ -68,8 +73,21 @@ interface StoresCheck {
 	cls: "ok" | "warn" | "bad";
 }
 
+/** The engine internals this passive strip reads off the machine. */
+type HsmStateView = {
+	pendingDiskContents?: string | null;
+	pendingDiskHash?: string | null;
+	_lca?: { contents?: string | null; meta?: { hash?: string | null } } | null;
+};
+const hsmState = (hsm: MergeHSM): HsmStateView => hsm as unknown as HsmStateView;
+
+/** The engine-write stamp the strip reads off a managed document. */
+type StampedDocument = {
+	_lastEngineWrite?: { hash?: string | null; mtime?: number | null } | null;
+};
+
 type LookupResult =
-	| { status: "ok"; doc: any; hsm: any; guid: string; folder: any }
+	| ({ status: "ok" } & DebugDocumentLookup)
 	| { status: "unshared" }
 	| { status: "no-doc" };
 
@@ -93,7 +111,7 @@ export class NoteStateSection {
 	readonly el: HTMLElement;
 
 	private boundPath: string | null = null;
-	private hsm: any = null;
+	private hsm: MergeHSM | null = null;
 	private hsmUnsubscribers: (() => void)[] = [];
 	private lastRenderedStatePath: string | null = null;
 
@@ -226,7 +244,9 @@ export class NoteStateSection {
 		if (!hsm) return;
 
 		this.lastWriteConfirmationRef =
-			lookup.status === "ok" ? (lookup.doc?._lastEngineWrite ?? null) : null;
+			lookup.status === "ok"
+				? ((lookup.doc as StampedDocument)._lastEngineWrite ?? null)
+				: null;
 		this.hsmUnsubscribers.push(
 			hsm.effects.subscribe((effect: MergeEffect) => this.onEffect(effect)),
 			hsm.stateChanges.subscribe((state: MergeState) =>
@@ -293,7 +313,7 @@ export class NoteStateSection {
 	private observeWriteConfirmation(): void {
 		const lookup = this.lookup();
 		if (lookup.status !== "ok") return;
-		const confirmation = lookup.doc?._lastEngineWrite;
+		const confirmation = (lookup.doc as StampedDocument)._lastEngineWrite;
 		if (!confirmation || confirmation === this.lastWriteConfirmationRef) return;
 		this.lastWriteConfirmationRef = confirmation;
 		if (
@@ -327,7 +347,7 @@ export class NoteStateSection {
 	}
 
 	private trackIngestLane(): void {
-		const pendingValue = this.hsm?.pendingDiskContents;
+		const pendingValue = this.hsm ? hsmState(this.hsm).pendingDiskContents : undefined;
 		const pending = typeof pendingValue === "string" ? pendingValue : null;
 		const localText = this.localDocText();
 
@@ -414,8 +434,9 @@ export class NoteStateSection {
 			content,
 			preHash: this.knownHash(localText),
 			contentHash:
-				typeof this.hsm?.pendingDiskHash === "string"
-					? this.hsm.pendingDiskHash
+				typeof (this.hsm ? hsmState(this.hsm).pendingDiskHash : undefined) ===
+				"string"
+					? (hsmState(this.hsm!).pendingDiskHash ?? null)
 					: null,
 			addedSpans: this.addedSpans(localText, content),
 			pendingCleared: false,
@@ -518,7 +539,7 @@ export class NoteStateSection {
 	}
 
 	private knownHash(content: string): string | null {
-		const lca = this.hsm?._lca;
+		const lca = this.hsm ? hsmState(this.hsm)._lca : undefined;
 		if (lca?.contents === content && typeof lca.meta?.hash === "string") {
 			return lca.meta.hash;
 		}
@@ -651,7 +672,7 @@ export class NoteStateSection {
 	// ===========================================================================
 
 	private localDocText(): string | null {
-		const text = this.hsm?.localDoc?.getText?.("contents");
+		const text = this.hsm?.getLocalDoc()?.getText("contents");
 		return text ? text.toString() : null;
 	}
 

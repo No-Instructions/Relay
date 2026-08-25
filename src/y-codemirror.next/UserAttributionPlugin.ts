@@ -7,6 +7,8 @@ import {
 } from "@codemirror/view";
 import { StateEffect, StateField, Range, type EditorState } from "@codemirror/state";
 import { editorInfoField } from "obsidian";
+import type { TFile } from "obsidian";
+import type { Awareness } from "y-protocols/awareness";
 import * as Y from "yjs";
 
 import { getLiveViews } from "../editorContext";
@@ -110,14 +112,16 @@ export class UserAttributionPluginValue {
 			return;
 		}
 
-		const fileInfo = view.state.field(editorInfoField, false) as any;
+		const fileInfo = view.state.field(editorInfoField, false) as
+			| { file?: TFile | null }
+			| undefined;
 		const file = fileInfo?.file;
 		if (!file) {
 			this.decorations = Decoration.none;
 			return;
 		}
 
-		const connectionManager = getLiveViews(view) as any;
+		const connectionManager = getLiveViews(view);
 		const folder = connectionManager?.sharedFolders.lookup(file.path);
 		let doc;
 		try {
@@ -135,8 +139,11 @@ export class UserAttributionPluginValue {
 
 		const clientToUser = new Map<string, string>();
 		const usersMap = ydoc.getMap("users");
-		usersMap.forEach((entry: any, userId: string) => {
-			const ids = entry?.get?.("ids");
+		usersMap.forEach((entry: unknown, userId: string) => {
+			const record = entry as
+				| { get?: (key: string) => { toArray?: () => unknown[] } | undefined }
+				| undefined;
+			const ids = record?.get?.("ids");
 			const idsArray = typeof ids?.toArray === "function" ? ids.toArray() : null;
 			if (!idsArray) return;
 			for (const cid of idsArray) {
@@ -150,10 +157,14 @@ export class UserAttributionPluginValue {
 			return u?.name || userId;
 		};
 
-		const awareness = (doc as any)?._provider?.awareness;
+		const awareness = (doc as unknown as {
+			_provider?: { awareness?: Awareness };
+		})._provider?.awareness;
 		const userColors = new Map<string, { color: string; light: string }>();
 		const usedColors = new Set<string>();
-		awareness?.getStates?.().forEach((state: any) => {
+		awareness?.getStates?.().forEach((state: {
+			user?: { id?: string; color?: string; colorLight?: string; name?: string };
+		}) => {
 			const u = state?.user;
 			if (u?.id && u?.color) {
 				userColors.set(u.id, {
@@ -193,9 +204,9 @@ export class UserAttributionPluginValue {
 		const doclen = view.state.doc.length;
 		const ranges: Range<Decoration>[] = [];
 		let pos = 0;
-		let item: any = (ytext as any)._start;
+		let item: Y.Item | null = ytext._start;
 		while (item) {
-			const len = item.length as number;
+			const len = item.length;
 			if (!item.deleted) {
 				const userId = clientToUser.get(String(item.id.client));
 				const from = pos;
@@ -234,17 +245,20 @@ export const userAttributionPlugin = ViewPlugin.fromClass(
 	{ decorations: (v) => v.decorations },
 );
 
-function cmFromEditor(editor: any): EditorView | undefined {
-	return editor?.cm as EditorView | undefined;
+/** An Obsidian editor handle carrying its CM6 view. */
+export type EditorWithCM = unknown;
+
+function cmFromEditor(editor: EditorWithCM): EditorView | undefined {
+	return (editor as { cm?: EditorView } | undefined)?.cm;
 }
 
-export function getAttributionFilter(editor: any): AttributionFilter {
+export function getAttributionFilter(editor: EditorWithCM): AttributionFilter {
 	const cm = cmFromEditor(editor);
 	return cm ? readAttributionFilter(cm.state) : null;
 }
 
 export function setAttributionFilter(
-	editor: any,
+	editor: EditorWithCM,
 	filter: AttributionFilter,
 ): void {
 	const cm = cmFromEditor(editor);
@@ -253,7 +267,7 @@ export function setAttributionFilter(
 }
 
 /** Returns true if attribution is enabled in any form (global or per-user). */
-export function isUserAttributionOn(editor: any): boolean {
+export function isUserAttributionOn(editor: EditorWithCM): boolean {
 	return getAttributionFilter(editor) !== null;
 }
 
@@ -261,7 +275,7 @@ export function isUserAttributionOn(editor: any): boolean {
  * Global toggle: off ↔ show-all.
  * If the current filter is per-user, switches to off.
  */
-export function toggleUserAttribution(editor: any): boolean {
+export function toggleUserAttribution(editor: EditorWithCM): boolean {
 	const filter = getAttributionFilter(editor);
 	const next: AttributionFilter =
 		filter === null ? { users: new Set<string>() } : null;
@@ -271,7 +285,7 @@ export function toggleUserAttribution(editor: any): boolean {
 
 /** Toggle attribution for a specific user. */
 export function toggleUserAttributionForUser(
-	editor: any,
+	editor: EditorWithCM,
 	userId: string,
 ): AttributionFilter {
 	const filter = getAttributionFilter(editor);
