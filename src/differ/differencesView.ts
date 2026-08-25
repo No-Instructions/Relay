@@ -31,6 +31,7 @@ import {
 	TAbstractFile,
 	parseLinktext,
 	type ViewStateResult,
+	View,
 	WorkspaceLeaf,
 } from "obsidian";
 import { diffMatchPatch } from "src/y-diffMatchPatch";
@@ -85,7 +86,7 @@ export async function openDiffView(
 ): Promise<void> {
 	// Capture the currently active leaf to return to it later
 	if (!state.originalLeaf) {
-		state.originalLeaf = workspace.activeLeaf || undefined;
+		state.originalLeaf = workspace.getActiveViewOfType(View)?.leaf;
 	}
 
 	// Closes all leafs (views) of the type VIEW_TYPE_DIFFERENCES
