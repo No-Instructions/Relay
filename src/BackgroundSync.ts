@@ -249,7 +249,7 @@ export class BackgroundSync extends HasLogging {
 			);
 			lastFolderPollAt = now;
 			this.sharedFolders.forEach((folder) => {
-				folder.poll();
+				void folder.poll();
 			});
 			this.reclaimParkedFailures();
 		}, BACKGROUND_SYNC_FOLDER_POLL_INTERVAL_MS);

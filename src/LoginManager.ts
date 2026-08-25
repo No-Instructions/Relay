@@ -339,13 +339,13 @@ export class LoginManager extends Observable<LoginManager> {
 				});
 		}
 		if (provider) {
-			this.loginSettings.set({ provider });
+			void this.loginSettings.set({ provider });
 		}
 		return true;
 	}
 
 	clearPreferredProvider() {
-		this.loginSettings.set({ provider: undefined });
+		void this.loginSettings.set({ provider: undefined });
 	}
 
 	async checkRelayHost(relay_guid: string): Promise<RequestUrlResponsePromise> {
@@ -375,7 +375,7 @@ export class LoginManager extends Observable<LoginManager> {
 			.then((response) => {
 				if (response.status === 200) {
 					const serverFlags = response.json as ServerFlags[];
-					FeatureFlagManager.getInstance().applyServerFlags(serverFlags);
+					void FeatureFlagManager.getInstance().applyServerFlags(serverFlags);
 				}
 			})
 			.catch((reason) => {
@@ -437,7 +437,7 @@ export class LoginManager extends Observable<LoginManager> {
 		if (result.success && this.endpointManager.hasValidatedEndpoints()) {
 			// Clean up old PocketBase instance before creating new one
 			this.pb.cancelAllRequests();
-			this.pb.realtime.unsubscribe();
+			void this.pb.realtime.unsubscribe();
 
 			// Recreate PocketBase instance with new auth URL
 			const pbLog = curryLog("[Pocketbase]", "debug");
@@ -486,7 +486,7 @@ export class LoginManager extends Observable<LoginManager> {
 
 	logout() {
 		this.pb.cancelAllRequests();
-		this.pb.realtime.unsubscribe();
+		void this.pb.realtime.unsubscribe();
 		this.pb.authStore.clear();
 		this.user = undefined;
 		this.notifyListeners();
@@ -658,7 +658,7 @@ export class LoginManager extends Observable<LoginManager> {
 			// Clean up realtime subscription to prevent reconnection loops
 			// authWithOAuth2 internally subscribes to @oauth2 via SSE, and if it fails,
 			// PocketBase's realtime client will keep trying to reconnect indefinitely
-			this.pb.realtime.unsubscribe();
+			void this.pb.realtime.unsubscribe();
 			throw e;
 		}
 	}
@@ -679,7 +679,7 @@ export class LoginManager extends Observable<LoginManager> {
 
 	destroy() {
 		this.pb.cancelAllRequests();
-		this.pb.realtime.unsubscribe();
+		void this.pb.realtime.unsubscribe();
 		this.pb = null as unknown as typeof this.pb;
 		this.authStore.destroy();
 		this.authStore = null as unknown as typeof this.authStore;

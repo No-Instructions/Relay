@@ -297,7 +297,7 @@ export class Document
 
 	process(fn: (data: string) => string): boolean {
 		if (this._hsm) {
-			this._hsm.registerMachineEdit(fn);
+			void this._hsm.registerMachineEdit(fn);
 		}
 		return false;
 	}
@@ -880,7 +880,7 @@ export class Document
 		if (mergeManager.isActive(this.guid) && this._providerIntegration) {
 			this._activeProviderIntegration = true;
 			this.setAwarenessActive(true);
-			this.connect();
+			void this.connect();
 			return hsm;
 		}
 
@@ -919,7 +919,7 @@ export class Document
 		// the provider. Without reconnecting, SYNC_TO_REMOTE updates
 		// from conflict resolution are buffered but never sent.
 		// connect() is a no-op if already connected.
-		this.connect();
+		void this.connect();
 
 		return hsm;
 	}
@@ -1176,7 +1176,7 @@ export class Document
 			if (awaitingUpdates) {
 				// If this is a brand new shared folder, we want to wait for a connection before we start reserving new guids for local files.
 				this.log("awaiting updates");
-				this.connect();
+				void this.connect();
 				await trackPromise(`connected:${this.guid}`, this.onceConnected());
 				this.log("connected");
 				await trackPromise(
@@ -1320,7 +1320,7 @@ export class Document
 		});
 
 		// Release HSM lock if held
-		this.releaseLock();
+		void this.releaseLock();
 
 		// The HSM's cleanup invoke closes per-document IDB asynchronously.
 		// Track it so close failures are logged.

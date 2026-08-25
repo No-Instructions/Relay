@@ -332,13 +332,13 @@ export class Canvas
 				this._bridge?.reconcile();
 				this.updateStats();
 				try {
-					this._persistenceInstance?.set("path", this.path);
-					this._persistenceInstance?.set(
+					void this._persistenceInstance?.set("path", this.path);
+					void this._persistenceInstance?.set(
 						"relay",
 						this.sharedFolder.relayId || "",
 					);
-					this._persistenceInstance?.set("appId", this.sharedFolder.appId);
-					this._persistenceInstance?.set("s3rn", S3RN.encode(this.s3rn));
+					void this._persistenceInstance?.set("appId", this.sharedFolder.appId);
+					void this._persistenceInstance?.set("s3rn", S3RN.encode(this.s3rn));
 				} catch {
 					// pass
 				}
@@ -519,7 +519,7 @@ export class Canvas
 					this.warn("canvas flush failed", e);
 					this.hsm.send({ type: "FLUSH_FAILED", error: e });
 				});
-				trackPromise(`canvasFlush:${this.guid}`, p);
+				void trackPromise(`canvasFlush:${this.guid}`, p);
 				return;
 			}
 			case "INGEST_MERGE": {
@@ -567,7 +567,7 @@ export class Canvas
 					this.warn("canvas ingest failed", e);
 					this.hsm.send({ type: "FLUSH_FAILED", error: e });
 				});
-				trackPromise(`canvasIngest:${this.guid}`, p);
+				void trackPromise(`canvasIngest:${this.guid}`, p);
 				return;
 			}
 			case "RECONCILE_VIEW": {
@@ -584,7 +584,7 @@ export class Canvas
 					.catch(() => {
 						this.hsm.send({ type: "DOWNLOAD_FAILED" });
 					});
-				trackPromise(`canvasDownload:${this.guid}`, p);
+				void trackPromise(`canvasDownload:${this.guid}`, p);
 				return;
 			}
 			case "PERSIST_STATE": {
@@ -728,7 +728,7 @@ export class Canvas
 			if (awaitingUpdates) {
 				// If this is a brand new shared folder, we want to wait for a connection before we start reserving new guids for local files.
 				this.log("awaiting updates");
-				this.connect();
+				void this.connect();
 				await trackPromise(`canvasConnected:${this.guid}`, this.onceConnected());
 				this.log("connected");
 				await trackPromise(`canvasReady:${this.guid}`, this.onceProviderSynced());

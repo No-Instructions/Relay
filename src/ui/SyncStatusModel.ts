@@ -5,7 +5,7 @@ import {
 } from "../BackgroundSyncProgress";
 import type { SharedFolder } from "../SharedFolder";
 import { formatUserFacingError } from "../UserFacingError";
-import type { StatePath, SyncStatus, SyncStatusType } from "../merge-hsm/types";
+import type { StatePath, SyncStatus } from "../merge-hsm/types";
 import type { MergeHSM } from "src/merge-hsm/MergeHSM";
 
 export type FileSyncUiStatus = "synced" | "syncing" | "conflict" | "error";

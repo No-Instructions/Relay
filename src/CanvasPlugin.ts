@@ -101,7 +101,7 @@ export class CanvasPlugin extends HasLogging {
 		this.observedTextNodes = new Set();
 		this.trackedEmbedViews = new Set();
 		this.install();
-		this.verifyViewDataOwnership();
+		void this.verifyViewDataOwnership();
 	}
 
 	/**
@@ -648,7 +648,7 @@ export class CanvasPlugin extends HasLogging {
 							// ownership for a view that held unsaved edits
 							// when the plugin attached.
 							plugin.markViewDataOwned();
-							plugin.relayCanvas.importFromView(plugin.view);
+							void plugin.relayCanvas.importFromView(plugin.view);
 						} catch (e) {
 							plugin.log(e);
 						}
@@ -662,7 +662,7 @@ export class CanvasPlugin extends HasLogging {
 						const res = old.call(this, data);
 						try {
 							if (plugin.viewDataOwned) {
-								plugin.relayCanvas.importFromView(plugin.view);
+								void plugin.relayCanvas.importFromView(plugin.view);
 							}
 						} catch (e) {
 							plugin.log(e);
