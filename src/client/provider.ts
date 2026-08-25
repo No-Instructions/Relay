@@ -16,7 +16,7 @@ import { Observable } from "lib0/observable";
 import * as math from "lib0/math";
 import * as url from "lib0/url";
 import { decode as decodeCBOR } from "cbor-x";
-import { metrics, curryLog } from "../debug";
+import { metrics, curryLog, describeError } from "../debug";
 import type { TimeProvider } from "../TimeProvider";
 
 declare const GIT_TAG: string;
@@ -153,7 +153,7 @@ messageHandlers[messageEvent] = (
 			provider.processEvent(eventMessage);
 		}
 	} catch (error) {
-		providerError(`Failed to decode event message: ${error}`);
+		providerError(`Failed to decode event message: ${describeError(error)}`);
 	}
 };
 
@@ -171,7 +171,7 @@ messageHandlers[messageSubdocs] = (
 		const subdocIndex = normalizeSubdocIndex(decodeCBOR(cborData));
 		provider.handleSubdocIndex(subdocIndex);
 	} catch (error) {
-		providerError(`Failed to decode subdoc index: ${error}`);
+		providerError(`Failed to decode subdoc index: ${describeError(error)}`);
 	}
 };
 
@@ -1240,7 +1240,7 @@ export class YSweetProvider extends Observable<string> {
 			try {
 				callback(eventMessage);
 			} catch (error) {
-				providerError(`Event callback error: ${error}`);
+				providerError(`Event callback error: ${describeError(error)}`);
 			}
 		});
 	}
@@ -1314,7 +1314,7 @@ export class YSweetProvider extends Observable<string> {
 			try {
 				callback(serverIndex);
 			} catch (error) {
-				providerError(`Subdoc index callback error: ${error}`);
+				providerError(`Subdoc index callback error: ${describeError(error)}`);
 			}
 		}
 	}

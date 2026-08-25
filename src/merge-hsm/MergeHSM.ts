@@ -68,7 +68,7 @@ import type {
 } from "./types";
 import type { TimeProvider } from "../TimeProvider";
 import { DefaultTimeProvider } from "../TimeProvider";
-import { curryLog, recordHSMEntry } from "../debug";
+import { curryLog, describeError, recordHSMEntry } from "../debug";
 import { flags } from "../flagManager";
 import { generateHash } from "../hashing";
 import { Lifetime } from "../promiseUtils";
@@ -241,11 +241,6 @@ type YChangedType = Parameters<Y.Transaction["changed"]["has"]>[0];
 const payload = (event: MergeEvent): MergeEventPayload =>
 	event as MergeEventPayload;
 
-type MergeEventData = Exclude<
-	EventField<MergeEvent, "data">,
-	string | null | undefined
->;
-
 /**
  * What the machine's invoked services resolve with. The interpreter
  * returns each result inside a done.invoke envelope whose data field
@@ -282,12 +277,9 @@ type MergeServiceResult =
 		detail?: Record<string, unknown>;
 	};
 
-/** The object result payloads, mapped the same way as the event fields. */
+/** The service result payloads, mapped the same way as the event fields. */
 type MergeEventDataPayload = {
-	[K in EventKeys<MergeEventData | MergeServiceResult>]?: EventField<
-		MergeEventData | MergeServiceResult,
-		K
-	>;
+	[K in EventKeys<MergeServiceResult>]?: EventField<MergeServiceResult, K>;
 };
 
 /** An event's object result payload; string-valued data reads as absent. */
@@ -2703,7 +2695,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			try {
 				this.emitPersistState();
 			} catch (error) {
-				this.hsmError(`Error persisting state during destroy: ${error}`);
+				this.hsmError(`Error persisting state during destroy: ${describeError(error)}`);
 			}
 		}
 
@@ -3051,7 +3043,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 							? mergeSnapshotHeads({ snapshot: this._remoteSnapshot }, updateHead).snapshot
 							: updateHead.snapshot;
 					} catch (e) {
-						this.hsmError(`Dropping unparseable remote update for ${this._guid} (${update.byteLength} bytes): ${e}`);
+						this.hsmError(`Dropping unparseable remote update for ${this._guid} (${update.byteLength} bytes): ${describeError(e)}`);
 					}
 				}
 			},
@@ -3187,7 +3179,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			},
 			storeInvokeError: (_hsm, event) => {
 				const data = dataOf(event);
-				const error = data instanceof Error ? data : new Error(String(data ?? "invoke failed"));
+				const error =
+					data instanceof Error
+						? data
+						: new Error(typeof data === "string" ? data : "invoke failed");
 				this._error = error;
 				// A missing backing file can race folder materialization/deletion, while
 				// transport failures can race provider reconnects. Both re-arm on new
@@ -4211,7 +4206,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 						await this.drainPendingMachineEditsForRelease(signal);
 						await this.deactivateEditor();
 					} catch (err) {
-						this.hsmError(`Error during release lock cleanup: ${err}`);
+						this.hsmError(`Error during release lock cleanup: ${describeError(err)}`);
 					}
 					return { type: 'release', wasConflict };
 				}
@@ -4219,7 +4214,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				try {
 					await this.destroyLocalDoc();
 				} catch (err) {
-					this.hsmError(`Error during unload cleanup: ${err}`);
+					this.hsmError(`Error during unload cleanup: ${describeError(err)}`);
 				}
 				// An ended lifetime routes the unloading state to the terminal
 				// "destroyed" state (cleanupWasDestroy guard) instead of "unloaded".

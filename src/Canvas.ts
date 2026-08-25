@@ -91,7 +91,7 @@ function copyDefined<T>(value: T): T {
 		return null as T;
 	}
 	if (Array.isArray(value)) {
-		return value.map((item) =>
+		return (value as unknown[]).map((item) =>
 			item === undefined ? null : copyDefined(item),
 		) as T;
 	}
@@ -1026,7 +1026,7 @@ export class Canvas
 		// A brand-new canvas file may be blank or hold a bare "{}"; both
 		// carry no content and neither may crash enrollment.
 		if (json.trim() === "") return;
-		const parsed = JSON.parse(json);
+		const parsed = JSON.parse(json) as Partial<CanvasData>;
 		return await this.applyData({
 			nodes: parsed.nodes ?? [],
 			edges: parsed.edges ?? [],

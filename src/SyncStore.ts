@@ -1,4 +1,5 @@
 "use strict";
+import { describeOrigin } from "./merge-hsm/undo/origins";
 import * as Y from "yjs";
 import { sep, dirname, join } from "path-browserify";
 import { v4 as uuidv4 } from "uuid";
@@ -386,7 +387,7 @@ export class SyncStore extends Observable<SyncStore> {
 		withFlag(flag.enableDeltaLogging, () => {
 			const logObserver = (event: Y.YMapEvent<string> | Y.YMapEvent<Meta>) => {
 				let log = "";
-				log += `Transaction origin: ${event.transaction.origin}${event.transaction.origin?.constructor?.name}\n`;
+				log += `Transaction origin: ${describeOrigin(event.transaction.origin)}\n`;
 				event.changes.keys.forEach((change, key) => {
 					if (change.action === "add") {
 						log += `Added ${key}: ${this.get(key)}\n`;
@@ -426,7 +427,7 @@ export class SyncStore extends Observable<SyncStore> {
 				}
 			});
 
-			const origin = event.transaction.origin;
+			const origin: unknown = event.transaction.origin;
 			if (origin == this) return;
 
 			// Compute a delta only when at least one consumer is installed.
