@@ -10,7 +10,7 @@
 
 import type { EditorView, ViewUpdate } from "@codemirror/view";
 import { Transaction, type TransactionSpec } from "@codemirror/state";
-import { editorInfoField, getFrontMatterInfo } from "obsidian";
+import { editorInfoField, getFrontMatterInfo, type Vault } from "obsidian";
 import type { MergeHSM } from "../MergeHSM";
 import type { PositionedChange } from "../types";
 // Import the shared annotation to prevent feedback loops
@@ -56,9 +56,10 @@ export class CM6Integration {
 	private shouldBypassFrontmatterTransactionFilters(
 		changes: PositionedChange[],
 	): boolean {
-		const fileInfo = this.view.state.field(editorInfoField, false) as any;
-		const propertiesInDocument =
-			fileInfo?.app?.vault?.getConfig?.("propertiesInDocument") ?? null;
+		const fileInfo = this.view.state.field(editorInfoField, false);
+		const vault: (Vault & { getConfig?: (key: string) => unknown }) | undefined =
+			fileInfo?.app?.vault;
+		const propertiesInDocument = vault?.getConfig?.("propertiesInDocument") ?? null;
 		if (propertiesInDocument === "source") {
 			return false;
 		}

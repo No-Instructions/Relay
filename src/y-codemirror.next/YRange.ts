@@ -20,8 +20,8 @@ export class YRange {
 
 	toJSON(): unknown {
 		return {
-			yanchor: Y.relativePositionToJSON(this.yanchor),
-			yhead: Y.relativePositionToJSON(this.yhead),
+			yanchor: Y.relativePositionToJSON(this.yanchor) as unknown,
+			yhead: Y.relativePositionToJSON(this.yhead) as unknown,
 		};
 	}
 
