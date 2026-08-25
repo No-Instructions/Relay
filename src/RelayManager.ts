@@ -1925,7 +1925,7 @@ export class RelayManager extends HasLogging {
 			for (const item of collection.items()) {
 				if (!hasRecordSubscription(item)) continue;
 				try {
-					await item.offRecordSubscription?.();
+					item.offRecordSubscription?.();
 				} catch (e) {
 					this.debug("stale record unsubscribe failed", e);
 				}
