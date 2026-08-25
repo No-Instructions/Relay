@@ -65,8 +65,13 @@ export function getConnectionManager(
 ): LiveViewManager | null {
 	const fileInfo = editor.state.field(editorInfoField, false);
 	return (
-		(fileInfo as any)?.app?.plugins?.plugins?.["system3-relay"]?._liveViews ??
-		null
+		(fileInfo as unknown as {
+			app?: {
+				plugins?: {
+					plugins?: Record<string, { _liveViews?: LiveViewManager }>;
+				};
+			};
+		} | undefined)?.app?.plugins?.plugins?.["system3-relay"]?._liveViews ?? null
 	);
 }
 
@@ -110,7 +115,12 @@ function refreshLeafViewForUnload(
 		mode?: string;
 	},
 ): void {
-	const rawLeaf = leaf as any;
+	const rawLeaf = leaf as
+		| (WorkspaceLeaf & {
+				view?: { getMode?: () => string };
+				rebuildView?: () => Promise<void>;
+		  })
+		| undefined;
 	if (!rawLeaf) return;
 
 	const cleanup = (async () => {
@@ -845,7 +855,7 @@ export class LiveView<ViewType extends TextFileView>
 		if (!(this.view instanceof MarkdownView)) {
 			return;
 		}
-		const cm = (this.view.editor as any)?.cm as EditorView | undefined;
+		const cm = (this.view.editor as { cm?: EditorView } | undefined)?.cm;
 		if (!cm) {
 			return;
 		}
@@ -1345,8 +1355,8 @@ export class LiveViewManager {
 
 			for (const [, node] of canvas.nodes) {
 				const nodeData = node.getData?.();
-				// @ts-ignore — child is not typed on CanvasNode, only on CanvasNodeData
-				const child = (node as any).child ?? nodeData?.child;
+				const child =
+					(node as { child?: { file?: TFile } }).child ?? nodeData?.child;
 				if (!child?.file) continue;
 
 				const filePath: string = child.file.path;
@@ -1845,7 +1855,7 @@ export class LiveViewManager {
 		iterateTextFileViews(this.workspace, this.textViewRegistry, (view) => {
 			const leaf = view.leaf;
 			if (!leaf || refreshed.has(leaf)) return;
-			if (!((view as any).editor as any)?.cm) return;
+			if (!(view as { editor?: { cm?: EditorView } }).editor?.cm) return;
 			refreshed.add(leaf);
 			refreshLeafViewForUnload(leaf, {
 				file: view.file,

@@ -1,6 +1,8 @@
 "use strict";
 
+import type { MergeEvent } from "./merge-hsm/types";
 import {
+	type EventRef,
 	TFolder,
 	Notice,
 	MarkdownView,
@@ -564,7 +566,7 @@ export default class Live extends Plugin {
 		);
 		initializeMetrics(
 			this.app,
-			(ref) => this.registerEvent(ref),
+			(ref: EventRef) => this.registerEvent(ref),
 			(el, type, callback) => this.registerDomEvent(el, type, callback),
 		);
 		// While the page is hidden, the PostOffice delivery timer can be throttled
@@ -587,7 +589,7 @@ export default class Live extends Plugin {
 
 		this.log("Plugin started", { version: this.manifest.version });
 
-		this.settings = new Settings(this, DEFAULT_SETTINGS);
+		this.settings = new Settings<RelaySettings>(this, DEFAULT_SETTINGS);
 		await this.settings.load();
 
 		const settingsTree = this.settings as unknown as SettingsTree;
@@ -840,7 +842,9 @@ export default class Live extends Plugin {
 		this.textViewRegistry = new TextViewRegistry(
 			this.pluginRegistrySettings,
 			(viewType) => {
-				const registry = (this.app as any).viewRegistry;
+				const registry = (this.app as unknown as {
+					viewRegistry?: { getViewCreatorByType?: (viewType: string) => unknown };
+				}).viewRegistry;
 				const probe = registry?.getViewCreatorByType;
 				if (typeof probe !== "function") return undefined;
 				return !!probe.call(registry, viewType);
@@ -1212,8 +1216,9 @@ export default class Live extends Plugin {
 	openReleaseManager(version?: string) {
 		const modal = new ReleaseManager(this.app, this, version);
 
-		const app = this.app as any;
-		const setting = app.setting;
+		const setting = (
+			this.app as unknown as { setting: { close(): void } }
+		).setting;
 		setting.close();
 
 		this.openModals.push(modal);
@@ -1286,9 +1291,9 @@ export default class Live extends Plugin {
 							}
 						}
 					}
-					return originalDesc.value;
+					return originalDesc.value as unknown;
 				},
-				set(value) {
+				set(value: unknown) {
 					originalDesc.value = value;
 				},
 				configurable: true,
@@ -1502,7 +1507,19 @@ export default class Live extends Plugin {
 		const plugin = this;
 
 		/** Route a diagnostic event to the HSM for the given file (if it's a Relay document). */
-		const sendDiagnosticToHSM = (file: TFile, event: any) => {
+		/**
+		 * The Relay-stamped flags and internal fields the view hooks read
+		 * off a markdown view.
+		 */
+		type PatchedMarkdownView = MarkdownView & {
+			__relaySaving?: boolean;
+			__relayLoading?: "initial" | "reload" | false | null;
+			dirty?: boolean;
+			lastSavedData?: string | null;
+			isPlaintext?: boolean;
+		};
+
+		const sendDiagnosticToHSM = (file: TFile, event: MergeEvent) => {
 			try {
 				const folder = plugin.sharedFolders.lookup(file.path);
 				if (folder) {
@@ -1532,7 +1549,7 @@ export default class Live extends Plugin {
 
 		getPatcher().patch(MarkdownView.prototype, {
 			// When this is called, the active editors haven't yet updated.
-			onUnloadFile(old: unknown) {
+			onUnloadFile(old: (...args: unknown[]) => unknown) {
 				return function (this: MarkdownView, file: TFile) {
 					if (file instanceof TFile) {
 						try {
@@ -1545,16 +1562,17 @@ export default class Live extends Plugin {
 						}
 						sendDiagnosticToHSM(file, { type: 'OBSIDIAN_FILE_UNLOADED', path: file.path });
 					}
-					// @ts-ignore
 					return old.call(this, file);
 				};
 			},
 		});
 
-		const TextFileViewPrototype = Object.getPrototypeOf(MarkdownView.prototype);
+		const TextFileViewPrototype = Object.getPrototypeOf(
+			MarkdownView.prototype,
+		) as Record<string, unknown>;
 		getPatcher().patch(TextFileViewPrototype, {
-			setViewData(old: any) {
-				return function (this: any, data: string, clear: boolean) {
+			setViewData(old: (...args: unknown[]) => unknown) {
+				return function (this: PatchedMarkdownView, data: string, clear: boolean) {
 					// Universal disk→CRDT ingest point for every TextFileView
 					// subclass (markdown, canvas, kanban, …). Obsidian calls
 					// setViewData synchronously inside loadFileInternal before
@@ -1595,8 +1613,8 @@ export default class Live extends Plugin {
 					return old.call(this, data, clear);
 				};
 			},
-			loadFileInternal(old: any) {
-				return async function (this: any, file: TFile, isInitialLoad: boolean) {
+			loadFileInternal(old: (...args: unknown[]) => Promise<unknown>) {
+				return async function (this: PatchedMarkdownView, file: TFile, isInitialLoad: boolean) {
 					// Mark the critical section: view.file has already been
 					// reassigned by the caller; view.data is still stale until
 					// setData runs inside the original call. The getViewData
@@ -1664,8 +1682,8 @@ export default class Live extends Plugin {
 		getPatcher().patch(this.app.vault, {
 			process(old: (...args: unknown[]) => unknown) {
 				return async function (
-					this: any,
-					tfile: any,
+					this: unknown,
+					tfile: TFile,
 					fn: (data: string) => string,
 					options: unknown,
 				) {
@@ -2058,7 +2076,7 @@ export default class Live extends Plugin {
 		// anything above throws, we leave the ID in place so the next
 		// load surfaces it as a leak. The pre-clear warning at the top
 		// of onload() turns this into an actionable signal.
-		(window as any).__relayInstances?.delete(this._instanceId);
+		(window as unknown as { __relayInstances?: Set<string> }).__relayInstances?.delete(this._instanceId);
 	}
 
 	async loadSettings() {
