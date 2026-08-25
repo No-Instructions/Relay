@@ -119,7 +119,7 @@ function refreshLeafViewForUnload(
 		| (WorkspaceLeaf & {
 				view?: { getMode?: () => string };
 				rebuildView?: () => Promise<void>;
-		  })
+			})
 		| undefined;
 	if (!rawLeaf) return;
 

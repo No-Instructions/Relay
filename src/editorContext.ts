@@ -2,6 +2,7 @@ import type { EditorView } from "@codemirror/view";
 import { editorInfoField } from "obsidian";
 import type { App, TFile, CachedMetadata } from "obsidian";
 import type { SharedFolders } from "./SharedFolder";
+import type { LiveViewManager } from "./LiveViews";
 
 export interface MetadataBridge {
 	onMeta(
@@ -19,20 +20,27 @@ interface RelayPlugin {
 
 export function getRelayPlugin(editor: EditorView): RelayPlugin | null {
 	const fileInfo = editor.state.field(editorInfoField, false);
-	return (fileInfo as any)?.app?.plugins?.plugins?.["system3-relay"] ?? null;
+	return (
+		(fileInfo as {
+			app?: { plugins?: { plugins?: Record<string, RelayPlugin | undefined> } };
+		} | undefined)?.app?.plugins?.plugins?.["system3-relay"] ?? null
+	);
 }
 
 export function getSharedFolders(editor: EditorView): SharedFolders | null {
 	return getRelayPlugin(editor)?.sharedFolders ?? null;
 }
 
-export function getLiveViews(editor: EditorView): unknown | null {
-	return (getRelayPlugin(editor) as any)?._liveViews ?? null;
+export function getLiveViews(editor: EditorView): LiveViewManager | null {
+	return (
+		(getRelayPlugin(editor) as (RelayPlugin & { _liveViews?: LiveViewManager }) | null)
+			?._liveViews ?? null
+	);
 }
 
 export function getApp(editor: EditorView): App | null {
 	const fileInfo = editor.state.field(editorInfoField, false);
-	return (fileInfo as any)?.app ?? null;
+	return (fileInfo as { app?: App } | undefined)?.app ?? null;
 }
 
 export function getEditorFile(editor: EditorView) {

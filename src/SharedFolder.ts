@@ -655,7 +655,9 @@ export class SharedFolder extends HasProvider {
 				return join(this.path, file.path);
 			},
 		});
-		const debugAPI = (window as any).__relayDebug;
+		const debugAPI = (window as unknown as {
+			__relayDebug?: import("./RelayDebugAPI").RelayDebugGlobal;
+		}).__relayDebug;
 		if (debugAPI?.registerBridge) {
 			const unregister = debugAPI.registerBridge(this.path, this.recordingBridge);
 			this.unsubscribes.push(unregister);
@@ -1345,7 +1347,11 @@ export class SharedFolder extends HasProvider {
 	}
 
 	private getCachedDiskStateForTFile(tfile: TFile): { hash: string; mtime: number } | null {
-		const fileCache = (this.metadataCache as any)?.fileCache;
+		const fileCache = (this.metadataCache as unknown as {
+			fileCache?: Record<string, { hash?: string; mtime?: number }> & {
+				get?: (path: string) => { hash?: string; mtime?: number } | undefined;
+			};
+		}).fileCache;
 		const cached =
 			typeof fileCache?.get === "function"
 				? fileCache.get(tfile.path)
@@ -1779,7 +1785,12 @@ export class SharedFolder extends HasProvider {
 		return [
 			this.loginManager?.user?.id,
 			this.relayManager?.user?.id,
-			this._provider?.awareness.getLocalState()?.user?.id,
+			(
+				this._provider?.awareness.getLocalState() as
+					| { user?: { id?: string } }
+					| null
+					| undefined
+			)?.user?.id,
 		].some((id) => id === userId);
 	}
 
