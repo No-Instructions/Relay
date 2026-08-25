@@ -123,7 +123,7 @@ export interface MergeManagerConfig {
   loadState?: (guid: string) => Promise<PersistedMergeState | null>;
 
   /** Callback when an effect is emitted by any HSM */
-  onEffect?: (guid: string, effect: MergeEffect) => void;
+  onEffect?: (guid: string, effect: MergeEffect) => void | Promise<void>;
 
   /**
    * Callback to get disk state for a document (for polling).
@@ -392,7 +392,7 @@ export class MergeManager {
   private _folderGuid: string;
   private hashFn?: (contents: string) => Promise<string>;
   private loadAllStates?: () => Promise<PersistedStateMeta[]>;
-  private onEffect?: (guid: string, effect: MergeEffect) => void;
+  private onEffect?: (guid: string, effect: MergeEffect) => void | Promise<void>;
   private getDiskState?: (path: string) => Promise<{
     contents: string;
     mtime: number;

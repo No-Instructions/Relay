@@ -108,7 +108,8 @@ export class LiveNodePluginValue implements PluginValue {
 		);
 		this.debug("created");
 
-		this._observer = async (event, tr) => {
+		this._observer = (event, tr) => {
+			void (async () => {
 			this._ytext = this.getYText();
 
 			if (this.destroyed) {
@@ -150,6 +151,7 @@ export class LiveNodePluginValue implements PluginValue {
 					});
 				}
 			}
+			})();
 		};
 
 		this.observer = (event, tr) => {

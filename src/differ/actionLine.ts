@@ -32,7 +32,7 @@ import { DiskBuffer } from "src/DiskBuffer";
 import { diffMatchPatch } from "src/y-diffMatchPatch";
 import type { App } from "obsidian";
 
-type VoidCallback = () => void;
+type RebuildCallback = () => void | Promise<void>;
 
 export class ActionLine {
 	constructor(
@@ -45,7 +45,7 @@ export class ActionLine {
 			file2Content: string;
 			oursLabel?: string;
 			theirsLabel?: string;
-			triggerRebuild: VoidCallback;
+			triggerRebuild: RebuildCallback;
 		},
 	) {
 		this.difference = args.difference;
@@ -72,7 +72,7 @@ export class ActionLine {
 
 	private theirsLabel: string;
 
-	private triggerRebuild: VoidCallback;
+	private triggerRebuild: RebuildCallback;
 
 	async modify(file: TFile, newContent: string): Promise<void> {
 		if (file instanceof Document) {
@@ -151,7 +151,7 @@ export class ActionLine {
 		});
 		await this.modify(this.file2, newContent);
 
-		this.triggerRebuild();
+		await this.triggerRebuild();
 	}
 
 	private async acceptBottomClick(
@@ -169,7 +169,7 @@ export class ActionLine {
 		});
 		await this.modify(this.file1, newContent);
 
-		this.triggerRebuild();
+		await this.triggerRebuild();
 	}
 
 	private async acceptAllClick(
@@ -199,7 +199,7 @@ export class ActionLine {
 		});
 		await this.modify(this.file2, newFile2Content);
 
-		this.triggerRebuild();
+		await this.triggerRebuild();
 	}
 
 	private async acceptNoneClick(
@@ -222,7 +222,7 @@ export class ActionLine {
 		});
 		await this.modify(this.file2, newFile2Content);
 
-		this.triggerRebuild();
+		await this.triggerRebuild();
 	}
 
 	private async insertFile1Difference(
@@ -239,7 +239,7 @@ export class ActionLine {
 		});
 		await this.modify(this.file2, newContent);
 
-		this.triggerRebuild();
+		await this.triggerRebuild();
 	}
 
 	private async insertFile2Difference(
@@ -256,7 +256,7 @@ export class ActionLine {
 		});
 		await this.modify(this.file1, newContent);
 
-		this.triggerRebuild();
+		await this.triggerRebuild();
 	}
 
 	async discardFile1Difference(
@@ -272,7 +272,7 @@ export class ActionLine {
 		});
 		await this.modify(this.file1, newContent);
 
-		this.triggerRebuild();
+		await this.triggerRebuild();
 	}
 
 	async discardFile2Difference(
@@ -288,6 +288,6 @@ export class ActionLine {
 		});
 		await this.modify(this.file2, newContent);
 
-		this.triggerRebuild();
+		await this.triggerRebuild();
 	}
 }

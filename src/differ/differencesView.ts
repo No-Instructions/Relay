@@ -158,7 +158,7 @@ export class DifferencesView extends ItemView {
 		this.build();
 	}
 
-	async onunload(): Promise<void> {
+	onunload(): void {
 		if (!this.resolved) {
 			this.state?.onCancel?.();
 		}

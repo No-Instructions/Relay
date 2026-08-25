@@ -2187,7 +2187,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				if (settled) return;
 				settled = true;
 				cleanup();
-				reject(error);
+				reject(error instanceof Error ? error : new Error(String(error)));
 			};
 			const abort = () => {
 				fail(this._destroyedReason ?? new Error("operation aborted"));
@@ -2243,7 +2243,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			signal.addEventListener("abort", abort, { once: true });
 			promise.then(
 				(value) => finish(() => resolve(value)),
-				(error) => finish(() => reject(error)),
+				(error: Error) => finish(() => reject(error)),
 			);
 		});
 	}

@@ -4,7 +4,7 @@ import { HasLogging } from "../debug";
 import { PostOffice } from "./Postie";
 
 /** Callback to inform of a value updates. */
-export type Subscriber<T> = (value: T) => void;
+export type Subscriber<T> = (value: T) => unknown;
 
 /** Unsubscribes from value updates. */
 export type Unsubscriber = () => void;
@@ -19,9 +19,9 @@ export function auditTeardown(): void {
 }
 
 export interface IObservable<T> {
-	on(listener: () => void): Unsubscriber;
+	on(listener: () => unknown): Unsubscriber;
 	subscribe(run: Subscriber<T>): Unsubscriber;
-	off(listener: () => void): void;
+	off(listener: () => unknown): void;
 	unsubscribe(run: Subscriber<T>): void;
 }
 
@@ -51,7 +51,7 @@ export class Observable<T> extends HasLogging implements IObservable<T> {
 		}
 	}
 
-	on(listener: () => void): Unsubscriber {
+	on(listener: () => unknown): Unsubscriber {
 		this._listeners.add(listener);
 		return () => {
 			this.off(listener);

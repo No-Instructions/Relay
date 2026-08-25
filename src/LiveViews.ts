@@ -423,7 +423,7 @@ export class RelayCanvasView implements S3View {
 		}
 
 		return new Promise((resolve, reject) => {
-			return trackPromise(
+			void trackPromise(
 				`canvasView:whenReady:${this.canvas.guid}`,
 				this.canvas.whenReady(),
 			)
@@ -928,7 +928,7 @@ export class LiveView<ViewType extends TextFileView>
 		}
 
 		return new Promise((resolve, reject) => {
-			return trackPromise(
+			void trackPromise(
 				`liveView:whenReady:${this.document.guid}`,
 				this.document.whenReady(),
 			)
@@ -1479,7 +1479,7 @@ export class LiveViewManager {
 
 	private async getViews(): Promise<S3View[]> {
 		const views: S3View[] = [];
-		iterateTextFileViews(this.workspace, this.textViewRegistry, async (textFileView) => {
+		iterateTextFileViews(this.workspace, this.textViewRegistry, (textFileView) => {
 			const viewFile = textFileView.file;
 			if (!viewFile) {
 				return;

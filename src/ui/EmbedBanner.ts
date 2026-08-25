@@ -46,7 +46,7 @@ export class EmbedBanner {
 					this.destroy();
 				}
 			};
-			banner.addEventListener("click", onClick);
+			banner.addEventListener("click", () => void onClick());
 		}
 		return true;
 	}
