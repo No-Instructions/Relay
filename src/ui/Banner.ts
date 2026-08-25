@@ -62,6 +62,7 @@ export class Banner {
 		if (!bannerBox) {
 			bannerBox = leafContentEl.createDiv({ cls: "system3-banner-box" });
 			leafContentEl.insertBefore(bannerBox, contentEl);
+			leafContentEl.addClass("system3-has-banner");
 		}
 
 		let banner = leafContentEl.querySelector(".system3-banner");
