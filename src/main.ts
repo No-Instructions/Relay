@@ -1276,9 +1276,14 @@ export default class Live extends Plugin {
 			Object.defineProperty(options, "openExternalURLs", {
 				get() {
 					const plugin = owner();
-					const currentEvent = window.event as unknown as
-						| { type?: string; detail?: { url?: string } }
-						| undefined;
+					// The getter runs inside Obsidian's open-url dispatch, and the
+					// window's current event is the only handle on that dispatch; it is
+					// read through a probe because lib.dom marks the property deprecated.
+					const currentEvent = (
+						window as unknown as {
+							event?: { type?: string; detail?: { url?: string } };
+						}
+					).event;
 					if (currentEvent?.type === "open-url" && currentEvent?.detail?.url) {
 						const url = currentEvent.detail.url;
 						for (const pattern of plugin.interceptedUrls) {
