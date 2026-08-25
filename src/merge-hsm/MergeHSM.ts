@@ -218,6 +218,86 @@ class SimpleObservable<T> implements IObservable<T> {
 // MergeHSM Class
 // =============================================================================
 
+type EventKeys<E> = E extends unknown ? keyof E : never;
+type EventField<E, K extends PropertyKey> = E extends unknown
+	? K extends keyof E
+		? E[K]
+		: never
+	: never;
+
+/**
+ * Every payload field a machine-table guard or action may read, derived
+ * from the event union itself: each key maps to the union of the types
+ * it carries across events. The table wires each function to the events
+ * that carry its fields, so every read is optional: a rewired table
+ * degrades to a no-op instead of a crash.
+ */
+type MergeEventPayload = {
+	[K in Exclude<EventKeys<MergeEvent>, "type">]?: EventField<MergeEvent, K>;
+};
+
+type YChangedType = Parameters<Y.Transaction["changed"]["has"]>[0];
+
+const payload = (event: MergeEvent): MergeEventPayload =>
+	event as MergeEventPayload;
+
+type MergeEventData = Exclude<
+	EventField<MergeEvent, "data">,
+	string | null | undefined
+>;
+
+/**
+ * What the machine's invoked services resolve with. The interpreter
+ * returns each result inside a done.invoke envelope whose data field
+ * the table's guards and actions read.
+ */
+type MergeServiceResult =
+	| RecoverLCAResult
+	| {
+		success?: boolean;
+		forked?: boolean;
+		awaitingProvider?: boolean;
+		superseded?: boolean;
+		awaitingLocalEnrollment?: boolean;
+		awaitingDiskForLCA?: boolean;
+		lcaUnavailable?: boolean;
+		clean?: boolean;
+		noop?: boolean;
+		wasConflict?: boolean;
+		type?: "release" | "destroy";
+		disk?: RecoverLCADisk;
+		newLCA?: LCACandidate;
+		remoteUpdate?: Uint8Array;
+		updates?: Uint8Array;
+		needsDiskWrite?: boolean;
+		needsSync?: boolean;
+		patches?: PositionedChange[];
+		merged?: string;
+		mergedContent?: string;
+		baseText?: string;
+		localText?: string;
+		diskText?: string;
+		conflictRegions?: ConflictRegion[];
+		reason?: string;
+		detail?: Record<string, unknown>;
+	};
+
+/** The object result payloads, mapped the same way as the event fields. */
+type MergeEventDataPayload = {
+	[K in EventKeys<MergeEventData | MergeServiceResult>]?: EventField<
+		MergeEventData | MergeServiceResult,
+		K
+	>;
+};
+
+/** An event's object result payload; string-valued data reads as absent. */
+const dataOf = (event: MergeEvent): MergeEventDataPayload | undefined => {
+	const data = payload(event).data;
+	return typeof data === "object" && data !== null
+		? (data as MergeEventDataPayload)
+		: undefined;
+};
+
 export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	// Current state path
 	private _statePath: StatePath = "unloaded";
@@ -474,7 +554,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	private _accumulatedEvents: Array<
 		| { type: "REMOTE_UPDATE"; update: Uint8Array; affectsText?: boolean }
 		| { type: "DISK_CHANGED"; contents: string; mtime: number; hash: string }
-		| { type: "CM6_CHANGE"; changes: any[]; docText: string; userEvent?: string; viewId?: string }
+		| { type: "CM6_CHANGE"; changes: unknown[]; docText: string; userEvent?: string; viewId?: string }
 	> = [];
 
 	// Mode decision during loading state (null = not decided, 'idle' or 'active')
@@ -2169,7 +2249,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	}
 
 	private hasUsableLocalDoc(): boolean {
-		return !!this.localDoc && (this.localDoc as any).store != null;
+		return !!this.localDoc && this.localDoc.store != null;
 	}
 
 	/**
@@ -2719,7 +2799,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			restoredForkHasFreshDiskContents: () =>
 				this._fork !== null && this.hasSessionFreshDiskContents(),
 			shouldWakeLCARecoveryAfterPersistenceSynced: (_hsm, event) =>
-				this.shouldWakeLCARecoveryAfterPersistenceSynced((event as any).hasContent === true),
+				this.shouldWakeLCARecoveryAfterPersistenceSynced(payload(event).hasContent === true),
 			noLCADiskConflictAtLoad: () => {
 				if (this._lca || this.pendingDiskContents === null) return false;
 				if (!this.localDoc || !this.hasEnrolledLocalCRDT()) return false;
@@ -2749,7 +2829,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			// DISK_CHANGED: check if disk event matches LCA (using event hash, not stored _disk)
 			diskMatchesLCA: (_hsm, event) => {
 				if (!this._lca) return false;
-				return this._lca.meta.hash === (event as any).hash;
+				return this._lca.meta.hash === payload(event).hash;
 			},
 
 			// Idle event guards (for REMOTE_UPDATE candidates)
@@ -2757,7 +2837,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			diskContentsNeededBeforeRemoteMerge: () =>
 				this._lca !== null && this._disk === null,
 			diskMatchesConvergedDocs: (_hsm, event) => {
-				const e = event as any;
+				const e = payload(event);
 				if (typeof e.contents !== "string") return false;
 				if (this._fork || !this.localDoc || !this.remoteDoc) return false;
 				if (!yjsDocsEqual(this.localDoc, this.remoteDoc)) return false;
@@ -2770,17 +2850,17 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				this.hasRemoteChangedSinceLCA() || this._statePath === "idle.localAhead",
 
 			// Invoke completion guards
-			mergeSucceeded: (_hsm, event) => (event as any).data?.success === true,
-			forkWasCreated: (_hsm, event) => (event as any).data?.forked === true,
-			awaitingProvider: (_hsm, event) => (event as any).data?.awaitingProvider === true,
+			mergeSucceeded: (_hsm, event) => dataOf(event)?.success === true,
+			forkWasCreated: (_hsm, event) => dataOf(event)?.forked === true,
+			awaitingProvider: (_hsm, event) => dataOf(event)?.awaitingProvider === true,
 
 			// Outcome classification: the reconcile completed but the world moved
 			// during it (a remote update landed mid-operation), so the result is
 			// stale. Re-enter idle.loading to re-classify while the loop stays within
 			// its bound; past the bound the livelock becomes a real error.
-			mergeSuperseded: (_hsm, event) => (event as any).data?.superseded === true,
+			mergeSuperseded: (_hsm, event) => dataOf(event)?.superseded === true,
 			supersededWithinBound: (_hsm, event) =>
-				(event as any).data?.superseded === true
+				dataOf(event)?.superseded === true
 				&& this._consecutiveSupersessions < MergeHSM.IDLE_SUPERSESSION_BOUND,
 
 			// A retryable stored error re-arms on new information; a permanent one
@@ -2789,13 +2869,13 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 			// Loop-back guards: merge succeeded but new data arrived during the await
 			mergeSucceededAndRemotePending: (_hsm, event) =>
-				(event as any).data?.success === true && this.pendingIdleUpdates !== null,
+				dataOf(event)?.success === true && this.pendingIdleUpdates !== null,
 			mergeSucceededButMorePending: (_hsm, event) =>
-				(event as any).data?.success === true
+				dataOf(event)?.success === true
 				&& (this.pendingIdleUpdates !== null || this.pendingDiskContents !== null),
-			awaitingLocalEnrollment: (_hsm, event) => (event as any).data?.awaitingLocalEnrollment === true,
-			awaitingDiskForLCA: (_hsm, event) => (event as any).data?.awaitingDiskForLCA === true,
-			lcaUnavailable: (_hsm, event) => (event as any).data?.lcaUnavailable === true,
+			awaitingLocalEnrollment: (_hsm, event) => dataOf(event)?.awaitingLocalEnrollment === true,
+			awaitingDiskForLCA: (_hsm, event) => dataOf(event)?.awaitingDiskForLCA === true,
+			lcaUnavailable: (_hsm, event) => dataOf(event)?.lcaUnavailable === true,
 			hasPendingIdleWork: () =>
 				this.pendingIdleUpdates !== null || this.pendingDiskContents !== null,
 			hasPendingMachineEdits: () => this._pendingMachineEdits.length > 0,
@@ -2807,23 +2887,23 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 			// === Cleanup guards ===
 			cleanupWasConflict: (_hsm, event) => {
-				const data = (event as any).data;
+				const data = dataOf(event);
 				return data?.type === 'release' && data?.wasConflict === true;
 			},
 			cleanupWasReleaseLock: (_hsm, event) => {
-				return (event as any).data?.type === 'release';
+				return dataOf(event)?.type === 'release';
 			},
 			cleanupWasDestroy: (_hsm, event) => {
-				return (event as any).data?.type === 'destroy';
+				return dataOf(event)?.type === 'destroy';
 			},
 
 			// === Active entering/tracking guards ===
-			persistenceHasContent: (_hsm, event) => (event as any).hasContent === true,
+			persistenceHasContent: (_hsm, event) => payload(event).hasContent === true,
 			hasPreexistingConflict: () => this._conflict !== null,
 			hasNoLCA: () => this._lca === null,
 			activeReconcileBaseReady: () => !this.needsFullStateForActiveEntry(),
 			persistenceHasContentAndActiveBaseReady: (_hsm, event) =>
-				(event as any).hasContent === true && !this.needsFullStateForActiveEntry(),
+				payload(event).hasContent === true && !this.needsFullStateForActiveEntry(),
 			canRecoverLCA: () =>
 				this._lca === null &&
 				this._fork === null &&
@@ -2832,22 +2912,22 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				(this.hasEnrolledLocalCRDT() || this.canRecoverMissingLocalCRDTFromRemote()),
 			isRecoveryMode: () => this._lca === null,
 			recoverLCASynced: (_hsm, event) =>
-				(event as any).data?.kind === "synced",
+				dataOf(event)?.kind === "synced",
 			recoverLCARemoteAhead: (_hsm, event) =>
-				(event as any).data?.kind === "remoteAhead",
+				dataOf(event)?.kind === "remoteAhead",
 			recoverLCADiverged: (_hsm, event) =>
-				(event as any).data?.kind === "diverged",
+				dataOf(event)?.kind === "diverged",
 
 			// === Active merge invoke guards ===
-			threeWayMergeSucceeded: (_hsm, event) => (event as any).data?.success === true,
-			threeWayMergeConflict: (_hsm, event) => (event as any).data?.success === false,
-			twoWayMergeClean: (_hsm, event) => (event as any).data?.clean === true,
-			twoWayMergeConflict: (_hsm, event) => (event as any).data?.clean === false,
+			threeWayMergeSucceeded: (_hsm, event) => dataOf(event)?.success === true,
+			threeWayMergeConflict: (_hsm, event) => dataOf(event)?.success === false,
+			twoWayMergeClean: (_hsm, event) => dataOf(event)?.clean === true,
+			twoWayMergeConflict: (_hsm, event) => dataOf(event)?.clean === false,
 		};
 	}
 
 	private storeUnresolvedIdleError(event: MergeEvent, retryable: boolean): void {
-		const data = (event as any).data;
+		const data = dataOf(event);
 		const detail = data === undefined
 			? "no invoke result"
 			: JSON.stringify({
@@ -2891,11 +2971,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 			// === Remote/Disk data ===
 			storeRecoverLCADisk: (_hsm, event) => {
-				const e = event as any;
-				this.pendingRecoverLCADisk = e.disk ?? {
-					content: e.contents,
-					hash: e.hash,
-					mtime: e.mtime,
+				const e = payload(event);
+				this.pendingRecoverLCADisk = (e.disk as RecoverLCADisk | undefined) ?? {
+					content: e.contents!,
+					hash: e.hash!,
+					mtime: e.mtime!,
 				};
 			},
 			prepareRecoverLCAFromPendingDisk: () => {
@@ -2905,7 +2985,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				this.pendingRecoverLCADisk = null;
 			},
 			materializeRecoverLCAConflict: (_hsm, event) => {
-				const result = (event as any).data as RecoverLCAResult | undefined;
+				const result = dataOf(event) as RecoverLCAResult | undefined;
 				if (result?.kind === "declined") {
 					this.hsmWarn(
 						`recoverLCA declined to conflict | guid=${this._guid} reason=${result.reason} ` +
@@ -2915,7 +2995,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				this.materializeRecoverLCAConflict();
 			},
 			applyRecoverLCAResult: (_hsm, event) => {
-				const result = (event as any).data as RecoverLCAResult | undefined;
+				const result = dataOf(event) as RecoverLCAResult | undefined;
 				this.pendingRecoverLCADisk = null;
 				if (!result) return;
 
@@ -2957,7 +3037,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				this.emitPersistState();
 			},
 			applyRemoteToRemoteDoc: (_hsm, event) => {
-				const update = (event as any).update as Uint8Array;
+				const update = payload(event).update as Uint8Array;
 				if (!update || update.byteLength === 0) return;
 				if (this.remoteDoc) {
 					Y.applyUpdate(this.remoteDoc, update, this.remoteDoc);
@@ -2976,7 +3056,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				}
 			},
 			storePendingRemoteUpdate: (_hsm, event) => {
-				const update = (event as any).update as Uint8Array;
+				const update = payload(event).update as Uint8Array;
 				if (this.pendingIdleUpdates) {
 					this.pendingIdleUpdates = Y.mergeUpdates([this.pendingIdleUpdates, update]);
 				} else {
@@ -2984,22 +3064,22 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				}
 			},
 			storeDiskMetadata: (_hsm, event) => {
-				const e = event as any;
-				this._disk = { hash: e.hash, mtime: e.mtime };
-				this.setPendingDiskContents(e.contents, "disk-event", e.hash);
+				const e = payload(event);
+				this._disk = { hash: e.hash!, mtime: e.mtime! };
+				this.setPendingDiskContents(e.contents!, "disk-event", e.hash);
 				this._needsDiskContentLoad = false;
 			},
 			storeDiskMetadataForLoad: (_hsm, event) => {
-				const e = event as any;
+				const e = payload(event);
 				if (typeof e.hash === "string") {
-					this._disk = { hash: e.hash, mtime: e.mtime };
+					this._disk = { hash: e.hash!, mtime: e.mtime! };
 					this._needsDiskContentLoad = false;
 					return;
 				}
 				this._needsDiskContentLoad = true;
 			},
 			storeLoadedDiskContents: (_hsm, event) => {
-				const disk = (event as any).data?.disk;
+				const disk = dataOf(event)?.disk;
 				if (!disk) return;
 				this._needsDiskContentLoad = false;
 				this._disk = { hash: disk.hash, mtime: disk.mtime };
@@ -3029,11 +3109,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				this.setPendingDiskContents(disk.content, "disk-event", disk.hash);
 			},
 			updateLCAMtime: (_hsm, event) => {
-				const e = event as any;
+				const e = payload(event);
 				if (this._lca && !this._fork && this._lca.meta.hash === e.hash) {
 					this._setLCA({
 						...this._lca,
-						meta: { ...this._lca.meta, mtime: e.mtime },
+						meta: { ...this._lca.meta, mtime: e.mtime! },
 					});
 					this.clearPendingDiskContents();
 					this.emitPersistState();
@@ -3042,7 +3122,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 			// === Idle merge completion ===
 			applyIdleMergeResult: (_hsm, event) => {
-				const result = (event as any).data;
+				const result = dataOf(event);
 				this.idleMergeLog(`[idle-merge-debug] ${this._guid} applyIdleMergeResult: success=${result?.success} noop=${result?.noop} hasMergedContent=${result?.mergedContent !== undefined} hasUpdates=${!!result?.updates} hasRemoteUpdate=${!!result?.remoteUpdate} localDoc=${!!this.localDoc}`);
 				if (!result?.success || result.noop) return;
 
@@ -3106,7 +3186,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				this._error = undefined;
 			},
 			storeInvokeError: (_hsm, event) => {
-				const data = (event as any).data;
+				const data = dataOf(event);
 				const error = data instanceof Error ? data : new Error(String(data ?? "invoke failed"));
 				this._error = error;
 				// A missing backing file can race folder materialization/deletion, while
@@ -3166,7 +3246,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				}
 			},
 			updateLCAFromInvokeResult: (_hsm, event) => {
-				const result = (event as any).data;
+				const result = dataOf(event);
 				if (result?.newLCA) {
 					// WRITE_DISK is only an emitted request here. Disk metadata and
 					// a disk-bearing LCA advance when the executor directly confirms
@@ -3178,7 +3258,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 			// === ACQUIRE_LOCK from idle ===
 			storeEditorContent: (_hsm, event) => {
-				const e = event as any;
+				const e = payload(event);
 				this._editorViewRef = e.editorViewRef ?? null;
 				if (this._statePath.startsWith("idle.")) {
 					this._enteringFromDiverged =
@@ -3194,8 +3274,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				this._cleanupType = 'unload';
 			},
 			initializeFromLoad: (_hsm, event) => {
-				const e = event as any;
-				this._guid = e.guid;
+				const e = payload(event);
+				this._guid = e.guid!;
 				this._modeDecision = null;
 				this._accumulatedEvents = [];
 				this._persistenceStateLoaded = false;
@@ -3207,10 +3287,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				this.clearEnrolledLocalHead();
 			},
 			storeError: (_hsm, event) => {
-				this._error = (event as any).error;
+				this._error = payload(event).error;
 			},
 			storePersistenceData: (_hsm, event) => {
-				const e = event as any;
+				const e = payload(event);
 				const localSnapshot = e.localSnapshot ?? null;
 				this.rememberEnrolledLocalHead(localSnapshot);
 				if (e.disk !== undefined) {
@@ -3271,7 +3351,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				// but it needs to be in pendingIdleUpdates for the idle merge to use.
 				for (const event of this._accumulatedEvents) {
 					if (event.type === 'REMOTE_UPDATE') {
-						const update = (event as any).update as Uint8Array;
+						const update = payload(event).update as Uint8Array;
 						if (this.pendingIdleUpdates) {
 							this.pendingIdleUpdates = Y.mergeUpdates([this.pendingIdleUpdates, update]);
 						} else {
@@ -3285,22 +3365,22 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 			// === Active conflict/merging actions ===
 			trackEditorText: (_hsm, event) => {
-				const e = event as any;
+				const e = payload(event);
 				if (e.docText !== undefined) {
 					this.lastKnownEditorText = e.docText;
 				}
 			},
 			resolveConflict: (_hsm, event) => {
-				const contents = (event as any).contents as string;
+				const contents = payload(event).contents as string;
 				this.applyResolvedConflict(contents, { dispatchEditor: true });
 			},
 			storeConflictData: (_hsm, event) => {
-				const e = event as any;
+				const e = payload(event);
 				const regions = e.conflictRegions ?? [];
 				this._conflict = new Conflict({
-					base: e.base,
-					ours: e.ours,
-					theirs: e.theirs,
+					base: e.base!,
+					ours: e.ours!,
+					theirs: e.theirs!,
 					oursLabel: e.oursLabel ?? "Remote",
 					theirsLabel: e.theirsLabel ?? "Local file",
 					regions,
@@ -3349,8 +3429,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 			// === Active entering/tracking actions ===
 			accumulateRemoteUpdate: (_hsm, event) => {
-				const update = (event as any).update as Uint8Array;
-				const affectsText = (event as any).affectsText as boolean | undefined;
+				const update = payload(event).update as Uint8Array;
+				const affectsText = payload(event).affectsText as boolean | undefined;
 				const existingIdx = this._accumulatedEvents.findIndex(
 					(e) => e.type === "REMOTE_UPDATE",
 				);
@@ -3380,7 +3460,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				}
 			},
 			accumulateCM6Change: (_hsm, event) => {
-				const e = event as any;
+				const e = payload(event);
 				if (e.docText !== undefined) {
 					this.lastKnownEditorText = e.docText;
 				}
@@ -3395,22 +3475,22 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				}
 				this._accumulatedEvents.push({
 					type: "CM6_CHANGE",
-					changes: e.changes,
-					docText: e.docText,
+					changes: e.changes!,
+					docText: e.docText!,
 					userEvent: e.userEvent,
 					viewId: e.viewId,
 				});
 			},
 			accumulateDiskChanged: (_hsm, event) => {
-				const e = event as any;
+				const e = payload(event);
 				this._accumulatedEvents = this._accumulatedEvents.filter(
 					(ev) => ev.type !== "DISK_CHANGED",
 				);
 				this._accumulatedEvents.push({
 					type: "DISK_CHANGED",
-					contents: e.contents,
-					mtime: e.mtime,
-					hash: e.hash,
+					contents: e.contents!,
+					mtime: e.mtime!,
+					hash: e.hash!,
 				});
 			},
 			createYDocs: () => this.createYDocs(),
@@ -3428,10 +3508,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			assertConvergence: () => this._bridge.assertConvergence(),
 			replayAccumulatedEvents: () => this.replayAccumulatedEvents(),
 			applyThreeWayMergeResult: (_hsm, event) => {
-				const data = (event as any).data;
+				const data = dataOf(event);
 				if (!data || !this.localDoc) return;
 
-				this.applyContentToLocalDoc(data.merged);
+				this.applyContentToLocalDoc(data.merged!);
 				this._bridge.flushOutbound();
 
 				// Dispatch editor patches only when the editor's current text
@@ -3439,7 +3519,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				// the merged result. If disk already matched merged, the editor
 				// is already showing the correct content.
 				if (data.patches && data.patches.length > 0 && data.diskText !== data.merged) {
-					const editorPatches = computeEditorDiffChanges(data.diskText, data.merged);
+					const editorPatches = computeEditorDiffChanges(data.diskText!, data.merged!);
 					if (editorPatches.length > 0) {
 						this.emitEffect({ type: "DISPATCH_CM6", changes: editorPatches });
 					}
@@ -3449,18 +3529,18 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				this.pendingEditorContent = null;
 			},
 			storeThreeWayConflict: (_hsm, event) => {
-				const data = (event as any).data;
+				const data = dataOf(event)!;
 				this._conflict = new Conflict({
-					base: data.baseText,
-					ours: data.localText,
-					theirs: data.diskText,
+					base: data.baseText!,
+					ours: data.localText!,
+					theirs: data.diskText!,
 					oursLabel: "Remote",
 					theirsLabel: "Local file",
 					regions: data.conflictRegions ?? [],
 				});
 			},
 			storeThreeWayError: (_hsm, event) => {
-				const error = (event as any).data;
+				const error = payload(event).data;
 				const message = formatUserFacingError(error, "Merge failed");
 				this.hsmError(`three-way merge failed: ${message}`);
 				this._error = errorFromUnknown(error, "Merge failed");
@@ -3476,7 +3556,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				});
 			},
 			applyTwoWayCleanMerge: (_hsm, event) => {
-				const data = (event as any).data;
+				const data = dataOf(event);
 				if (!data || !this.localDoc) return;
 
 				// localDoc already contains remoteDoc state (merged in the invoke);
@@ -3486,7 +3566,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				}
 				this._bridge.syncToRemote(Y.encodeStateAsUpdate(this.localDoc));
 				this._bridge.clearOutboundQueue();
-				this.lastKnownEditorText = data.localText;
+				this.lastKnownEditorText = data.localText!;
 				this._fork = null;
 				this._ingestionTexts = [];
 				this._conflict = null;
@@ -3494,7 +3574,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				this.pendingEditorContent = null;
 			},
 			storeTwoWayConflict: (_hsm, event) => {
-				const data = (event as any).data;
+				const data = dataOf(event)!;
 				// The invoke loaded the file to compare against, so its disk
 				// identity — content, hash, and mtime together — is confirmed
 				// even when no disk event preceded the conflict. Record all of
@@ -3516,16 +3596,16 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 					}
 				}
 				this._conflict = new Conflict({
-					base: data.localText,
-					ours: data.localText,
-					theirs: data.diskText,
+					base: data.localText!,
+					ours: data.localText!,
+					theirs: data.diskText!,
 					oursLabel: "Remote",
 					theirsLabel: "Local file",
 					regions: data.conflictRegions ?? [],
 				});
 			},
 			storeTwoWayError: (_hsm, event) => {
-				const error = (event as any).data;
+				const error = payload(event).data;
 				const message = formatUserFacingError(error, "Merge failed");
 				this.hsmError(`two-way merge failed: ${message}`);
 				this._error = errorFromUnknown(error, "Merge failed");
@@ -3541,7 +3621,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				});
 			},
 			applyCM6ToLocalDoc: (_hsm, event) => {
-				const e = event as any;
+				const e = payload(event);
 				// Obsidian delivers a sibling save echo as an unannotated full-buffer
 				// set. Preserve the accepted snapshot so attachment can distinguish
 				// already-delivered input from a live render target that later moved.
@@ -3585,7 +3665,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 						typeof e.docText === "string" &&
 						e.docText === ytextStr;
 				}
-				this.lastKnownEditorText = e.docText;
+				this.lastKnownEditorText = e.docText!;
 				if (contentAlreadyApplied) {
 					return;
 				}
@@ -3649,7 +3729,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 								}
 							} else {
 								proxyDoc.transact(() => {
-									this.applyChangesToYText(proxyText, e.changes);
+									this.applyChangesToYText(proxyText, e.changes!);
 								});
 							}
 
@@ -3680,7 +3760,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 						const ytext = this.localDoc.getText("contents");
 						const previousText = ytext.toString();
 						this.localDoc.transact(() => {
-							this.applyChangesToYText(ytext, e.changes);
+							this.applyChangesToYText(ytext, e.changes!);
 							this.syncFrontmatterToMap(previousText);
 						}, this);
 					}
@@ -3692,7 +3772,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 					// the edit from user typing).
 					this.emitEffect({
 						type: "DISPATCH_CM6",
-						changes: e.changes,
+						changes: e.changes!,
 						originView: e.viewId,
 					});
 				}
@@ -3701,17 +3781,17 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				this._bridge.flushOutbound();
 			},
 			updateDiskFromSave: (_hsm, event) => {
-				const e = event as any;
-				this.updateDiskFromConfirmedWrite({ mtime: e.mtime, hash: e.hash });
-				this.commitPendingLCAOnDiskConfirm({ mtime: e.mtime, hash: e.hash });
+				const e = payload(event);
+				this.updateDiskFromConfirmedWrite({ mtime: e.mtime!, hash: e.hash! });
+				this.commitPendingLCAOnDiskConfirm({ mtime: e.mtime!, hash: e.hash! });
 			},
 			storeDiskMetadataOnly: (_hsm, event) => {
-				const e = event as any;
-				this._disk = { hash: e.hash, mtime: e.mtime };
-				this.setPendingDiskContents(e.contents, "disk-event", e.hash);
+				const e = payload(event);
+				this._disk = { hash: e.hash!, mtime: e.mtime! };
+				this.setPendingDiskContents(e.contents!, "disk-event", e.hash);
 				this._needsDiskContentLoad = false;
 
-				this.capturePendingDiskLCA(e.contents);
+				this.capturePendingDiskLCA(e.contents!);
 			},
 			flushPendingToRemote: () => {
 				this._isOnline = true;
@@ -3765,7 +3845,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				this._warnedForkAwaitingReplica = false;
 				this._ingestionTexts = [];
 				this.pendingIdleUpdates = null;
-				const result = (event as any).data;
+				const result = dataOf(event);
 				if (result?.newLCA) {
 					this.commitLCAWithDiskConfirmation(result.newLCA);
 				}
@@ -5611,8 +5691,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 		const ytext = this.localDoc.getText("contents");
 		const ymap = this.localDoc.getMap("frontmatter");
-		const itemId = (value: any): string | null => {
-			const id = value?.id ?? value;
+		const itemId = (value: Y.Item | Y.ID | null | undefined): string | null => {
+			const id = value && "id" in value ? value.id : value;
 			return typeof id?.client === "number" && typeof id?.clock === "number"
 				? `${id.client}:${id.clock}`
 				: null;
@@ -5620,7 +5700,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		// Y.Map does not expose the causal predecessor of a winning value.
 		// Pin this narrow use of Yjs's Item shape so concurrent map seeds can be
 		// distinguished from value writes based on our current winner.
-		const currentItem = (key: string): any => (ymap as any)._map.get(key);
+		const currentItem = (key: string): Y.Item | undefined => ymap._map.get(key);
 		this.frontmatterMapItemIds.clear();
 		for (const key of ymap.keys()) {
 			const id = itemId(currentItem(key));
@@ -5632,7 +5712,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			);
 			if (
 				tr.origin === this.remoteDoc &&
-				!tr.changed.has(ytext as any) &&
+				!tr.changed.has(ytext as unknown as YChangedType) &&
 				updates.length > 0
 			) {
 				const parsed = this.parseFrontmatter(ytext.toString())?.parsed;
@@ -5679,7 +5759,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			// When the same transaction also updated Y.Map("frontmatter"),
 			// dispatch the Y.Map-derived frontmatter instead of raw Y.Text delta.
 			// This avoids interleaved character-level ops corrupting frontmatter in CM6.
-			const ymapChangedInTx = tr.changed.has(ymap as any);
+			const ymapChangedInTx = tr.changed.has(ymap as unknown as YChangedType);
 			if (ymapChangedInTx && this._yaml) {
 				if (tr.origin === this.remoteDoc) {
 					this._remoteFrontmatterMapUpdated = true;
@@ -5724,7 +5804,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 					`delta dispatch: ${changes.length} changes, ` +
 					`delta=${JSON.stringify(event.delta)}, ` +
 					`origin=${String(tr.origin)}, ` +
-					`ymapInTx=${tr.changed.has(this.localDoc!.getMap("frontmatter") as any)}`
+					`ymapInTx=${tr.changed.has(this.localDoc!.getMap("frontmatter") as unknown as YChangedType)}`
 				);
 				this.emitEffect({
 					type: "DISPATCH_CM6",
@@ -6006,7 +6086,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	 * @param origin - Transaction origin. Pass DISK_ORIGIN for disk ingestion
 	 *   so OpCapture can track these operations. Defaults to `this`.
 	 */
-	private applyContentToLocalDoc(newContent: string, origin?: any): void {
+	private applyContentToLocalDoc(newContent: string, origin?: unknown): void {
 		if (!this.localDoc) return;
 
 		const ytext = this.localDoc.getText("contents");
@@ -6498,7 +6578,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		}
 
 		if (candidates.size !== 1) return;
-		this.applyChangesToLocalDoc(candidates.values().next().value!);
+		const [onlyCandidate] = candidates.values();
+		this.applyChangesToLocalDoc(onlyCandidate!);
 	}
 
 	/**
@@ -6720,7 +6801,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		// the ordinary Y.Text delta reach the editor instead of rebuilding
 		// from stale map entries and resurrecting or discarding text.
 		if (!fm) return null;
-		const obj: Record<string, any> = { ...fm.parsed };
+		const obj: Record<string, unknown> = { ...fm.parsed };
 
 		// The text owns the key set; the Y.Map owns values. Overlay LWW
 		// values only for keys the parsed frontmatter still carries — a
@@ -6732,7 +6813,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		for (const [key, value] of ymap.entries()) {
 			if (!(key in obj)) continue;
 			if (this._deferredFrontmatterKeys.has(key)) continue;
-			let parsed: any;
+			let parsed: unknown;
 			try { parsed = JSON.parse(value as string); }
 			catch { parsed = value; }
 			obj[key] = parsed;
@@ -6773,14 +6854,14 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	 *   recovered: true when the block only parsed after de-duplicating
 	 *     repeated top-level keys (see below)
 	 */
-	private parseFrontmatter(text: string): { start: number; end: number; parsed: Record<string, any>; raw: string; recovered: boolean } | null {
+	private parseFrontmatter(text: string): { start: number; end: number; parsed: Record<string, unknown>; raw: string; recovered: boolean } | null {
 		if (!this._yaml) return null;
 
 		const info = this._yaml.getFrontMatterInfo(text);
 		if (!info.exists) return null;
 
 		try {
-			const parsed = this._yaml.parse(info.frontmatter);
+			const parsed = this._yaml.parse(info.frontmatter) as Record<string, unknown> | null;
 			if (!parsed || typeof parsed !== "object") return null;
 			return { start: 0, end: info.contentStart, parsed, raw: info.frontmatter, recovered: false };
 		} catch {
@@ -6794,7 +6875,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			const deduped = this.dedupeTopLevelYamlKeys(info.frontmatter);
 			if (deduped === null) return null;
 			try {
-				const parsed = this._yaml.parse(deduped);
+				const parsed = this._yaml.parse(deduped) as Record<string, unknown> | null;
 				if (!parsed || typeof parsed !== "object") return null;
 				return { start: 0, end: info.contentStart, parsed, raw: info.frontmatter, recovered: true };
 			} catch {
@@ -7104,7 +7185,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			return;
 		}
 
-		let previousParsed: Record<string, any> | null = null;
+		let previousParsed: Record<string, unknown> | null = null;
 		if (previousText !== undefined) {
 			const previousInfo = this._yaml.getFrontMatterInfo(previousText);
 			if (previousInfo.exists) {
@@ -7222,7 +7303,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		// A key whose map write is withheld keeps its text value: the map
 		// holds the value from before the local edit, and the corruption
 		// check below must not read that divergence as text corruption.
-		const obj: Record<string, any> = { ...fm.parsed };
+		const obj: Record<string, unknown> = { ...fm.parsed };
 		const staleKeys: string[] = [];
 		for (const [key, value] of ymap.entries()) {
 			if (!(key in obj)) {
@@ -7230,7 +7311,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				continue;
 			}
 			if (this._deferredFrontmatterKeys.has(key)) continue;
-			let parsed: any;
+			let parsed: unknown;
 			try { parsed = JSON.parse(value as string); }
 			catch { parsed = value; }
 			obj[key] = parsed;
