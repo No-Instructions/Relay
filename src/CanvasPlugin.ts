@@ -1,4 +1,5 @@
-import type { TFile } from "obsidian";
+import type { MarkdownView, TFile, WorkspaceLeaf } from "obsidian";
+import type { EditorView } from "@codemirror/view";
 import { getPatcher } from "./Patcher";
 import { Canvas } from "src/Canvas";
 import {
@@ -26,6 +27,22 @@ import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 import type { EditorViewRef } from "./merge-hsm/types";
 import { HSMEditorPlugin } from "./merge-hsm/integration/HSMEditorPlugin";
 import { isDocument, type Document } from "./Document";
+
+/**
+ * The embedded editor surface the canvas plugin reads. Markdown embeds
+ * inside canvas nodes are sub-views Obsidian does not type.
+ */
+interface EmbedEditorView {
+	file?: TFile | null;
+	getViewData?: () => string;
+	setViewData?: (data: string, clear: boolean) => void;
+	requestSave?: () => void;
+	editor?: { cm?: EditorView };
+	leaf?: WorkspaceLeaf;
+	text?: unknown;
+	data?: unknown;
+	lastSavedData?: unknown;
+}
 
 export class CanvasPlugin extends HasLogging {
 	view: CanvasView;
@@ -100,7 +117,10 @@ export class CanvasPlugin extends HasLogging {
 			const raw = await this.relayCanvas.vault.cachedRead(file);
 			if (!this.canvas || !this.relayCanvas) return;
 			if (this.view.file !== file) return;
-			const parsed = raw.trim().length > 0 ? JSON.parse(raw) : {};
+			const parsed = (raw.trim().length > 0 ? JSON.parse(raw) : {}) as {
+				nodes?: CanvasNodeData[];
+				edges?: CanvasEdgeData[];
+			};
 			const diskData = {
 				nodes: parsed.nodes ?? [],
 				edges: parsed.edges ?? [],
@@ -161,13 +181,10 @@ export class CanvasPlugin extends HasLogging {
 		}
 	}
 
-	public getEmbedViews() {
+	public getEmbedViews(): EmbedEditorView[] {
 		return [...this.canvas.nodes.values()]
-			.map((nodeData) => {
-				//@ts-ignore
-				return nodeData.child;
-			})
-			.filter((x) => !!x);
+			.map((nodeData) => (nodeData as { child?: EmbedEditorView }).child)
+			.filter((x): x is EmbedEditorView => !!x);
 	}
 
 	public markDirty(node: CanvasNodeData) {
@@ -181,7 +198,11 @@ export class CanvasPlugin extends HasLogging {
 		return this.trackedEmbedViews.has(embedView);
 	}
 
-	private createEmbedEditorViewRef(embedView: any): EditorViewRef {
+	/**
+	 * The surface this plugin reads off a markdown embed sub-view. Canvas
+	 * node embeds are editor views Obsidian does not type.
+	 */
+	private createEmbedEditorViewRef(embedView: EmbedEditorView): EditorViewRef {
 		return {
 			getViewData() {
 				if (typeof embedView?.getViewData === "function") {
@@ -253,12 +274,12 @@ export class CanvasPlugin extends HasLogging {
 	}
 
 	private requestNativeEmbedSave(
-		embedView: any,
+		embedView: EmbedEditorView,
 		state: { saving: boolean },
 	): void {
 		state.saving = true;
 		try {
-			embedView.requestSave();
+			embedView.requestSave!();
 		} finally {
 			state.saving = false;
 		}
@@ -266,7 +287,7 @@ export class CanvasPlugin extends HasLogging {
 
 	private syncDocumentToEmbedView(
 		document: Document,
-		embedView: any,
+		embedView: EmbedEditorView,
 		viewRef: EditorViewRef,
 		state: { saving: boolean; tracking: boolean },
 		reason: string,
@@ -284,7 +305,7 @@ export class CanvasPlugin extends HasLogging {
 		this.debug("syncing canvas embed HSM to view", document.path, reason);
 		state.saving = true;
 		try {
-			embedView.setViewData(contents, false);
+			embedView.setViewData!(contents, false);
 		} finally {
 			state.saving = false;
 		}
@@ -293,7 +314,7 @@ export class CanvasPlugin extends HasLogging {
 		return true;
 	}
 
-	private connectEmbedView(embedView: any): void {
+	private connectEmbedView(embedView: EmbedEditorView): void {
 		if (!embedView.file) {
 			return;
 		}
@@ -326,7 +347,7 @@ export class CanvasPlugin extends HasLogging {
 				const syncDocumentToEmbedView = this.syncDocumentToEmbedView.bind(this);
 				const logError = this.error.bind(this);
 				const plugin = new ViewHookPlugin(
-					embedView,
+					embedView as unknown as MarkdownView,
 					document,
 				);
 				const state = { saving: false, tracking: false };
@@ -335,8 +356,12 @@ export class CanvasPlugin extends HasLogging {
 					| ((event: Y.YTextEvent, tr: Y.Transaction) => void)
 					| null = null;
 				const requestSaveUnsubscribe = getPatcher().patch(embedView, {
-					requestSave: (old: any) => {
-						return function (this: any) {
+					requestSave: (old: (...args: unknown[]) => unknown) => {
+						return function (this: {
+							__relaySaving?: boolean;
+							app?: { metadataCache?: { trigger?: (name: string, file: unknown) => void } };
+							file?: unknown;
+						}) {
 							if (!state.saving && !this?.__relaySaving) {
 								try {
 									syncEmbedViewToDocument(
@@ -433,7 +458,7 @@ export class CanvasPlugin extends HasLogging {
 							"initial-sync",
 						);
 
-						const cm = (embedView.editor as any)?.cm;
+						const cm = embedView.editor?.cm;
 						const hsmEditorPlugin = cm?.plugin?.(HSMEditorPlugin);
 						hsmEditorPlugin?.initializeIfReady();
 
@@ -567,7 +592,7 @@ export class CanvasPlugin extends HasLogging {
 
 		this.unsubscribes.push(
 			getPatcher().patch(this.view, {
-				setViewData(old: any) {
+				setViewData(old: (...args: unknown[]) => unknown) {
 					return function (data: string, clear: boolean) {
 						const plugin = owner();
 						// @ts-ignore
@@ -612,10 +637,9 @@ export class CanvasPlugin extends HasLogging {
 
 		this.unsubscribes.push(
 			getPatcher().patch(this.canvas, {
-				requestSave(old: unknown) {
-					return function () {
+				requestSave(old: (...args: unknown[]) => unknown) {
+					return function (this: unknown) {
 						const plugin = owner();
-						// @ts-ignore
 						const res = old.call(this);
 						try {
 							// A native save writes the rendered data into
@@ -631,8 +655,8 @@ export class CanvasPlugin extends HasLogging {
 						return res;
 					};
 				},
-				applyHistory(old: any) {
-					return function (data: any) {
+				applyHistory(old: (...args: unknown[]) => unknown) {
+					return function (data: unknown) {
 						const plugin = owner();
 						// @ts-ignore
 						const res = old.call(this, data);
@@ -654,7 +678,7 @@ export class CanvasPlugin extends HasLogging {
 			store: Map<string, CanvasNode> | Map<string, CanvasEdge>,
 		) => {
 			let log = "";
-			log += `Transaction origin: ${event.transaction.origin} ${event.transaction.origin?.constructor?.name}\n`;
+			log += `Transaction origin: ${event.transaction.origin} ${(event.transaction.origin as { constructor?: { name?: string } } | null)?.constructor?.name}\n`;
 			if (!this.relayCanvas) {
 				this.log("relay canvas is already destroyed");
 			}
@@ -688,15 +712,14 @@ export class CanvasPlugin extends HasLogging {
 			);
 			this.canvas.importData(exported, true);
 			this.canvas.requestSave();
-			for (const key of event.keysChanged) {
+			for (const key of event.keysChanged as Set<string>) {
 				const node = store.get(key);
 				if (node) {
 					if (this.canvas.nodes.has(node.id)) {
 						this.observeNode((node as CanvasNode).getData());
 						
 						// Check if this is a newly created embed node that needs ViewHookPlugin
-						//@ts-ignore
-						const embedView = node.child;
+						const embedView = (node as { child?: EmbedEditorView }).child;
 						if (embedView?.file && !this.isEmbedAlreadyTracked(embedView)) {
 							this.connectEmbedView(embedView);
 						}
