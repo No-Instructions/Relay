@@ -2211,7 +2211,7 @@ export class SharedFolder extends HasProvider {
 			if (existingFile) {
 				this.files.delete(fromGuid);
 				this.fset.delete(existingFile);
-				existingFile.cleanup();
+				void existingFile.cleanup();
 				existingFile.destroy();
 			}
 
@@ -2327,7 +2327,7 @@ export class SharedFolder extends HasProvider {
 		if (existing) {
 			this.files.delete(fromGuid);
 			this.fset.delete(existing);
-			existing.cleanup();
+			void existing.cleanup();
 			existing.destroy();
 		}
 		this.syncStore.pendingUpload.delete(path);
@@ -2640,7 +2640,7 @@ export class SharedFolder extends HasProvider {
 							if (doc) {
 								this.fset.delete(doc);
 								this.files.delete(doc.guid);
-								doc.cleanup();
+								void doc.cleanup();
 								doc.destroy();
 								this.teardownDocState(doc.guid);
 								this.fset.update();
@@ -4619,7 +4619,7 @@ export class SharedFolder extends HasProvider {
 					if (doc) {
 						this.fset.delete(doc);
 						this.files.delete(guid);
-						doc.cleanup();
+						void doc.cleanup();
 						doc.destroy();
 					}
 					cleanupGuids.set(guid, vpath);
@@ -4630,7 +4630,7 @@ export class SharedFolder extends HasProvider {
 						const docGuid = doc.guid;
 						this.fset.delete(doc);
 						this.files.delete(docGuid);
-						doc.cleanup();
+						void doc.cleanup();
 						doc.destroy();
 						cleanupGuids.set(docGuid, vpath);
 					}
@@ -4699,7 +4699,7 @@ export class SharedFolder extends HasProvider {
 					this.syncStore.delete(oldVPath);
 				}, this);
 				if (file) {
-					file.cleanup();
+					void file.cleanup();
 					file.destroy();
 					this.fset.delete(file);
 				}
