@@ -19,6 +19,7 @@ export default {
 		"^yjs$": yjsIndex,
 		"^yjs/dist/src/internals$": yjsInternals,
 		"^pocketbase$": "<rootDir>/__tests__/mocks/pocketbase.ts",
+		"svelteHost\\.svelte$": "<rootDir>/__tests__/mocks/svelteHost.ts",
 	},
 	setupFiles: ["<rootDir>/__tests__/mocks/globalStubs.ts"],
 	testPathIgnorePatterns: ["/__tests__/mocks/", "/__tests__/merge-hsm/testing/", "archive/", ".claude"],

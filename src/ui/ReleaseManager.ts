@@ -1,9 +1,10 @@
 import { App, Modal } from "obsidian";
 import ReleaseManagerContent from "../components/ReleaseManagerContent.svelte";
+import { mountComponent, type MountedComponent } from "./svelteHost.svelte";
 import type Live from "../main";
 
 export class ReleaseManager extends Modal {
-	private component?: ReleaseManagerContent;
+	private component?: MountedComponent;
 
 	constructor(
 		app: App,
@@ -16,7 +17,7 @@ export class ReleaseManager extends Modal {
 	onOpen() {
 		const { contentEl } = this;
 
-		this.component = new ReleaseManagerContent({
+		this.component = mountComponent(ReleaseManagerContent, {
 			target: contentEl,
 			props: {
 				plugin: this.plugin,
@@ -28,6 +29,6 @@ export class ReleaseManager extends Modal {
 	onClose() {
 		const { contentEl } = this;
 		contentEl.empty();
-		this.component?.$destroy();
+		this.component?.destroy();
 	}
 }

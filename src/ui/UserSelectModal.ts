@@ -2,9 +2,10 @@ import { App, Modal } from "obsidian";
 import type { RemoteSharedFolder, Role } from "src/Relay";
 import type { RelayManager } from "src/RelayManager";
 import UserSelectModalContent from "../components/UserSelectModalContent.svelte";
+import { mountComponent, type MountedComponent } from "./svelteHost.svelte";
 
 export class UserSelectModal extends Modal {
-	private component?: UserSelectModalContent;
+	private component?: MountedComponent;
 
 	constructor(
 		app: App,
@@ -19,7 +20,7 @@ export class UserSelectModal extends Modal {
 	onOpen() {
 		const { contentEl } = this;
 
-		this.component = new UserSelectModalContent({
+		this.component = mountComponent(UserSelectModalContent, {
 			target: contentEl,
 			props: {
 				relayManager: this.relayManager,
@@ -36,6 +37,6 @@ export class UserSelectModal extends Modal {
 	onClose() {
 		const { contentEl } = this;
 		contentEl.empty();
-		this.component?.$destroy();
+		this.component?.destroy();
 	}
 }

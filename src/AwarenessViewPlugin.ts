@@ -1,5 +1,6 @@
 import { HasLogging } from "./debug";
 import UserAwareness from "./components/UserAwareness.svelte";
+import { mountComponent, type MountedComponent } from "./ui/svelteHost.svelte";
 import { trackPromise } from "./trackPromise";
 import type { HasProvider } from "./HasProvider";
 
@@ -71,7 +72,7 @@ export class AwarenessViewPlugin extends HasLogging {
 	private host: AwarenessHost;
 	private destroyed = false;
 	private ready = false;
-	private awarenessComponent?: UserAwareness;
+	private awarenessComponent?: MountedComponent;
 	private awarenessElement?: HTMLElement;
 	private positioningParent?: HTMLElement;
 	private addedPositioningClass = false;
@@ -217,7 +218,7 @@ export class AwarenessViewPlugin extends HasLogging {
 
 		// Create and mount the Svelte component
 		try {
-			this.awarenessComponent = new UserAwareness({
+			this.awarenessComponent = mountComponent(UserAwareness, {
 				target: this.awarenessElement,
 				props: {
 					awareness: provider.awareness,
@@ -238,7 +239,7 @@ export class AwarenessViewPlugin extends HasLogging {
 
 		if (this.awarenessComponent) {
 			try {
-				this.awarenessComponent.$destroy();
+				this.awarenessComponent.destroy();
 				this.awarenessComponent = undefined;
 				this.log("Awareness component destroyed");
 			} catch (error) {

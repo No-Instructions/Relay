@@ -12,6 +12,7 @@ import { Document } from "src/Document";
 import Pill from "src/components/Pill.svelte";
 import TextPill from "src/components/TextPill.svelte";
 import UploadPill from "src/components/UploadPill.svelte";
+import { mountComponent, type MountedComponent } from "src/ui/svelteHost.svelte";
 import { flags, withAnyOf, withFlag } from "src/flagManager";
 import { flag } from "src/flags";
 import type { BackgroundSync, QueueItem } from "src/BackgroundSync";
@@ -177,7 +178,7 @@ function fileHasConflict(sharedFolder: SharedFolder, guid: string): boolean {
 class PillDecoration {
 	el: HTMLElement;
 	sharedFolder: SharedFolder;
-	pill: Pill;
+	pill: MountedComponent;
 	unsubscribe: Unsubscribe;
 
 	constructor(el: HTMLElement, sharedFolder: SharedFolder) {
@@ -195,7 +196,7 @@ class PillDecoration {
 		this.el.addClass("system3-pill");
 		this.el.setAttribute("data-relay-state", this.sharedFolder.state.status);
 
-		this.pill = new Pill({
+		this.pill = mountComponent(Pill, {
 			target: this.el,
 			props: {
 				status: this.sharedFolder.state.status,
@@ -213,7 +214,7 @@ class PillDecoration {
 		unsubs.push(
 			this.sharedFolder.subscribe(this.el, (state: ConnectionState) => {
 				this.el.setAttribute("data-relay-state", state.status);
-				this.pill.$set({
+				this.pill.set({
 					status: state.status,
 					relayId: this.sharedFolder.relayId,
 					remote: this.sharedFolder.remote,
@@ -227,7 +228,7 @@ class PillDecoration {
 			this.sharedFolder.backgroundSync.subscribeToFolderSyncSnapshot(
 				this.sharedFolder,
 				(snapshot) => {
-					this.pill.$set({
+					this.pill.set({
 						progress: snapshot.percent,
 						showProgress: snapshot.showProgress,
 						syncStatus: snapshot.progressStatus,
@@ -239,7 +240,7 @@ class PillDecoration {
 	}
 
 	destroy() {
-		this.pill.$destroy();
+		this.pill.destroy();
 		this.unsubscribe();
 		this.el.removeClass("system3-pill");
 		this.el.removeAttribute("data-relay-state");
@@ -349,7 +350,7 @@ class QueueWatcherVisitor extends BaseVisitor<QueueWatcher> {
 }
 
 class FilePillDecoration {
-	pill?: TextPill;
+	pill?: MountedComponent;
 	unsubscribes: Unsubscriber[] = [];
 
 	constructor(
@@ -373,7 +374,7 @@ class FilePillDecoration {
 		}
 		const tag = this.file.tag;
 		if (!tag) {
-			this.pill?.$destroy();
+			this.pill?.destroy();
 			return;
 		}
 		const status = this.file.uploadError
@@ -382,7 +383,7 @@ class FilePillDecoration {
 				? ("pending" as const)
 				: ("unknown" as const);
 		if (!this.pill) {
-			this.pill = new UploadPill({
+			this.pill = mountComponent(UploadPill, {
 				target: this.el,
 				props: {
 					text: tag,
@@ -390,7 +391,7 @@ class FilePillDecoration {
 				},
 			});
 		} else {
-			this.pill.$set({
+			this.pill.set({
 				text: tag,
 				status,
 			});
@@ -402,7 +403,7 @@ class FilePillDecoration {
 		this.el.querySelectorAll(".system3-uploadpill").forEach((el) => {
 			el.remove();
 		});
-		this.pill?.$destroy();
+		this.pill?.destroy();
 		this.file = null as unknown as typeof this.file;
 	}
 }
@@ -443,7 +444,7 @@ class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
 }
 
 class NotSyncedPillDecoration {
-	pill: TextPill;
+	pill: MountedComponent;
 	unsubscribe?: () => void;
 
 	constructor(
@@ -455,7 +456,7 @@ class NotSyncedPillDecoration {
 			el.remove();
 		});
 		// TODO: Ensure the not-synced pill comes last
-		this.pill = new TextPill({
+		this.pill = mountComponent(TextPill, {
 			target: this.el,
 			props: {
 				text: "NOT SYNCED",
@@ -466,11 +467,11 @@ class NotSyncedPillDecoration {
 	}
 
 	setLabel(label: string, reason: string) {
-		this.pill.$set({ label, reason });
+		this.pill.set({ label, reason });
 	}
 
 	destroy() {
-		this.pill.$destroy();
+		this.pill.destroy();
 		this.el.querySelectorAll(".system3-filepill").forEach((el) => {
 			el.remove();
 		});

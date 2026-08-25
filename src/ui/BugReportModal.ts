@@ -1,9 +1,10 @@
 import { App, Modal } from "obsidian";
 import BugReportModalContent from "../components/BugReportModalContent.svelte";
+import { mountComponent, type MountedComponent } from "./svelteHost.svelte";
 import type Live from "../main";
 
 export class BugReportModal extends Modal {
-	private component?: BugReportModalContent;
+	private component?: MountedComponent;
 
 	constructor(
 		app: App,
@@ -15,7 +16,7 @@ export class BugReportModal extends Modal {
 	onOpen() {
 		const { contentEl } = this;
 
-		this.component = new BugReportModalContent({
+		this.component = mountComponent(BugReportModalContent, {
 			target: contentEl,
 			props: {
 				plugin: this.plugin,
@@ -26,6 +27,6 @@ export class BugReportModal extends Modal {
 	onClose() {
 		const { contentEl } = this;
 		contentEl.empty();
-		this.component?.$destroy();
+		this.component?.destroy();
 	}
 }

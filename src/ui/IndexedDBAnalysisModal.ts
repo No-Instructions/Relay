@@ -1,9 +1,10 @@
 import { App, Modal } from "obsidian";
 import IndexedDBAnalysisModalContent from "../components/IndexedDBAnalysisModalContent.svelte";
+import { mountComponent, type MountedComponent } from "./svelteHost.svelte";
 import type Live from "../main";
 
 export class IndexedDBAnalysisModal extends Modal {
-	private component?: IndexedDBAnalysisModalContent;
+	private component?: MountedComponent;
 
 	constructor(
 		app: App,
@@ -15,7 +16,7 @@ export class IndexedDBAnalysisModal extends Modal {
 	onOpen() {
 		const { contentEl } = this;
 
-		this.component = new IndexedDBAnalysisModalContent({
+		this.component = mountComponent(IndexedDBAnalysisModalContent, {
 			target: contentEl,
 			props: {
 				plugin: this.plugin,
@@ -26,6 +27,6 @@ export class IndexedDBAnalysisModal extends Modal {
 	onClose() {
 		const { contentEl } = this;
 		contentEl.empty();
-		this.component?.$destroy();
+		this.component?.destroy();
 	}
 }

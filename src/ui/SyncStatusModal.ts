@@ -1,11 +1,12 @@
 import { App, Modal } from "obsidian";
 import SyncStatusModalContent from "../components/SyncStatusModalContent.svelte";
+import { mountComponent, type MountedComponent } from "./svelteHost.svelte";
 import type { SharedFolder } from "../SharedFolder";
 import type { TimeProvider } from "../TimeProvider";
 import { getSyncStatusActivityStore } from "./SyncStatusActivity";
 
 export class SyncStatusModal extends Modal {
-	private component?: SyncStatusModalContent;
+	private component?: MountedComponent;
 
 	constructor(
 		app: App,
@@ -19,7 +20,7 @@ export class SyncStatusModal extends Modal {
 		const { contentEl } = this;
 		this.titleEl.setText(`Sync Status: ${this.sharedFolder.name}`);
 
-		this.component = new SyncStatusModalContent({
+		this.component = mountComponent(SyncStatusModalContent, {
 			target: contentEl,
 			props: {
 				sharedFolder: this.sharedFolder,
@@ -36,6 +37,6 @@ export class SyncStatusModal extends Modal {
 	onClose() {
 		const { contentEl } = this;
 		contentEl.empty();
-		this.component?.$destroy();
+		this.component?.destroy();
 	}
 }

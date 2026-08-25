@@ -1,13 +1,13 @@
 <script lang="ts">
-	import { createEventDispatcher, onMount } from "svelte";
+	import { onMount } from "svelte";
 	import SettingItem from "./SettingItem.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import type Live from "../main";
 	import type { TenantConfig } from "../EndpointManager";
 
 	export let plugin: Live;
-
-	const dispatch = createEventDispatcher();
+	export let onClose: () => void;
+	export let onApply: () => void;
 
 	let newTenantUrl = "";
 	let isValidating = false;
@@ -309,7 +309,7 @@
 
 	<!-- Apply Button -->
 	<div class="apply-section">
-		<button class="mod-cta apply-btn" on:click={() => { if (hasChanges) dispatch('apply'); else dispatch('close'); }}>Apply</button>
+		<button class="mod-cta apply-btn" on:click={() => { if (hasChanges) onApply(); else onClose(); }}>Apply</button>
 	</div>
 </div>
 
