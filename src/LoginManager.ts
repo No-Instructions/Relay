@@ -143,7 +143,7 @@ export function createUserFromOAuth(
 		email?: string;
 		picture?: string;
 	},
-	rawUser?: GoogleUser | GitHubUser | MicrosoftUser | OIDCUser | unknown,
+	rawUser?: unknown,
 	getFileUrl?: ProfileFileUrl,
 	streamerMode = false,
 ): User {

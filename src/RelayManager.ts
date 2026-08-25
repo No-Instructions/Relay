@@ -2132,7 +2132,7 @@ export class RelayManager extends HasLogging {
 				"Content-Type": "application/json",
 			},
 			body: JSON.stringify(requestBody),
-		}));
+		})) as RecordModel;
 
 		// Ingest the response into the store
 		const relay = this.store?.ingest<Relay>(response);

@@ -87,8 +87,9 @@ class NetworkStatus {
 			.then((response) => {
 				if (response.status === 200) {
 					this._networkChangedRetries = 0;
-					if (response.json && response.json.status) {
-						this.status = response.json;
+					const body = response.json as ServiceStatus | undefined;
+					if (body?.status) {
+						this.status = body;
 					}
 					if (!this.online) {
 						this.log("back online");
@@ -104,9 +105,10 @@ class NetworkStatus {
 					throw new Error("disconnected");
 				}
 			})
-			.catch((error) => {
+			.catch((error: unknown) => {
+				const message = error instanceof Error ? error.message : String(error);
 				if (
-					error.message.includes("ERR_NETWORK_CHANGED") &&
+					message.includes("ERR_NETWORK_CHANGED") &&
 					this._networkChangedRetries < NETWORK_CHANGED_RETRY_LIMIT
 				) {
 					// This doesn't necessarily imply a disconnect,
