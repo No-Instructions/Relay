@@ -188,37 +188,43 @@ export async function requestUrlWithMetrics(
 	}
 }
 
-if (globalThis.Response === undefined || globalThis.Headers === undefined) {
-	// Fetch API is broken for some versions of Electron
-	// https://github.com/electron/electron/pull/42419
-	try {
-		console.warn(
-			"[Relay] Polyfilling Fetch API (Electron Bug: https://github.com/electron/electron/pull/42419)",
-		);
-		if ((globalThis as unknown as { blinkfetch?: typeof fetch }).blinkfetch) {
-			globalThis.fetch = (
-			globalThis as unknown as { blinkfetch: typeof fetch }
-		).blinkfetch;
-			const keys = ["fetch", "Response", "FormData", "Request", "Headers"];
-			for (const key of keys) {
-				(globalThis as unknown as Record<string, unknown>)[key] = (
-					globalThis as unknown as Record<string, unknown>
-				)[`blink${key}`];
+/**
+ * Install the Fetch and EventSource polyfills some Electron builds need.
+ * Runs once at plugin load, before any request is made.
+ */
+export function installFetchPolyfills(): void {
+	if (window.Response === undefined || window.Headers === undefined) {
+		// Fetch API is broken for some versions of Electron
+		// https://github.com/electron/electron/pull/42419
+		try {
+			console.warn(
+				"[Relay] Polyfilling Fetch API (Electron Bug: https://github.com/electron/electron/pull/42419)",
+			);
+			if ((window as unknown as { blinkfetch?: typeof fetch }).blinkfetch) {
+				window.fetch = (
+				window as unknown as { blinkfetch: typeof fetch }
+			).blinkfetch;
+				const keys = ["fetch", "Response", "FormData", "Request", "Headers"];
+				for (const key of keys) {
+					(window as unknown as Record<string, unknown>)[key] = (
+						window as unknown as Record<string, unknown>
+					)[`blink${key}`];
+				}
 			}
+		} catch (e) {
+			console.error(e);
 		}
-	} catch (e) {
-		console.error(e);
 	}
-}
 
-if (globalThis.EventSource === undefined) {
-	if (Platform.isMobile) {
-		console.warn(
-			"[Relay] Polyfilling EventSource API required, but unable to polyfill on Mobile",
-		);
-	} else {
-		console.warn("[Relay] Polyfilling EventSource API");
-		globalThis.EventSource = EventSourcePolyfill as unknown as typeof EventSource;
+	if (window.EventSource === undefined) {
+		if (Platform.isMobile) {
+			console.warn(
+				"[Relay] Polyfilling EventSource API required, but unable to polyfill on Mobile",
+			);
+		} else {
+			console.warn("[Relay] Polyfilling EventSource API");
+			window.EventSource = EventSourcePolyfill as unknown as typeof EventSource;
+		}
 	}
 }
 

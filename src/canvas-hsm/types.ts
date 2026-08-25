@@ -12,6 +12,7 @@
  * drive all three machines.
  */
 
+import type { TimeProvider } from "../TimeProvider";
 import type { CanvasData } from "../CanvasView";
 import type { PersistedCanvasState } from "../merge-hsm/types";
 import type { YjsSnapshot } from "../merge-hsm/snapshots";
@@ -213,6 +214,8 @@ export interface CanvasHSMConfig {
 	getColdHeadBasis?: () => Uint8Array | null;
 	/** Clock for persistedAt stamps (injectable for tests). */
 	now?: () => number;
+	/** Timer source for state waiters; defaults to the window's timers. */
+	timeProvider?: Pick<TimeProvider, "setTimeout" | "clearTimeout">;
 	onEffect: (effect: CanvasEffect) => void;
 	onTransition?: (
 		from: CanvasStatePath,

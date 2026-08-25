@@ -96,6 +96,7 @@ import type { RemoteSharedFolder } from "./Relay";
 import {
 	setDeviceManagementConfig,
 	setPluginRequestConfig,
+	installFetchPolyfills,
 } from "./customFetch";
 import { RelayDebugAPI } from "./RelayDebugAPI";
 import { isRetryableS3Error } from "./S3Error";
@@ -507,6 +508,8 @@ export default class Live extends Plugin {
 	}
 
 	async onload() {
+		installFetchPolyfills();
+
 		// Detect leaked plugin instances from a previous onunload() that
 		// crashed or was skipped. We track active instance IDs on a
 		// window-level Set: each load adds an ID, each clean unload
