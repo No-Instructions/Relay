@@ -37,9 +37,26 @@ export function hasBooleanRestoreIdiom(source: string): boolean {
 	return BOOLEAN_RESTORE_IDIOM.test(source);
 }
 
+/**
+ * A vault write method as the patcher sees it on Vault.prototype. Vault's
+ * own signatures narrow the parameters; the polyfill forwards whatever it
+ * receives.
+ */
+type VaultWriteMethod = (
+	this: unknown,
+	file: never,
+	...args: never[]
+) => Promise<unknown>;
+
+type ForwardedWriteMethod = (
+	this: unknown,
+	file: unknown,
+	...args: unknown[]
+) => Promise<unknown>;
+
 export interface VaultWriteMethods {
-	modify: (...args: any[]) => Promise<any>;
-	process: (...args: any[]) => Promise<any>;
+	modify: VaultWriteMethod;
+	process: VaultWriteMethod;
 }
 
 type Decision =
@@ -112,19 +129,21 @@ export class SavingFlagPolyfill extends HasLogging {
 	 * original's restore and the correction; the fs watcher observes the
 	 * flag from macrotasks and cannot see it.
 	 */
-	private wrapWithOccupancy = (original: (...args: any[]) => any) => {
+	private wrapWithOccupancy = (method: VaultWriteMethod) => {
 		const inFlight = this.inFlight;
-		return async function (this: unknown, file: any, ...args: any[]) {
+		const original = method as ForwardedWriteMethod;
+		return async function (this: unknown, file: unknown, ...args: unknown[]) {
 			if (file === null || typeof file !== "object") {
 				return original.call(this, file, ...args);
 			}
+			const tracked = file as { saving?: boolean };
 			inFlight.set(file, (inFlight.get(file) ?? 0) + 1);
 			try {
 				return await original.call(this, file, ...args);
 			} finally {
 				const n = (inFlight.get(file) ?? 1) - 1;
 				inFlight.set(file, n);
-				file.saving = n > 0;
+				tracked.saving = n > 0;
 			}
 		};
 	};
