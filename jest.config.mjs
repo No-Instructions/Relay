@@ -22,7 +22,7 @@ export default {
 		"svelteHost\\.svelte$": "<rootDir>/__tests__/mocks/svelteHost.ts",
 	},
 	setupFiles: ["<rootDir>/__tests__/mocks/globalStubs.ts"],
-	testPathIgnorePatterns: ["/__tests__/mocks/", "/__tests__/merge-hsm/testing/", "archive/", ".claude"],
+	testPathIgnorePatterns: ["/__tests__/mocks/", "/__tests__/merge-hsm/testing/", "/__tests__/canvas-hsm/testing/", "archive/", ".claude"],
     globals: {
         "BUILD_TYPE": "production",
         "GIT_TAG": "jest-test-version",
