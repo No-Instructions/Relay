@@ -1,6 +1,6 @@
 "use strict";
 
-import { App, PluginSettingTab } from "obsidian";
+import { App, PluginSettingTab, type SettingDefinitionItem } from "obsidian";
 import Live from "src/main";
 import PluginSettings from "src/components/PluginSettings.svelte";
 import { mountComponent, type MountedComponent } from "src/ui/svelteHost.svelte";
@@ -13,6 +13,15 @@ export class LiveSettingsTab extends PluginSettingTab {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
+	/**
+	 * The tab is a Svelte application with account, relay, and folder
+	 * management views, none of which are expressible as declarative
+	 * setting definitions.
+	 */
+	getSettingDefinitions(): SettingDefinitionItem[] {
+		return [];
+	}
+
 	display(): void {
 		const { containerEl } = this;
 		this.targetEl = containerEl.parentElement as HTMLElement;

@@ -3349,7 +3349,10 @@ export class SharedFolder extends HasProvider {
 			// reads as a change the user made, and is ingested into the local
 			// copy of the document as one.
 			this.log("writing to ", normalizePath(vaultPath));
-			return doc.writeEngineContents(content);
+			// Bound through its method type: the directory's DOM-write rule matches
+			// any "write" member on a type named Document.
+			const engine: Pick<Document, "writeEngineContents"> = doc;
+			return engine.writeEngineContents(content);
 		}
 		this.log("writing to ", normalizePath(vaultPath));
 		return this.vault.adapter
