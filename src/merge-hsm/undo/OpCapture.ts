@@ -28,8 +28,8 @@ import {
 	Item,
 	GC,
 	DeleteSet,
-	AbstractType,
 	Transaction,
+	type UndoManager,
 	Doc,
 } from "yjs/dist/src/internals";
 
@@ -38,6 +38,10 @@ import * as decoding from "lib0/decoding";
 
 import type { SerializedCapturedOp, SerializedCaptureState } from "./types";
 import { serializeOrigin, deserializeOrigin } from "./origins";
+
+/** The shared-type shape yjs's own APIs exchange, named without repeating
+ * its any-parameterized event argument at every site. */
+type YType = Parameters<Transaction["changed"]["has"]>[0];
 
 // ---------------------------------------------------------------------------
 // CapturedOp
@@ -50,9 +54,9 @@ import { serializeOrigin, deserializeOrigin } from "./origins";
 export class CapturedOp {
 	readonly insertions: DeleteSet;
 	readonly deletions: DeleteSet;
-	readonly origin: any;
+	readonly origin: unknown;
 	readonly timestamp: number;
-	readonly meta: Map<any, any>;
+	readonly meta: Map<unknown, unknown>;
 
 	/** IDB key when persisted via _storage. Null for in-memory-only entries. */
 	_storeKey: number | null = null;
@@ -66,7 +70,7 @@ export class CapturedOp {
 	constructor(
 		deletions: DeleteSet,
 		insertions: DeleteSet,
-		origin: any,
+		origin: unknown,
 		timestamp: number,
 	) {
 		this.insertions = insertions;
@@ -82,7 +86,7 @@ export class CapturedOp {
 // ---------------------------------------------------------------------------
 
 export interface OpCaptureOptions {
-	trackedOrigins: Set<any>;
+	trackedOrigins: Set<unknown>;
 	captureTimeout?: number;
 	deleteFilter?: (item: Item) => boolean;
 }
@@ -96,7 +100,7 @@ export interface OpCaptureOptions {
  */
 function releaseEntry(
 	tr: Transaction,
-	scope: AbstractType<any>[],
+	scope: YType[],
 	entry: CapturedOp,
 ): void {
 	iterateDeletedStructs(tr, entry.deletions, (item: Item | GC) => {
@@ -118,8 +122,8 @@ export class OpCapture {
 	readonly entries: CapturedOp[] = [];
 
 	private readonly doc: Doc;
-	private readonly scope: AbstractType<any>[];
-	private readonly trackedOrigins: Set<any>;
+	private readonly scope: YType[];
+	private readonly trackedOrigins: Set<unknown>;
 	private readonly captureTimeout: number;
 	private readonly deleteFilter: (item: Item) => boolean;
 	private lastChange: number = 0;
@@ -133,7 +137,7 @@ export class OpCapture {
 	_storage: OpCaptureStorage | null = null;
 
 	constructor(
-		typeScope: AbstractType<any> | AbstractType<any>[],
+		typeScope: YType | YType[],
 		opts: OpCaptureOptions,
 	) {
 		const scopeArr = Array.isArray(typeScope) ? typeScope : [typeScope];
@@ -153,7 +157,9 @@ export class OpCapture {
 				) ||
 				(!this.trackedOrigins.has(transaction.origin) &&
 					(!transaction.origin ||
-						!this.trackedOrigins.has(transaction.origin.constructor)))
+						!this.trackedOrigins.has(
+							(transaction.origin as { constructor?: unknown }).constructor,
+						)))
 			) {
 				return;
 			}
@@ -169,7 +175,7 @@ export class OpCapture {
 			});
 
 			const now = time.getUnixTime();
-			const origin = transaction.origin;
+			const origin: unknown = transaction.origin;
 
 			let coalesced = false;
 
@@ -284,12 +290,12 @@ export class OpCapture {
 	}
 
 	/** All entries with a specific origin. */
-	byOrigin(origin: any): CapturedOp[] {
+	byOrigin(origin: unknown): CapturedOp[] {
 		return this.entries.filter((e) => e.origin === origin);
 	}
 
 	/** Entries captured since a mark with a specific origin. */
-	sinceByOrigin(mark: number, origin: any): CapturedOp[] {
+	sinceByOrigin(mark: number, origin: unknown): CapturedOp[] {
 		return this.entries.slice(mark).filter((e) => e.origin === origin);
 	}
 
@@ -380,7 +386,7 @@ export class OpCapture {
 								itemsToRedo,
 								entry.insertions,
 								false, // ignoreRemoteMapChanges
-								umShim as any,
+								umShim as unknown as UndoManager,
 							);
 						});
 
@@ -398,9 +404,9 @@ export class OpCapture {
 
 					// Clear search markers on changed types
 					transaction.changed.forEach(
-						(subProps: Set<string | null>, type: AbstractType<any>) => {
-							if (subProps.has(null) && (type as any)._searchMarker) {
-								(type as any)._searchMarker.length = 0;
+						(subProps: Set<string | null>, type: YType) => {
+							if (subProps.has(null) && type._searchMarker) {
+								type._searchMarker.length = 0;
 							}
 						},
 					);
@@ -531,7 +537,7 @@ export class OpCapture {
 									!isDeleted(entry.insertions, struct.id)
 								) {
 									struct.deleted = false;
-									const parent = struct.parent as AbstractType<any>;
+									const parent = struct.parent as YType;
 									if (parent._length != null) {
 										parent._length += struct.length;
 									}
@@ -551,9 +557,9 @@ export class OpCapture {
 
 					// Clear search markers on changed types
 					transaction.changed.forEach(
-						(subProps: Set<string | null>, type: AbstractType<any>) => {
-							if (subProps.has(null) && (type as any)._searchMarker) {
-								(type as any)._searchMarker.length = 0;
+						(subProps: Set<string | null>, type: YType) => {
+							if (subProps.has(null) && type._searchMarker) {
+								type._searchMarker.length = 0;
 							}
 						},
 					);
@@ -707,7 +713,7 @@ export class OpCapture {
 	 */
 	static restore(
 		doc: Doc,
-		typeScope: AbstractType<any> | AbstractType<any>[],
+		typeScope: YType | YType[],
 		state: SerializedCaptureState,
 		opts: OpCaptureOptions,
 		savedEntries?: Array<{ k: number; v: SerializedCapturedOp }>,
