@@ -131,7 +131,9 @@ export class ContentAddressedStore extends HasLogging {
 					`transient ${operation} failure (attempt ${attempt + 1}); retrying in ${delayMs}ms`,
 					classified,
 				);
-				await new Promise((resolve) => setTimeout(resolve, delayMs));
+				await new Promise<void>((resolve) =>
+					this.sharedFolder.timeProvider.setTimeout(resolve, delayMs),
+				);
 			}
 		}
 	}

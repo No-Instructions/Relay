@@ -237,7 +237,7 @@ export class SyncStatusView extends ItemView {
 		if (!this.binding) {
 			container.createDiv({ cls: "system3-note-state-slot" });
 			this.attachNoteState();
-			container.createEl("div", {
+			container.createDiv({
 				cls: "system3-sync-status-empty",
 				text: "No folder selected.",
 			});
