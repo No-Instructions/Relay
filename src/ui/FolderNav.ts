@@ -22,6 +22,7 @@ import { SyncFile, isSyncFile } from "src/SyncFile";
 import { Canvas } from "src/Canvas";
 import { curryLog, metrics } from "src/debug";
 import { isDestroyedError } from "src/DestroyedError";
+import type { MergeHSM } from "src/merge-hsm/MergeHSM";
 
 class SiblingWatcher {
 	mutationObserver: MutationObserver | null;
@@ -161,8 +162,8 @@ function fileHasConflict(sharedFolder: SharedFolder, guid: string): boolean {
 	const mergeManager = sharedFolder.mergeManager;
 	if (!mergeManager) return false;
 
-	const file = sharedFolder.files.get(guid) as any;
-	const hsm = file?.hsm;
+	const file = sharedFolder.files.get(guid);
+	const hsm = (file as { hsm?: MergeHSM | null } | undefined)?.hsm;
 	if (hsm) {
 		const status = hsm.getSyncStatus() as SyncStatus | undefined;
 		if (syncStatusHasConflict(status)) return true;
@@ -730,8 +731,11 @@ class FileExplorerWalker {
 	private _getFileExplorerItem(path: string) {
 		// XXX this is a private API
 		try {
-			//@ts-expect-error this is a private API
-			return this.fileExplorer.view.fileItems[path];
+			return (
+				this.fileExplorer.view as unknown as {
+					fileItems: Record<string, unknown>;
+				}
+			).fileItems[path];
 		} catch {
 			return null;
 		}

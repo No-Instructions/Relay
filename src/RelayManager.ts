@@ -135,6 +135,7 @@ export interface StorageQuotaDAO extends RecordModel {
 	created: string;
 	quota: number;
 	usage: number;
+	pending?: number;
 	metered: boolean;
 	max_file_size: number;
 }
@@ -1017,7 +1018,7 @@ class Store extends HasLogging {
 				if (Array.isArray(value)) {
 					this.ingestBatch(value);
 				} else {
-					this.ingest(value);
+					this.ingest(value as RecordModel);
 				}
 			}
 		}
@@ -1813,13 +1814,15 @@ export class RelayManager extends HasLogging {
 			throw new Error("Auth is not valid");
 		}
 		const url = `/api/subscription/${subscription.id}/token`;
-		const response = await this.pb.send(url, {
+		const response = (await this.pb.send(url, {
 			method: "POST",
-		});
+		})) as unknown;
 		if (response !== 200) {
 			throw new Error("Token API failed");
 		}
-		return response.json()["token"];
+		return (response as unknown as { json(): Record<string, string> }).json()[
+			"token"
+		];
 	}
 
 	_handleEvent = (
@@ -2005,7 +2008,7 @@ export class RelayManager extends HasLogging {
 				return Promise.resolve([]);
 			}
 			if (typeof options === "function") {
-				options = options(this.pb.authStore.model.id);
+				options = options(this.pb.authStore.model.id as string);
 			}
 			return this.pb.collection(collection).getFullList<RecordModel>(options);
 		};
@@ -2047,7 +2050,7 @@ export class RelayManager extends HasLogging {
 
 	async acceptInvitation(shareKey: string): Promise<Relay> {
 		if (!this.pb) throw new Error("Failed to accept invitation");
-		const response = await this.pb
+		const response = (await this.pb
 			.send("/api/accept-invitation", {
 				method: "POST",
 				headers: {
@@ -2059,7 +2062,7 @@ export class RelayManager extends HasLogging {
 			})
 			.catch((response) => {
 				throw response;
-			});
+			})) as RecordModel;
 		this.debug("[InviteAccept]", response);
 		const relay = this.store?.ingest<Relay>(response);
 		if (!relay) {
@@ -2123,13 +2126,13 @@ export class RelayManager extends HasLogging {
 		}
 
 		// Call the self-host endpoint
-		const response = await this.pb.send("/api/collections/relays/self-host", {
+		const response = (await this.pb.send("/api/collections/relays/self-host", {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
 			},
 			body: JSON.stringify(requestBody),
-		});
+		})) as RecordModel;
 
 		// Ingest the response into the store
 		const relay = this.store?.ingest<Relay>(response);
