@@ -305,7 +305,7 @@ export class CanvasPlugin extends HasLogging {
 		this.debug("syncing canvas embed HSM to view", document.path, reason);
 		state.saving = true;
 		try {
-			embedView.setViewData!(contents, false);
+			embedView.setViewData(contents, false);
 		} finally {
 			state.saving = false;
 		}

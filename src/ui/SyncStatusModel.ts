@@ -165,7 +165,7 @@ export function buildFolderSyncStatusModel(
 	for (const [guid, file] of sharedFolder.files) {
 		const hsm = (file as { hsm?: MergeHSM | null }).hsm;
 		const statePath = hsm?.statePath as StatePath | undefined;
-		const syncStatus = hsm?.getSyncStatus() as SyncStatus | undefined;
+		const syncStatus = hsm?.getSyncStatus();
 		const derived = deriveFileSyncStatus({
 			statePath,
 			syncStatus,
@@ -281,7 +281,7 @@ export function shouldShowRecentActivity(status: string, author: string): boolea
 }
 
 export function normalizeActivityStatus(status: string): FileSyncUiStatus {
-	switch (status as SyncStatusType | string) {
+	switch (status) {
 		case "conflict":
 			return "conflict";
 		case "error":
