@@ -25,7 +25,7 @@ import {
 } from "./customFetch";
 import { LocalAuthStore } from "./pocketbase/LocalAuthStore";
 import type { TimeProvider } from "./TimeProvider";
-import { FeatureFlagManager } from "./flagManager";
+import { type ServerFlags, FeatureFlagManager } from "./flagManager";
 import type { NamespacedSettings } from "./SettingsStorage";
 import { type EndpointManager } from "./EndpointManager";
 
@@ -243,11 +243,11 @@ export class LoginManager extends Observable<LoginManager> {
 		if (this.pb.authStore.model?.id) {
 			this.pb
 				.collection("users")
-				.getOne(this.pb.authStore.model.id)
+				.getOne(this.pb.authStore.model.id as string)
 				.then(() => {
 					this.getFlags();
 				})
-				.catch((response) => {
+				.catch((response: { status?: number }) => {
 					if (response.status === 404) {
 						this.logout();
 					}
@@ -278,7 +278,11 @@ export class LoginManager extends Observable<LoginManager> {
 					this.notifyListeners();
 					const token = authData.token;
 					const [, payload] = token.split(".");
-					const decodedPayload = JSON.parse(atob(payload));
+					const decodedPayload = JSON.parse(atob(payload)) as {
+						exp: number;
+						id?: string;
+						email?: string;
+					};
 
 					const expiryDate = new Date(decodedPayload.exp * 1000);
 					const now = new Date();
@@ -310,14 +314,22 @@ export class LoginManager extends Observable<LoginManager> {
 			this.notifyListeners(); // notify anyway
 			return false;
 		}
-		this.user = this.makeUser(this.pb.authStore, authData?.meta?.rawUser);
+		this.user = this.makeUser(
+			this.pb.authStore,
+			authData?.meta?.rawUser as
+				| GoogleUser
+				| GitHubUser
+				| MicrosoftUser
+				| OIDCUser
+				| undefined,
+		);
 		this.notifyListeners();
 		if (authData) {
 			this.pb
 				.collection("oauth2_response")
 				.create({
 					user: authData.record.id,
-					oauth_response: authData.meta?.rawUser,
+					oauth_response: authData.meta?.rawUser as unknown,
 				})
 				.then(() => {
 					this.notifyListeners();
@@ -362,7 +374,7 @@ export class LoginManager extends Observable<LoginManager> {
 		})
 			.then((response) => {
 				if (response.status === 200) {
-					const serverFlags = response.json;
+					const serverFlags = response.json as ServerFlags[];
 					FeatureFlagManager.getInstance().applyServerFlags(serverFlags);
 				}
 			})
@@ -385,8 +397,8 @@ export class LoginManager extends Observable<LoginManager> {
 			.then((response) => {
 				this.log(
 					FeatureFlagManager.getInstance().getFlag("enableStreamerMode")
-						? { id: response.json?.id }
-						: response.json,
+						? { id: (response.json as { id?: string } | undefined)?.id }
+						: (response.json as unknown),
 				);
 			})
 			.catch((reason) => {
@@ -399,7 +411,7 @@ export class LoginManager extends Observable<LoginManager> {
 	}
 
 	public getAccountEmailForRequest(): string {
-		return this.pb.authStore.model?.email || "";
+		return (this.pb.authStore.model?.email as string | undefined) || "";
 	}
 
 	/**
@@ -458,7 +470,7 @@ export class LoginManager extends Observable<LoginManager> {
 		rawUser?: GoogleUser | GitHubUser | MicrosoftUser | OIDCUser,
 	): User {
 		return createUserFromOAuth(
-			authStore.model?.id,
+			authStore.model?.id as string,
 			authStore.token,
 			authStore.model as {
 				name?: string;
@@ -552,7 +564,7 @@ export class LoginManager extends Observable<LoginManager> {
 		const authMethods = await this.pb
 			.collection("users")
 			.listAuthMethods({ fetch: whichFetch })
-			.catch((e) => {
+			.catch((e: { originalError?: unknown }) => {
 				throw e.originalError;
 			});
 
@@ -625,7 +637,9 @@ export class LoginManager extends Observable<LoginManager> {
 					.then((response) => {
 						if (response) {
 							this.timeProvider.clearInterval(timer);
-							return resolve(provider.login(response.code));
+							return resolve(
+								provider.login((response as unknown as { code: string }).code),
+							);
 						}
 					})
 					.catch((e) => {});

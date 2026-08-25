@@ -7,6 +7,7 @@ import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 import { isLive, type LiveView } from "./LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { trackPromise } from "./trackPromise";
+import type { TFile } from "obsidian";
 
 export class TextFileViewPlugin extends HasLogging {
 	view: LiveView<TextFileView>;
@@ -125,17 +126,22 @@ export class TextFileViewPlugin extends HasLogging {
 		try {
 			view.setViewData(data, false);
 			if (view.getViewData() !== data) {
-				(view as any).data = data;
+				(view as { data?: string }).data = data;
 				const file = view.file;
-				const kanban = (view.app as any)?.plugins?.plugins?.[
-					"obsidian-kanban"
-				];
+				const kanban = (view.app as unknown as {
+					plugins?: {
+						plugins?: Record<
+							string,
+							{ stateManagers?: Map<TFile, { forceRefresh?: () => void }> } | undefined
+						>;
+					};
+				} | undefined)?.plugins?.plugins?.["obsidian-kanban"];
 				const stateManagers = kanban?.stateManagers;
 				if (stateManagers && file) {
 					for (const [smFile, sm] of stateManagers) {
 						if (smFile === file || smFile?.path === file.path) {
 							try {
-								sm.forceRefresh();
+								sm.forceRefresh!();
 							} catch (e) {
 								this.warn("kanban state refresh failed", e);
 							}
@@ -284,7 +290,7 @@ export class TextFileViewPlugin extends HasLogging {
 					};
 				},
 				requestSave(old: (...args: unknown[]) => unknown) {
-					return function (this: any) {
+					return function (this: { getViewType(): string }) {
 						const plugin = owner();
 						plugin.warn("instance hook: requestSave called", this.getViewType());
 						if (isLive(plugin.view) && !plugin.saving && plugin.doc) {

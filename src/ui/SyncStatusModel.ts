@@ -6,6 +6,7 @@ import {
 import type { SharedFolder } from "../SharedFolder";
 import { formatUserFacingError } from "../UserFacingError";
 import type { StatePath, SyncStatus, SyncStatusType } from "../merge-hsm/types";
+import type { MergeHSM } from "src/merge-hsm/MergeHSM";
 
 export type FileSyncUiStatus = "synced" | "syncing" | "conflict" | "error";
 export type ActionableCategory = "conflict" | "error";
@@ -162,8 +163,7 @@ export function buildFolderSyncStatusModel(
 	const actionableFiles: ActionableSyncFile[] = [];
 
 	for (const [guid, file] of sharedFolder.files) {
-		const doc = file as any;
-		const hsm = doc.hsm;
+		const hsm = (file as { hsm?: MergeHSM | null }).hsm;
 		const statePath = hsm?.statePath as StatePath | undefined;
 		const syncStatus = hsm?.getSyncStatus() as SyncStatus | undefined;
 		const derived = deriveFileSyncStatus({
@@ -337,8 +337,10 @@ function queueActiveLabel(kind: QueueWorkKind): string {
 	return kind === "download" ? "Downloading" : "Syncing";
 }
 
-function getHsmErrorMessage(hsm: any): string | null {
-	const error = hsm?.state?.error;
+function getHsmErrorMessage(hsm: MergeHSM | null | undefined): string | null {
+	const error = (
+		hsm as unknown as { state?: { error?: unknown } } | null | undefined
+	)?.state?.error;
 	if (!error) return null;
 	return formatUserFacingError(error, "Unable to continue sync");
 }
