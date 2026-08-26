@@ -29,7 +29,11 @@ export function describeOrigin(origin: unknown): string {
 export function serializeOrigin(origin: unknown): string | null {
 	if (origin == null) return null;
 	if (typeof origin === "symbol") return Symbol.keyFor(origin) ?? null;
-	return typeof origin === "string" ? origin : String(origin);
+	if (typeof origin === "string") return origin;
+	if (typeof origin === "number" || typeof origin === "boolean") {
+		return String(origin);
+	}
+	return null;
 }
 
 /**
