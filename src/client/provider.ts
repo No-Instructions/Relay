@@ -839,6 +839,7 @@ export class YSweetProvider extends Observable<string> {
 
 		if (typeof window !== "undefined") {
 			window.addEventListener("unload", this._unloadHandler);
+			/* global process -- Node hosts without a window (headless Relay) expose process for exit cleanup. */
 		} else if (typeof process !== "undefined") {
 			process.on("exit", this._unloadHandler);
 		}

@@ -59,6 +59,7 @@ function stringToBase64(input: string) {
 	if (typeof window !== "undefined" && window.btoa) {
 		// Browser
 		return window.btoa(input);
+		/* global Buffer -- Node hosts (headless Relay) provide Buffer; browsers take the window path. */
 	} else if (typeof Buffer !== "undefined") {
 		// Node.js
 		return Buffer.from(input).toString("base64");

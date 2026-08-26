@@ -29,6 +29,7 @@ import type {
  * Works in both Node.js and browser environments.
  */
 export function uint8ArrayToBase64(arr: Uint8Array): string {
+  /* global Buffer -- Node hosts (headless Relay) provide Buffer, the native path; browsers fall through. */
   if (typeof Buffer !== 'undefined') {
     return Buffer.from(arr).toString('base64');
   }

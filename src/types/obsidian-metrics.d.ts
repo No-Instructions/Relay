@@ -62,6 +62,8 @@
  *   when 'tsdb:ready' fires
  */
 
+import type { EventRef } from "obsidian";
+
 export interface MetricLabels {
 	[key: string]: string;
 }
