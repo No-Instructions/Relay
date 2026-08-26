@@ -1,10 +1,8 @@
 "use strict";
 import { apiVersion, requestUrl as obsidianRequestUrl } from "obsidian";
-import { Platform } from "obsidian";
 import type { RequestUrlParam, RequestUrlResponse } from "obsidian";
 import { curryLog, metrics, type NetworkDomain, type NetworkResult } from "./debug";
 import { flags } from "./flagManager";
-import EventSourcePolyfill from "eventsource";
 
 declare const GIT_TAG: string;
 declare const API_URL: string;
@@ -185,46 +183,6 @@ export async function requestUrlWithMetrics(
 			result: "error",
 		});
 		throw error;
-	}
-}
-
-/**
- * Install the Fetch and EventSource polyfills some Electron builds need.
- * Runs once at plugin load, before any request is made.
- */
-export function installFetchPolyfills(): void {
-	if (window.Response === undefined || window.Headers === undefined) {
-		// Fetch API is broken for some versions of Electron
-		// https://github.com/electron/electron/pull/42419
-		try {
-			console.warn(
-				"[Relay] Polyfilling Fetch API (Electron Bug: https://github.com/electron/electron/pull/42419)",
-			);
-			if ((window as unknown as { blinkfetch?: typeof fetch }).blinkfetch) {
-				window.fetch = (
-				window as unknown as { blinkfetch: typeof fetch }
-			).blinkfetch;
-				const keys = ["fetch", "Response", "FormData", "Request", "Headers"];
-				for (const key of keys) {
-					(window as unknown as Record<string, unknown>)[key] = (
-						window as unknown as Record<string, unknown>
-					)[`blink${key}`];
-				}
-			}
-		} catch (e) {
-			console.error(e);
-		}
-	}
-
-	if (window.EventSource === undefined) {
-		if (Platform.isMobile) {
-			console.warn(
-				"[Relay] Polyfilling EventSource API required, but unable to polyfill on Mobile",
-			);
-		} else {
-			console.warn("[Relay] Polyfilling EventSource API");
-			window.EventSource = EventSourcePolyfill as unknown as typeof EventSource;
-		}
 	}
 }
 
