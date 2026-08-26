@@ -8,6 +8,11 @@
 //           removing the field admits it to the default gate. Public and
 //           developer-overlay entries share the directory; .gitignore
 //           keeps entries private unless a whitelist line makes one public.
+//   build   runs one flavor declared in build.d/ — the named argument
+//           (`npm run build production`), else the entry marked
+//           "default": true, else the only entry. The public checkout
+//           declares the production flavor; the developer overlay adds the
+//           develop flavor and marks it default.
 //   deploy  delegates to the developer overlay's scripts/deploy, which owns
 //           the target registry (infra/deploy-targets.d/) and its guards.
 //
@@ -16,6 +21,7 @@ import { spawnSync } from "node:child_process";
 
 const DOMAINS = {
 	lint: { dir: "lint.d", mode: "all", noun: "linter" },
+	build: { dir: "build.d", mode: "one", noun: "flavor" },
 	deploy: { delegate: "scripts/deploy", noun: "target" },
 };
 
@@ -55,7 +61,7 @@ const list = () => {
 	const width = Math.max(...entries.map((e) => e.name.length));
 	for (const e of entries)
 		console.log(
-			`  ${e.name.padEnd(width)}  ${e.description ?? ""}${e.default === false ? "  (on demand)" : ""}`.trimEnd(),
+			`  ${e.name.padEnd(width)}  ${e.description ?? ""}${e.default === false ? "  (on demand)" : ""}${e.default === true ? "  (default)" : ""}`.trimEnd(),
 		);
 };
 
@@ -74,10 +80,26 @@ for (const name of names) {
 		process.exit(1);
 	}
 }
-const selected = names.length
-	? entries.filter((e) => names.includes(e.name))
-	: entries.filter((e) => e.default !== false);
-const onDemand = names.length ? [] : entries.filter((e) => e.default === false);
+const pickOne = () => {
+	if (names.length > 1) {
+		console.error(`${command}: pick one ${domain.noun} (${names.join(", ")})`);
+		process.exit(1);
+	}
+	if (names.length) return entries.filter((e) => e.name === names[0]);
+	const flagged = entries.filter((e) => e.default === true);
+	if (flagged.length === 1) return flagged;
+	if (flagged.length === 0 && entries.length === 1) return entries;
+	console.error(`${command}: ${flagged.length > 1 ? "several" : "no"} ${domain.noun}s marked default in ${domain.dir}/ — name one: ${entries.map((e) => e.name).join(", ")}`);
+	process.exit(1);
+};
+const selected =
+	domain.mode === "one"
+		? pickOne()
+		: names.length
+			? entries.filter((e) => names.includes(e.name))
+			: entries.filter((e) => e.default !== false);
+const onDemand =
+	names.length || domain.mode === "one" ? [] : entries.filter((e) => e.default === false);
 
 let failed = 0;
 for (const entry of selected) {

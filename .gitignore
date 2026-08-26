@@ -43,6 +43,8 @@ infra/
 # Lint entries: private by default, public when whitelisted.
 lint.d/*
 !lint.d/product.json
+build.d/*
+!build.d/production.json
 scripts/
 tickets/
 specs/

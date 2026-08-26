@@ -1,0 +1,4 @@
+{
+	"description": "production flavor — system3.md endpoints, minified",
+	"run": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production"
+}
