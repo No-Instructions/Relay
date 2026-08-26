@@ -11,12 +11,14 @@ const updatesStoreName = 'updates'
 const historyStoreName = 'history'
 const DB_VERSION = 2
 const DESTROY_DRAIN_TIMEOUT_MS = 2000
+/** @type {Array<[string, IDBObjectStoreParameters?]>} */
 const requiredStores = [
   [updatesStoreName, { autoIncrement: true }],
   [customStoreName],
   [historyStoreName, { autoIncrement: true }]
 ]
 
+/** @param {IDBDatabase} db */
 const createMissingStores = db => {
   for (const [storeName, options] of requiredStores) {
     if (!db.objectStoreNames.contains(storeName)) {
@@ -29,6 +31,7 @@ const createMissingStores = db => {
   }
 }
 
+/** @param {{ name?: unknown } | null | undefined} err */
 const isVersionError = err => err && err.name === 'VersionError'
 
 /**
@@ -42,7 +45,7 @@ const openDbRequest = (name, version) => new Promise((resolve, reject) => {
     ? indexedDB.open(name)
     : indexedDB.open(name, version)
   request.onupgradeneeded = event => {
-    createMissingStores(/** @type {IDBDatabase} */ (event.target.result))
+    createMissingStores(/** @type {IDBOpenDBRequest} */ (event.target).result)
   }
   request.onblocked = () => {
     abandoned = true
@@ -69,7 +72,7 @@ const openDbRequest = (name, version) => new Promise((resolve, reject) => {
  * @return {Promise<IDBDatabase>}
  */
 export const openIndexeddbPersistenceDb = name =>
-  openDbRequest(name, DB_VERSION).catch(err => {
+  openDbRequest(name, DB_VERSION).catch((/** @type {{ name?: unknown } | null | undefined} */ err) => {
     if (!isVersionError(err)) throw err
     idbWarn(`indexedDB.open(${name}, ${DB_VERSION}) hit VersionError; reopening current version`)
     return openDbRequest(name, undefined)
@@ -119,7 +122,7 @@ export const RUNTIME_TRIM_SIZE = 50
  */
 export const fetchUpdates = (idbPersistence, beforeApplyUpdatesCallback = () => {}, afterApplyUpdatesCallback = () => {}) => {
   const [updatesStore] = idb.transact(/** @type {IDBDatabase} */ (idbPersistence.db), [updatesStoreName]) // , 'readonly')
-  return idb.getAll(updatesStore, idb.createIDBKeyRangeLowerBound(idbPersistence._dbref, false)).then(updates => {
+  return idb.getAll(updatesStore, idb.createIDBKeyRangeLowerBound(idbPersistence._dbref, false)).then((/** @type {Uint8Array[]} */ updates) => {
     if (!idbPersistence._destroyed) {
       beforeApplyUpdatesCallback(updatesStore)
       // Validate each update on a throwaway doc BEFORE applying to the real doc.
@@ -140,7 +143,7 @@ export const fetchUpdates = (idbPersistence, beforeApplyUpdatesCallback = () => 
       }, idbPersistence, false)
     }
   })
-    .then(() => idb.getLastKey(updatesStore).then(lastKey => { idbPersistence._dbref = lastKey + 1 }))
+    .then(() => idb.getLastKey(updatesStore).then((/** @type {number} */ lastKey) => { idbPersistence._dbref = lastKey + 1 }))
     .then(() => idb.count(updatesStore).then(cnt => {
       idbPersistence._dbsize = cnt
       metrics.setDbSize(idbPersistence.name, cnt)
@@ -212,12 +215,19 @@ export class IndexeddbPersistence extends Observable {
     this.db = null
     this.synced = false
     this._syncFailed = false
+    /** @type {Error|null} */
     this._syncError = null
+    /** @type {Error|null} */
     this._destroyError = null
+    /** @type {((reason?: unknown) => void)|null} */
     this._rejectDbForDestroy = null
+    /** @type {((err?: Error) => void)|null} */
     this._rejectWhenSynced = null
+    /** @type {Promise<void>|null} */
     this._destroyPromise = null
+    /** @type {boolean|undefined} */
     this._serverSynced = undefined
+    /** @type {"local"|"remote"|undefined} */
     this._origin = undefined
     /**
      * OpCapture instance managed by this persistence.
@@ -226,6 +236,7 @@ export class IndexeddbPersistence extends Observable {
      */
     this.opCapture = null
     this._openDb = openIndexeddbPersistenceDb(name)
+    /** @type {Promise<IDBDatabase>} */
     this._db = new Promise((resolve, reject) => {
       this._rejectDbForDestroy = reject
       this._openDb.then(resolve, reject)
@@ -247,12 +258,13 @@ export class IndexeddbPersistence extends Observable {
         this._rejectWhenSynced = null
         resolve(this)
       }
+      /** @param {Error} [err] */
       const onFailed = (err) => {
         this.off('synced', onSynced)
         this._rejectWhenSynced = null
         reject(err || this._syncError || new Error(`IndexedDB sync failed for ${this.name}`))
       }
-      this._rejectWhenSynced = (err) => {
+      this._rejectWhenSynced = (/** @type {Error} [err] */ err) => {
         this.off('synced', onSynced)
         this.off('failed', onFailed)
         reject(err || new Error(`IndexedDB persistence destroyed before sync completed for ${this.name}`))
@@ -262,7 +274,7 @@ export class IndexeddbPersistence extends Observable {
     })
     this.whenSynced.catch(() => {})
 
-    this._db.catch((err) => {
+    this._db.catch((/** @type {unknown} */ err) => {
       this._failSync(err)
     })
 
@@ -284,6 +296,9 @@ export class IndexeddbPersistence extends Observable {
         // Capture any in-memory state before loading from IDB
         pendingState = Y.encodeStateAsUpdate(doc)
       }
+      /**
+       * @param {IDBObjectStore} updatesStore
+       */
       const afterApplyUpdatesCallback = (updatesStore) => {
         if (this._destroyed) return this
         // After loading from IDB, check if pending state had anything new
@@ -311,11 +326,11 @@ export class IndexeddbPersistence extends Observable {
             this.emit('synced', [this])
           }
         })
-        .catch((err) => {
+        .catch((/** @type {unknown} */ err) => {
           this._failSync(err)
         })
       }) // migrationDone
-    }).catch((err) => {
+    }).catch((/** @type {unknown} */ err) => {
       this._failSync(err)
     })
     /**
@@ -328,7 +343,7 @@ export class IndexeddbPersistence extends Observable {
     this._storeTimeoutId = null
     /**
      * Track pending write operations for proper teardown.
-     * @type {Set<Promise<any>>}
+     * @type {Set<Promise<unknown>>}
      */
     this._pendingWrites = new Set()
     this._compactionRequested = false
@@ -339,7 +354,7 @@ export class IndexeddbPersistence extends Observable {
     this._pendingCompaction = null
     /**
      * @param {Uint8Array} update
-     * @param {any} origin
+     * @param {unknown} origin
      */
     this._storeUpdate = (update, origin) => {
       if (this.db && origin !== this) {
@@ -367,7 +382,7 @@ export class IndexeddbPersistence extends Observable {
   /**
    * Override once to handle race condition where event might have already fired
    * @param {string} name
-   * @param {function} f
+   * @param {(...args: unknown[]) => void} f
    */
   once (name, f) {
     if (name === 'synced' && this.synced) {
@@ -382,6 +397,7 @@ export class IndexeddbPersistence extends Observable {
     return super.once(name, f)
   }
 
+  /** @param {unknown} err */
   _failSync (err) {
     if (this._destroyed || this._syncFailed) return
     this._syncFailed = true
@@ -390,6 +406,7 @@ export class IndexeddbPersistence extends Observable {
     this.emit('failed', [this._syncError])
   }
 
+  /** @param {Promise<unknown>} p */
   _trackWrite (p) {
     this._pendingWrites.add(p)
     p.then(
@@ -398,9 +415,14 @@ export class IndexeddbPersistence extends Observable {
     )
   }
 
+  /**
+   * @param {Promise<unknown>} promise
+   * @return {Promise<boolean>}
+   */
   _settleOrTimeout (promise) {
     return new Promise(resolve => {
       let finished = false
+      /** @param {boolean} settled */
       const finish = (settled) => {
         if (finished) return
         finished = true
@@ -426,12 +448,13 @@ export class IndexeddbPersistence extends Observable {
   async _drainCompactionForDestroy () {
     if (!this._pendingCompaction) return
     await this._settleOrTimeout(
-      this._pendingCompaction.catch(err => {
+      this._pendingCompaction.catch((/** @type {unknown} */ err) => {
         idbWarn(`compaction failed during destroy for ${this.name}:`, err)
       })
     )
   }
 
+  /** @param {IDBDatabase} db */
   _closeDb (db) {
     // lib0/indexeddb.openDB sets `db.onversionchange = () => db.close()`. The
     // arrow function captures the surrounding module's lexical scope. Even
@@ -449,13 +472,13 @@ export class IndexeddbPersistence extends Observable {
 
   /**
    * Load capture entries from the history object store.
-   * @return {Promise<Array<{k: number, v: any}>>}
+   * @return {Promise<Array<{k: number, v: import('../merge-hsm/undo').SerializedCapturedOp}>>}
    * @private
    */
   async _loadCaptureEntries () {
     const db = await this._db
     const [store] = idb.transact(db, [historyStoreName], 'readonly')
-    return idb.getAllKeysValues(store)
+    return /** @type {Promise<Array<{k: number, v: import('../merge-hsm/undo').SerializedCapturedOp}>>} */ (idb.getAllKeysValues(store))
   }
 
   /**
@@ -501,7 +524,7 @@ export class IndexeddbPersistence extends Observable {
       update: (key, serialized) => {
         const p = this._db.then(db => {
           const [store] = idb.transact(db, [historyStoreName])
-          return idb.put(store, serialized, key)
+          return /** @type {Promise<void>} */ (idb.put(store, serialized, key))
         })
         this._trackWrite(p)
         return p
@@ -510,7 +533,7 @@ export class IndexeddbPersistence extends Observable {
         if (keys.length === 0) return Promise.resolve()
         const p = this._db.then(db => {
           const [store] = idb.transact(db, [historyStoreName])
-          return Promise.all(keys.map(k => idb.del(store, k)))
+          return /** @type {Promise<void>} */ (Promise.all(keys.map(k => idb.del(store, k))))
         })
         this._trackWrite(p)
         return p
@@ -518,7 +541,7 @@ export class IndexeddbPersistence extends Observable {
       clear: () => {
         const p = this._db.then(db => {
           const [store] = idb.transact(db, [historyStoreName])
-          return idb.rtop(store.clear())
+          return /** @type {Promise<void>} */ (idb.rtop(store.clear()))
         })
         this._trackWrite(p)
         return p
@@ -534,7 +557,7 @@ export class IndexeddbPersistence extends Observable {
     }
     this._storeTimeoutId = this.timeProvider.setTimeout(() => {
       this._storeTimeoutId = null
-      this._requestCompaction().catch(err => {
+      this._requestCompaction().catch((/** @type {unknown} */ err) => {
         idbWarn(`compaction failed for ${this.name}:`, err)
       })
     }, this._storeTimeout)
@@ -639,7 +662,7 @@ export class IndexeddbPersistence extends Observable {
       .filter(storeName => this.db.objectStoreNames.contains(storeName))
 
     if (storeNames.length > 0) {
-      await new Promise((resolve, reject) => {
+      await /** @type {Promise<void>} */ (new Promise((resolve, reject) => {
         const tx = this.db.transaction(storeNames, 'readwrite')
         for (const storeName of storeNames) {
           tx.objectStore(storeName).clear()
@@ -647,7 +670,7 @@ export class IndexeddbPersistence extends Observable {
         tx.oncomplete = () => resolve()
         tx.onerror = () => reject(tx.error || new Error(`Failed to clear ${this.name}`))
         tx.onabort = () => reject(tx.error || new Error(`Aborted clearing ${this.name}`))
-      })
+      }))
     }
 
     this._dbref = 0
@@ -669,7 +692,7 @@ export class IndexeddbPersistence extends Observable {
 
   /**
    * @param {String | number | ArrayBuffer | Date} key
-   * @return {Promise<String | number | ArrayBuffer | Date | any>}
+   * @return {Promise<unknown>}
    */
   get (key) {
     return this._db.then(db => {
@@ -686,7 +709,7 @@ export class IndexeddbPersistence extends Observable {
   set (key, value) {
     const writePromise = this._db.then(db => {
       const [custom] = idb.transact(db, [customStoreName])
-      return idb.put(custom, value, key)
+      return /** @type {Promise<String | number | ArrayBuffer | Date>} */ (idb.put(custom, value, key))
     })
     this._trackWrite(writePromise)
     return writePromise
@@ -699,7 +722,7 @@ export class IndexeddbPersistence extends Observable {
   del (key) {
     const writePromise = this._db.then(db => {
       const [custom] = idb.transact(db, [customStoreName])
-      return idb.del(custom, key)
+      return /** @type {Promise<undefined>} */ (idb.del(custom, key))
     })
     this._trackWrite(writePromise)
     return writePromise
@@ -727,7 +750,7 @@ export class IndexeddbPersistence extends Observable {
     const [customStore] = idb.transact(this.db, [customStoreName], 'readonly')
     return idb.get(customStore, 'migratedFrom').then(existing => {
       if (existing === oldName) return // already migrated
-      return new Promise(resolve => {
+      return /** @type {Promise<void>} */ (new Promise(resolve => {
         let finished = false
         // onupgradeneeded fires iff indexedDB.open had to create a new DB at
         // v1 (i.e. oldName did not previously exist). We use it as a sentinel
@@ -792,7 +815,8 @@ export class IndexeddbPersistence extends Observable {
           const readTx = oldDb.transaction(storeNames, 'readonly')
           const reads = storeNames.map(name => {
             const store = readTx.objectStore(name)
-            return new Promise((res, rej) => {
+            return /** @type {Promise<{name: string, entries: Array<{key: IDBValidKey, value: unknown}>}>} */ (new Promise((res, rej) => {
+              /** @type {Array<{key: IDBValidKey, value: unknown}>} */
               const entries = []
               const cursor = store.openCursor()
               cursor.onsuccess = () => {
@@ -805,7 +829,7 @@ export class IndexeddbPersistence extends Observable {
                 }
               }
               cursor.onerror = () => rej(cursor.error)
-            })
+            }))
           })
           Promise.all(reads).then(stores => {
             // Write all entries into the new DB, plus migration marker
@@ -833,7 +857,7 @@ export class IndexeddbPersistence extends Observable {
             done()
           })
         }
-      })
+      }))
     })
   }
 
@@ -847,7 +871,7 @@ export class IndexeddbPersistence extends Observable {
 
   /**
    * Mark this document as synced with the server
-   * @return {Promise<any>}
+   * @return {Promise<unknown>}
    */
   async markServerSynced () {
     this._serverSynced = true
@@ -882,7 +906,7 @@ export class IndexeddbPersistence extends Observable {
   /**
    * Set the origin of this document
    * @param {"local" | "remote"} origin
-   * @return {Promise<any>}
+   * @return {Promise<void>}
    */
   async setOrigin (origin) {
     this._origin = origin
@@ -948,7 +972,7 @@ export class IndexeddbPersistence extends Observable {
    * Initialize document from remote CRDT state if not already initialized.
    * Used for downloaded documents where remoteDoc already has server content.
    * @param {Uint8Array} update - CRDT update from remoteDoc
-   * @param {any} origin - Origin to use for Y.applyUpdate (must differ from `this` so _storeUpdate persists to IDB)
+   * @param {unknown} origin - Origin to use for Y.applyUpdate (must differ from `this` so _storeUpdate persists to IDB)
    * @return {Promise<boolean>} true if initialization happened, false if already initialized
    */
   async initializeFromRemote (update, origin) {
