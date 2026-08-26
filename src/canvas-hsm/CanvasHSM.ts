@@ -37,6 +37,7 @@ import { snapshotsEqual, type YjsSnapshot } from "../merge-hsm/snapshots";
 import type { CanvasData } from "../CanvasView";
 import { generateHash } from "../hashing";
 import { curryLog } from "../debug";
+import { DefaultTimeProvider, type TimeProvider } from "../TimeProvider";
 import { CANVAS_MACHINE } from "./machine-definition";
 import type {
 	CanvasContext,
@@ -177,6 +178,7 @@ export class CanvasHSM implements SyncMachine {
 	private _serverHead: YjsSnapshot | null = null;
 	private readonly hashFn: (contents: string) => Promise<string>;
 	private readonly now: () => number;
+	private timers: Pick<TimeProvider, "setTimeout" | "clearTimeout">;
 	private interpreterConfig: CanvasInterpreterConfig;
 	private warn = curryLog("[CanvasHSM]", "warn");
 
@@ -184,6 +186,7 @@ export class CanvasHSM implements SyncMachine {
 		this.context = freshContext();
 		this.hashFn = config.hashFn ?? defaultHashFn;
 		this.now = config.now ?? (() => Date.now());
+		this.timers = config.timeProvider ?? new DefaultTimeProvider();
 
 		const verdictIs = (verdict: EvaluationVerdict) => {
 			return (_hsm: unknown, event: CanvasEvent): boolean => {
@@ -388,12 +391,12 @@ export class CanvasHSM implements SyncMachine {
 		}
 		return new Promise((resolve, reject) => {
 			const settle = (fn: () => void) => {
-				clearTimeout(timer);
+				this.timers.clearTimeout(timer);
 				this._stateWaiters.delete(waiter);
 				this._waiterAborts.delete(abort);
 				fn();
 			};
-			const timer = setTimeout(() => {
+			const timer = this.timers.setTimeout(() => {
 				settle(() =>
 					reject(
 						new Error(

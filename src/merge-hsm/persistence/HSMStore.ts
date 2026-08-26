@@ -379,10 +379,10 @@ export class HSMStore {
       const finish = (settled: boolean) => {
         if (finished) return;
         finished = true;
-        globalThis.clearTimeout(timer);
+        window.clearTimeout(timer);
         resolve(settled);
       };
-      const timer = globalThis.setTimeout(() => finish(false), DESTROY_DRAIN_TIMEOUT_MS);
+      const timer = window.setTimeout(() => finish(false), DESTROY_DRAIN_TIMEOUT_MS);
       promise.then(
         () => finish(true),
         () => finish(true),

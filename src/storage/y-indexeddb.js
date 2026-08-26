@@ -426,10 +426,10 @@ export class IndexeddbPersistence extends Observable {
       const finish = (settled) => {
         if (finished) return
         finished = true
-        clearTimeout(timer)
+        this.timeProvider.clearTimeout(timer)
         resolve(settled)
       }
-      const timer = setTimeout(() => finish(false), DESTROY_DRAIN_TIMEOUT_MS)
+      const timer = this.timeProvider.setTimeout(() => finish(false), DESTROY_DRAIN_TIMEOUT_MS)
       promise.then(
         () => finish(true),
         () => finish(true)

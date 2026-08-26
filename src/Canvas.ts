@@ -230,6 +230,7 @@ export class Canvas
 		this.hsm = new CanvasHSM({
 			guid: this.guid,
 			folderGuid: parent.guid,
+			timeProvider: this.timeProvider,
 			getPath: () => this.path,
 			isMember: () => this.sharedFolder.syncStore.has(this.path),
 			readDisk: async () => {
