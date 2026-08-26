@@ -18,8 +18,8 @@
  * never race its saves.
  */
 export interface FrontMatterPrimitives {
-	parse: (yaml: string) => any;
-	stringify: (obj: any) => string;
+	parse: (yaml: string) => unknown;
+	stringify: (obj: unknown) => string;
 	getFrontMatterInfo: (content: string) => {
 		exists: boolean;
 		frontmatter: string;
@@ -986,7 +986,7 @@ export interface PersistenceMetadata {
  */
 export interface CaptureOpts {
 	scope: string;
-	trackedOrigins: Set<any>;
+	trackedOrigins: Set<unknown>;
 	captureTimeout?: number;
 }
 

@@ -2126,16 +2126,19 @@ export class RelayManager extends HasLogging {
 		}
 
 		// Call the self-host endpoint
-		const response = (await this.pb.send("/api/collections/relays/self-host", {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
+		const response: unknown = await this.pb.send(
+			"/api/collections/relays/self-host",
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(requestBody),
 			},
-			body: JSON.stringify(requestBody),
-		})) as RecordModel;
+		);
 
 		// Ingest the response into the store
-		const relay = this.store?.ingest<Relay>(response);
+		const relay = this.store?.ingest<Relay>(response as RecordModel);
 		if (!relay) {
 			throw new Error("Failed to create self-hosted relay");
 		}

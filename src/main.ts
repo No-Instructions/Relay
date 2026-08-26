@@ -1801,7 +1801,7 @@ export default class Live extends Plugin {
 		this.registerObsidianProtocolHandler("relay/settings/relays", async (e) => {
 			const parameters = e as unknown as Parameters;
 			const query = new URLSearchParams({ ...parameters }).toString();
-			const path = `/${parameters.action.split("/").slice(-1)}?${query}`;
+			const path = `/${parameters.action.split("/").pop() ?? ""}?${query}`;
 			void this.openSettings(path);
 		});
 
@@ -1810,7 +1810,7 @@ export default class Live extends Plugin {
 			async (e) => {
 				const parameters = e as unknown as Parameters;
 				const query = new URLSearchParams({ ...parameters }).toString();
-				const path = `/${parameters.action.split("/").slice(-1)}?${query}`;
+				const path = `/${parameters.action.split("/").pop() ?? ""}?${query}`;
 				void this.openSettings(path);
 			},
 		);
@@ -1843,9 +1843,10 @@ export default class Live extends Plugin {
 			const appCommands = appAny.commands;
 			const qualifiedCommand = `system3-relay:${command}`;
 			if (
-				// eslint-disable-next-line no-prototype-builtins -- Obsidian's command registry owns its command entries.
-				appCommands.
-				commands.hasOwnProperty(qualifiedCommand) ||
+				Object.prototype.hasOwnProperty.call(
+					appCommands.commands,
+					qualifiedCommand,
+				) ||
 				appAny.hotkeyManager.removeDefaultHotkeys(qualifiedCommand)
 			) {
 				delete appCommands.commands[qualifiedCommand];
@@ -1863,7 +1864,7 @@ export default class Live extends Plugin {
 			} catch (error) {
 				const e = error as { message?: string; stack?: string };
 				console.error(
-					`[Relay] onunload failed at step: ${name}: ${e?.message ?? error}\n${e?.stack ?? ""}`,
+					`[Relay] onunload failed at step: ${name}: ${e?.message ?? String(error)}\n${e?.stack ?? ""}`,
 				);
 				// Do NOT rethrow. A single step's failure must not abort the
 				// rest of onunload; every later step represents a distinct

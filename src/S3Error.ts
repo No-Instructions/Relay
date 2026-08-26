@@ -180,7 +180,7 @@ function errorText(error: unknown): string | null {
 	if (error instanceof Error) return error.message;
 	if (error === null || error === undefined) return null;
 	try {
-		return String(error);
+		return JSON.stringify(error) ?? null;
 	} catch {
 		return null;
 	}

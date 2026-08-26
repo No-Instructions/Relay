@@ -466,6 +466,13 @@ export interface RelayDebugGlobal {
 // RelayDebugAPI
 // =============================================================================
 
+/** Render an IndexedDB key as a metadata label. */
+function idbKeyLabel(key: IDBValidKey): string {
+  return typeof key === "string" || typeof key === "number"
+    ? String(key)
+    : JSON.stringify(key);
+}
+
 export class RelayDebugAPI {
   private bridges = new Map<string, E2ERecordingBridge>();
   private activeRecordingName: string | null = null;
@@ -1938,7 +1945,7 @@ export class RelayDebugAPI {
       );
       const metadata: Record<string, unknown> = {};
       for (let i = 0; i < customKeys.length; i++) {
-        metadata[String(customKeys[i])] = customValues[i];
+        metadata[idbKeyLabel(customKeys[i])] = customValues[i];
       }
 
       // Prefer the in-memory localDoc text (matches the HSM's view).

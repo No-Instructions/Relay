@@ -12,7 +12,7 @@
 import type { MergeEvent, MergeEffect, StatePath } from '../types';
 import type { TimeProvider } from '../../TimeProvider';
 import { DefaultTimeProvider } from '../../TimeProvider';
-import type { HSMLogEntry, RecordingSummary } from './types';
+import type { HSMLogEntry, RecordingSummary, SerializableEvent } from './types';
 import {
   serializeEvent,
   serializeEffect,
@@ -110,7 +110,7 @@ export class E2ERecordingBridge {
         guid,
         path: this._getFullPath(guid) ?? path,
         seq,
-        event: { type: eventType, ...(extra ?? {}) } as any,
+        event: { type: eventType, ...(extra ?? {}) } as unknown as SerializableEvent,
         from: currentStatePath,
         to: currentStatePath,
         effects: [],

@@ -211,8 +211,8 @@ export class HSMStore {
   async getAllStates(): Promise<PersistedHSMRecord[]> {
     return this._read<PersistedHSMRecord[]>([], async db => {
       const [store] = idb.transact(db, [STORES.states], 'readonly');
-      const states = await idb.getAll(store);
-      return (states) ?? [];
+      const states = (await idb.getAll(store)) as PersistedHSMRecord[] | undefined;
+      return states ?? [];
     });
   }
 

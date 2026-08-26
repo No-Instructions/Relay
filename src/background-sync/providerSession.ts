@@ -29,7 +29,7 @@ export async function awaitProviderSession(
 	file: ProviderSessionFile,
 	options: {
 		timeProvider: TimeProvider;
-		isCancelled(): boolean;
+		isCancelled: () => boolean;
 		warn(message: string): void;
 		errorMessage(error: unknown): string;
 	},
