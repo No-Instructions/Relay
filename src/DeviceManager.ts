@@ -47,6 +47,8 @@ export class DeviceManager extends Observable<DeviceManager> {
 	getDeviceId(): string {
 		if (this.deviceId) return this.deviceId;
 
+		// The device id identifies this installation across every vault, so it
+		// lives in localStorage rather than App's vault-scoped storage.
 		let id = localStorage.getItem(DEVICE_ID_KEY);
 		if (!id) {
 			id = generatePocketBaseId();

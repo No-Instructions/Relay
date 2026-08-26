@@ -8,6 +8,9 @@ export class LocalStorage<T> implements Map<string, T> {
 
 	constructor(namespace: string) {
 		this.namespace = namespace;
+		// Tokens and release caches are shared by every vault on the device and
+		// namespaced by key, so they live in localStorage rather than App's
+		// vault-scoped storage.
 		this.storage = localStorage;
 
 		let storageIndexes = keyIndexes.get(this.storage);
