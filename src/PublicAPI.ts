@@ -24,8 +24,8 @@ export type RelayEvent<T> = {
 export interface ApiV0 {
 	getUsers(): User[];
 	getCurrentUser(): User | null;
-	registerView(pluginId: string, viewType: string): void;
-	unregisterView(pluginId: string, viewType: string): void;
+	registerTextView(pluginId: string, viewType: string): void;
+	unregisterTextView(pluginId: string, viewType: string): void;
 }
 
 export interface Api {
@@ -81,6 +81,7 @@ interface ApiState {
 	users: User[];
 	currentUser: User | null;
 	registry: TextViewRegistry | null;
+	refreshLiveViews: (() => void) | null;
 }
 
 function requireAttached(state: ApiState): void {
@@ -97,13 +98,15 @@ function createApi(state: ApiState): Api {
 			requireAttached(state);
 			return clone(state.currentUser);
 		},
-		registerView: (pluginId, viewType) => {
+		registerTextView: (pluginId, viewType) => {
 			requireAttached(state);
 			state.registry!.register(pluginId, viewType, 0);
+			state.refreshLiveViews?.();
 		},
-		unregisterView: (pluginId, viewType) => {
+		unregisterTextView: (pluginId, viewType) => {
 			requireAttached(state);
 			state.registry!.unregister(pluginId, viewType);
+			state.refreshLiveViews?.();
 		},
 	};
 	return { v0 };
@@ -129,6 +132,7 @@ export function createPublicApi(
 	loginManager: LoginManager,
 	textViewRegistry: TextViewRegistry,
 	workspace: WorkspaceEvents,
+	refreshLiveViews: () => void = () => {},
 ): PublicApiHandle {
 	const readUsers = (): User[] =>
 		relayManager.users.values().flatMap((record) => {
@@ -141,6 +145,7 @@ export function createPublicApi(
 		users: readUsers(),
 		currentUser: readCurrentUser(),
 		registry: textViewRegistry,
+		refreshLiveViews,
 	};
 
 	let usersQueued = false;
@@ -202,6 +207,7 @@ export function createPublicApi(
 			stopUsers();
 			stopCurrentUser();
 			state.registry = null;
+			state.refreshLiveViews = null;
 		},
 	};
 }

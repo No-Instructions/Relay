@@ -17,6 +17,9 @@ export class TextFileViewPlugin extends HasLogging {
 	unsubscribes: Array<() => void>;
 	private destroyed = false;
 	private saving = false;
+	private adoptedText: string | undefined;
+	private adoptedDocument: Document | undefined;
+	private adoptedFile: TFile | undefined;
 	viewHookPlugin?: ViewHookPlugin;
 
 	getDocument(): Document | undefined {
@@ -112,6 +115,29 @@ export class TextFileViewPlugin extends HasLogging {
 		}
 	}
 
+	private syncAdoptedContext(): void {
+		const file = this.view.view.file ?? undefined;
+		if (this.adoptedDocument === this.doc && this.adoptedFile === file) return;
+		this.adoptedDocument = this.doc;
+		this.adoptedFile = file;
+		this.adoptedText = undefined;
+	}
+
+	private forgetAdoptedText(): void {
+		this.syncAdoptedContext();
+		this.adoptedText = undefined;
+	}
+
+	private hasAdoptedText(data: string): boolean {
+		this.syncAdoptedContext();
+		return this.adoptedText === data;
+	}
+
+	private markAdoptedText(data: string): void {
+		this.syncAdoptedContext();
+		this.adoptedText = data;
+	}
+
 	/**
 	 * Push document content into the view. Conforming TextFileViews accept
 	 * setViewData, but the kanban view only rerenders from its own state
@@ -120,8 +146,13 @@ export class TextFileViewPlugin extends HasLogging {
 	 * not accept the data, set the raw view data and refresh the board
 	 * through the kanban state manager for the file.
 	 */
-	private applyDataToView(data: string): void {
+	private applyDataToView(data: string): boolean {
 		const view = this.view.view;
+		if (!this.view.tracking) this.forgetAdoptedText();
+		if (this.hasAdoptedText(data)) {
+			this.debug("view already adopted text; suppressing exact echo");
+			return false;
+		}
 		this.saving = true;
 		try {
 			view.setViewData(data, false);
@@ -149,9 +180,11 @@ export class TextFileViewPlugin extends HasLogging {
 					}
 				}
 			}
+			if (view.getViewData() === data) this.markAdoptedText(data);
 		} finally {
 			this.saving = false;
 		}
+		return true;
 	}
 
 	async resync() {
@@ -177,6 +210,7 @@ export class TextFileViewPlugin extends HasLogging {
 			const docText = this.doc.localText;
 			if (docText === this.view.view.getViewData()) {
 				// Document and view content already match - set tracking immediately
+				this.markAdoptedText(docText);
 				this.view.tracking = true;
 				this.warn("resync() - content matches, setting tracking=true");
 				return;
@@ -219,8 +253,9 @@ export class TextFileViewPlugin extends HasLogging {
 			this.view.view.file
 		) {
 			this.warn("Syncing view to CRDT - setViewData");
-			this.applyDataToView(this.doc.localText);
-			this.requestNativeViewSave();
+			if (this.applyDataToView(this.doc.localText)) {
+				this.requestNativeViewSave();
+			}
 			this.view.tracking = true;
 		}
 	}
@@ -267,6 +302,13 @@ export class TextFileViewPlugin extends HasLogging {
 							return old.call(this, data, clear);
 						}
 
+						if (!plugin.view.tracking || clear) {
+							plugin.forgetAdoptedText();
+						} else if (plugin.hasAdoptedText(data)) {
+							plugin.debug("suppressing exact non-clear view-data echo");
+							return;
+						}
+
 						if (clear) {
 							if (
 								isLive(plugin.view) &&
@@ -280,6 +322,9 @@ export class TextFileViewPlugin extends HasLogging {
 						}
 
 						const result = old.call(this, data, clear);
+						if (plugin.view.view.getViewData() === data) {
+							plugin.markAdoptedText(data);
+						}
 
 						// Call resync AFTER original setViewData succeeds
 						if (clear) {
@@ -307,8 +352,10 @@ export class TextFileViewPlugin extends HasLogging {
 									docText,
 									userEvent: "set",
 								});
+								plugin.markAdoptedText(docText);
 								return old.call(this);
 							} else {
+								plugin.forgetAdoptedText();
 								plugin.warn("not tracking - resync");
 								void plugin.resync();
 							}
@@ -346,11 +393,12 @@ export class TextFileViewPlugin extends HasLogging {
 					void this.resync();
 				}
 				this.warn("setting view data");
-				this.applyDataToView(this.doc.localText);
-				this.requestNativeViewSave();
+				if (this.applyDataToView(this.doc.localText)) {
+					this.requestNativeViewSave();
+				}
 				this.view.tracking = true;
 			}
-			};
+		};
 
 		void this.resync();
 
@@ -380,6 +428,9 @@ export class TextFileViewPlugin extends HasLogging {
 		}
 		this.unsubscribes.forEach((unsubscribe) => unsubscribe());
 		this.unsubscribes.length = 0;
+		this.adoptedText = undefined;
+		this.adoptedDocument = undefined;
+		this.adoptedFile = undefined;
 
 		// Clean up ViewHookPlugin
 		this.viewHookPlugin?.destroy();

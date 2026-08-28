@@ -71,7 +71,7 @@ export class TextViewRegistry extends HasLogging {
 		const id = typeof pluginId === "string" ? pluginId.trim() : "";
 		const type = typeof viewType === "string" ? viewType.trim() : "";
 		if (!id || !type) {
-			throw new Error("registerView requires a plugin id and a view type");
+			throw new Error("registerTextView requires a plugin id and a view type");
 		}
 		if (this.destroyed) return;
 		this.apply(id, type);
@@ -83,7 +83,7 @@ export class TextViewRegistry extends HasLogging {
 		const id = typeof pluginId === "string" ? pluginId.trim() : "";
 		const type = typeof viewType === "string" ? viewType.trim() : "";
 		if (!id || !type) {
-			throw new Error("unregisterView requires a plugin id and a view type");
+			throw new Error("unregisterTextView requires a plugin id and a view type");
 		}
 		if (this.destroyed) return;
 		this.unapply(id, type);

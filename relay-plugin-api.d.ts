@@ -26,9 +26,9 @@ export interface ApiV0 {
 	 * Relay reloads and are pruned when the consumer's view type definitively
 	 * disappears from Obsidian's view registry.
 	 */
-	registerView(pluginId: string, viewType: string): void;
+	registerTextView(pluginId: string, viewType: string): void;
 	/** Idempotently remove a persisted text-file view registration. */
-	unregisterView(pluginId: string, viewType: string): void;
+	unregisterTextView(pluginId: string, viewType: string): void;
 }
 
 /**
