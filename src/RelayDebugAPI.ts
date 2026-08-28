@@ -386,7 +386,7 @@ export interface RelayDebugGlobal {
    * localDoc materializes a hibernated canvas; pass `{ wake: false }` for a
    * non-waking probe (local/view come back null while hibernated).
    */
-  getCanvasState: (path: string, options?: { wake?: boolean }) => Promise<CanvasContentSnapshot>;
+  getCanvasState: (path: string, options?: { wake?: boolean; server?: boolean }) => Promise<CanvasContentSnapshot>;
   /**
    * Wait for a canvas machine to reach a state path that starts with
    * `statePrefix`. Thin bridge over `CanvasHSM.awaitState` — event-driven.
@@ -1269,10 +1269,16 @@ export class RelayDebugAPI {
    */
   private async getCanvasState(
     path: string,
-    options?: { wake?: boolean },
+    options?: { wake?: boolean; server?: boolean },
   ): Promise<CanvasContentSnapshot> {
     const { canvas, folder, guid } = this.lookupCanvas(path);
     const wake = options?.wake ?? true;
+    // Local representations only unless the server copy is asked for. The
+    // document snapshot has no server representation at all, and inspecting a
+    // canvas should be as passive as inspecting a note: reading the server
+    // copy costs a full-state download, which attaches the document server
+    // side. An observer that attaches is a participant.
+    const includeServer = options?.server ?? false;
     const wasMaterialized = !!canvas.isMaterialized;
     const machine = canvas.hsm.getSnapshot();
 
@@ -1364,6 +1370,7 @@ export class RelayDebugAPI {
 
     // Server copy
     try {
+      if (!includeServer) throw new Error("server copy not requested");
       const response = await folder.backgroundSync.downloadItem(canvas);
       const rawUpdate = new Uint8Array(response.arrayBuffer);
       const tempDoc = new Y.Doc();
