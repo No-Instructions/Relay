@@ -34,6 +34,7 @@ import {
 	mergeCanvasViewData,
 } from "../CanvasData";
 import { snapshotsEqual, type YjsSnapshot } from "../merge-hsm/snapshots";
+import { SimpleObservable, type IObservable } from "../merge-hsm/MergeHSM";
 import type { CanvasData } from "../CanvasView";
 import { generateHash } from "../hashing";
 import { curryLog } from "../debug";
@@ -152,6 +153,8 @@ function freshContext(): CanvasContext {
 export class CanvasHSM implements SyncMachine {
 	readonly context: CanvasContext;
 	private _statePath: CanvasStatePath = "loading";
+	private readonly _effects = new SimpleObservable<CanvasEffect>();
+	private readonly _stateChanges = new SimpleObservable<CanvasStatePath>();
 	private _activeInvoke: ActiveInvoke | null = null;
 	private _processing = false;
 	private _queue: CanvasEvent[] = [];
@@ -368,6 +371,7 @@ export class CanvasHSM implements SyncMachine {
 				this._recentTransitions.shift();
 			}
 			this.config.onTransition?.(from, target, this._currentEventType);
+			this.notifyObservers(() => this._stateChanges.emit(target));
 			for (const waiter of [...this._stateWaiters]) {
 				waiter(target);
 			}
@@ -473,7 +477,23 @@ export class CanvasHSM implements SyncMachine {
 					`${capability} (effect ${effect.type})`,
 			);
 		}
+		// Observers see what the machine emitted, before and independent of
+		// whether the executor succeeds — the same order MergeHSM uses.
+		this.notifyObservers(() => this._effects.emit(effect));
 		this.config.onEffect(effect);
+	}
+
+	/**
+	 * Deliver to passive observers — the in-plugin inspector subscribes here.
+	 * An observer is a spectator: one that throws must not take down the
+	 * transition or the effect that was already executed.
+	 */
+	private notifyObservers(deliver: () => void): void {
+		try {
+			deliver();
+		} catch (e) {
+			this.warn("canvas observer threw", e);
+		}
 	}
 
 	private requestDownload(): void {
@@ -780,6 +800,16 @@ export class CanvasHSM implements SyncMachine {
 		return this.context.disk ? { ...this.context.disk } : null;
 	}
 
+	/** Effects emitted by this machine, for passive observers. */
+	get effects(): IObservable<CanvasEffect> {
+		return this._effects;
+	}
+
+	/** State-path changes, for passive observers. */
+	get stateChanges(): IObservable<CanvasStatePath> {
+		return this._stateChanges;
+	}
+
 	getSnapshot(): {
 		statePath: CanvasStatePath;
 		userLock: boolean;
@@ -806,6 +836,8 @@ export class CanvasHSM implements SyncMachine {
 			this._activeInvoke = null;
 		}
 		this._queue.length = 0;
+		this._effects.clear();
+		this._stateChanges.clear();
 		for (const abort of [...this._waiterAborts]) {
 			abort();
 		}
