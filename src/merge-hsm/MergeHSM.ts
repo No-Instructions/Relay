@@ -189,7 +189,7 @@ export interface IObservable<T> {
  * Simple Observable implementation for the HSM.
  * Does not use PostOffice - notifications are synchronous.
  */
-class SimpleObservable<T> implements IObservable<T> {
+export class SimpleObservable<T> implements IObservable<T> {
 	private listeners: Set<Subscriber<T>> = new Set();
 
 	subscribe(run: Subscriber<T>): Unsubscriber {
