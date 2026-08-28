@@ -856,6 +856,9 @@ export default class Live extends Plugin {
 			this.loginManager,
 			this.textViewRegistry,
 			this.app.workspace,
+			() => {
+				void this._liveViews?.refresh("public-api:text-view-registration");
+			},
 		);
 		this.register(() => {
 			publicApi.detach();
