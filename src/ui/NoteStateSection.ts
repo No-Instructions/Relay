@@ -1,11 +1,17 @@
 import { diff_match_patch } from "diff-match-patch";
 import { MarkdownView, type App, type Editor, type EventRef } from "obsidian";
+import { areCanvasDataEqual } from "../CanvasData";
+import type { CanvasData } from "../CanvasView";
 import type {
+	CanvasContentSnapshot,
+	DebugCanvasLookup,
 	DebugDocumentLookup,
 	HsmStateSnapshot,
 	RelayDebugAPI,
 } from "../RelayDebugAPI";
 import type { MergeHSM } from "../merge-hsm/MergeHSM";
+import type { CanvasHSM } from "../canvas-hsm/CanvasHSM";
+import type { CanvasEffect } from "../canvas-hsm/types";
 import { generateHash } from "../hashing";
 import type { MergeEffect, MergeState } from "../merge-hsm/types";
 import type { TimeProvider } from "../TimeProvider";
@@ -147,6 +153,14 @@ export class NoteStateSection {
 	private diskProbeSequence = 0;
 	private appliedDiskProbeSequence = 0;
 	private snapshotInFlight = false;
+	/** The canvas this strip is bound to, when the active file is one. */
+	private canvasTarget: DebugCanvasLookup | null = null;
+	private canvasHsm: CanvasHSM | null = null;
+	private canvasSnapshot: CanvasContentSnapshot | null = null;
+	/** When the machine entered idle.ingesting, for the canvas ingest lane. */
+	private canvasIngestStartedAt: number | null = null;
+	private canvasIngestCompleted: { took: number; at: number } | null = null;
+	private canvasSnapshotInFlight = false;
 	private tickCount = 0;
 	private timer: number;
 	private destroyed = false;
@@ -213,6 +227,11 @@ export class NoteStateSection {
 		this.snapshot = null;
 		this.snapshotAt = null;
 		this.snapshotDiskMtime = null;
+		this.canvasTarget = null;
+		this.canvasHsm = null;
+		this.canvasSnapshot = null;
+		this.canvasIngestStartedAt = null;
+		this.canvasIngestCompleted = null;
 		this.diskStatMtime = null;
 		this.diskStatAt = null;
 	}
@@ -230,11 +249,79 @@ export class NoteStateSection {
 	}
 
 	/**
+	 * Keep the effect/state subscriptions attached to the current canvas
+	 * machine, the same way syncHsmBinding does for a document's. A canvas
+	 * hibernates and reloads too, so the machine behind a path can be replaced
+	 * between ticks.
+	 */
+	private syncCanvasBinding(target: DebugCanvasLookup): void {
+		if (target.hsm === this.canvasHsm) return;
+		this.unsubscribeHsm();
+		this.canvasHsm = target.hsm;
+		this.hsmUnsubscribers.push(
+			target.hsm.effects.subscribe((effect: CanvasEffect) =>
+				this.onCanvasEffect(effect),
+			),
+			target.hsm.stateChanges.subscribe(() => this.render()),
+		);
+	}
+
+	/**
+	 * The canvas machine's disk-write lane. Its WRITE_DISK effect carries the
+	 * same contents and hash a document's does, so the lane the note strip
+	 * renders is the lane this feeds.
+	 */
+	private onCanvasEffect(effect: CanvasEffect): void {
+		if (effect.type !== "WRITE_DISK") return;
+		this.writes.push({
+			startedAt: this.context.timeProvider.now(),
+			size: effect.contents.length,
+			hash: effect.hash,
+			confirmation: null,
+			completedAt: null,
+		});
+		this.render();
+	}
+
+	/**
+	 * Settle canvas writes against the machine's own disk belief. A document
+	 * settles on the executor's confirmed identity; the canvas executor
+	 * reports through the machine, whose disk hash advances to what it wrote.
+	 */
+	private observeCanvasWriteConfirmation(): void {
+		const diskHash = this.canvasHsm?.getDiskMeta()?.hash ?? null;
+		if (diskHash === null) return;
+		for (const write of this.writes) {
+			if (write.completedAt !== null || write.hash !== diskHash) continue;
+			write.completedAt = this.context.timeProvider.now();
+			write.confirmation = {
+				hash: diskHash,
+				mtime: this.canvasHsm?.getDiskMeta()?.mtime ?? 0,
+			};
+		}
+	}
+
+	/** The canvas at the bound path, or null when that file is not one. */
+	private canvasLookup(): DebugCanvasLookup | null {
+		if (!this.boundPath?.endsWith(".canvas")) return null;
+		return this.context.debugAPI.findCanvas(this.boundPath);
+	}
+
+	/**
 	 * Keep the effect/state subscriptions attached to the current HSM
 	 * instance. Documents hibernate and reload, so the HSM behind a path can
 	 * be replaced between ticks; resubscribe whenever the identity changes.
 	 */
 	private syncHsmBinding(): void {
+		// Canvases are managed files rather than document registrations, so
+		// lookupDocument never names them and there is no MergeHSM to observe.
+		// Their machine is polled instead of subscribed.
+		this.canvasTarget = this.canvasLookup();
+		if (this.canvasTarget) {
+			this.syncCanvasBinding(this.canvasTarget);
+			return;
+		}
+		this.canvasHsm = null;
 		const lookup = this.lookup();
 		const hsm = lookup.status === "ok" ? lookup.hsm : null;
 		if (hsm === this.hsm) return;
@@ -259,6 +346,7 @@ export class NoteStateSection {
 		this.hsmUnsubscribers.forEach((unsubscribe) => unsubscribe());
 		this.hsmUnsubscribers = [];
 		this.hsm = null;
+		this.canvasHsm = null;
 	}
 
 	// ===========================================================================
@@ -602,6 +690,8 @@ export class NoteStateSection {
 		}
 
 		this.syncHsmBinding();
+		this.trackCanvasIngestLane();
+		this.observeCanvasWriteConfirmation();
 		this.observeWriteConfirmation();
 		this.trackIngestLane();
 		this.pruneWrites();
@@ -614,6 +704,10 @@ export class NoteStateSection {
 	}
 
 	private async refreshSnapshot(): Promise<void> {
+		if (this.canvasTarget) {
+			await this.refreshCanvasSnapshot();
+			return;
+		}
 		if (this.snapshotInFlight || !this.boundPath) return;
 		if (this.lookup().status !== "ok") return;
 		this.snapshotInFlight = true;
@@ -636,6 +730,31 @@ export class NoteStateSection {
 			this.snapshotDiskMtime = null;
 		} finally {
 			this.snapshotInFlight = false;
+		}
+	}
+
+	/**
+	 * Re-measure the canvas's representations against each other. Read-only
+	 * and local: `wake: false` leaves a hibernated canvas hibernated and
+	 * `server: false` keeps this timer off the network, so watching a canvas
+	 * never changes the thing being watched.
+	 */
+	private async refreshCanvasSnapshot(): Promise<void> {
+		if (this.canvasSnapshotInFlight || !this.boundPath) return;
+		this.canvasSnapshotInFlight = true;
+		const path = this.boundPath;
+		try {
+			const snapshot = await this.context.debugAPI.getCanvasState(path, {
+				wake: false,
+				server: false,
+			});
+			if (this.boundPath !== path) return;
+			this.canvasSnapshot = snapshot;
+		} catch {
+			if (this.boundPath !== path) return;
+			this.canvasSnapshot = null;
+		} finally {
+			this.canvasSnapshotInFlight = false;
 		}
 	}
 
@@ -1008,6 +1127,11 @@ export class NoteStateSection {
 		if (this.destroyed) return;
 		this.el.empty();
 
+		if (this.canvasTarget) {
+			this.renderCanvas(this.canvasTarget);
+			return;
+		}
+
 		const lookup = this.lookup();
 		const editorText = this.editorText();
 		const localText = this.localDocText();
@@ -1018,24 +1142,36 @@ export class NoteStateSection {
 		const statePath: string = this.hsm?.state?.statePath ?? "unknown";
 		this.lastRenderedStatePath = statePath;
 
+		// A canvas whose handle is not loaded resolves no target and lands
+		// here. It is still a canvas: keep its heading and its row label so
+		// the strip does not rename the file it is describing.
+		const isCanvas = this.boundPath?.endsWith(".canvas") ?? false;
+
 		const header = this.el.createDiv({ cls: "system3-note-state-header" });
-		header.createDiv({ cls: "system3-note-state-title", text: "Note state" });
+		header.createDiv({
+			cls: "system3-note-state-title",
+			text: isCanvas ? "Canvas state" : "Note state",
+		});
 		header.createDiv({
 			cls: `system3-note-state-pill system3-note-state-${verdict.cls}`,
 			text: verdict.label,
 		});
 
-		const name = this.boundPath?.split("/").pop() ?? "(no note)";
+		const name =
+			this.boundPath?.split("/").pop() ??
+			(isCanvas ? "(no canvas)" : "(no note)");
 		const closedSuffix =
 			lookup.status === "ok" && editorText === null ? " · no editor" : "";
-		this.row("note", name + closedSuffix, "muted");
+		this.row(isCanvas ? "canvas" : "note", name + closedSuffix, "muted");
 
 		if (lookup.status !== "ok") {
 			this.row(
 				"state",
 				lookup.status === "unshared"
 					? "not in a shared folder"
-					: "no merge HSM",
+					: isCanvas
+						? "no canvas machine"
+						: "no merge HSM",
 				"muted",
 			);
 			return;
@@ -1067,6 +1203,185 @@ export class NoteStateSection {
 				stores.cls,
 			);
 		}
+	}
+
+	/**
+	 * The canvas strip. A canvas has no editor buffer and no CM6 lanes: its
+	 * representations are the localDoc, the open view, the file on disk, and
+	 * the server's copy, so its lanes collapse to the one agreement check the
+	 * note strip ends on.
+	 */
+	private renderCanvas(target: DebugCanvasLookup): void {
+		const machine = target.hsm.getSnapshot();
+		const snapshot = this.canvasSnapshot;
+		const stores = this.canvasStoresCheck(snapshot);
+		const statePath = machine.statePath;
+		const verdict = this.canvasVerdict(statePath, stores);
+
+		const header = this.el.createDiv({ cls: "system3-note-state-header" });
+		header.createDiv({
+			cls: "system3-note-state-title",
+			text: "Canvas state",
+		});
+		header.createDiv({
+			cls: `system3-note-state-pill system3-note-state-${verdict.cls}`,
+			text: verdict.label,
+		});
+
+		const name = this.boundPath?.split("/").pop() ?? "(no canvas)";
+		const viewSuffix = snapshot?.view === null ? " · no view" : "";
+		this.row("canvas", name + viewSuffix, "muted");
+
+		// Idle canvases hold no provider connection by design, the same way
+		// idle documents do; only an active canvas is expected to be online.
+		const offlineSuffix =
+			statePath === "active" && snapshot?.connected === false
+				? " · offline"
+				: "";
+		const downloadSuffix = machine.downloadPending ? " · download" : "";
+		this.row("state", statePath + downloadSuffix + offlineSuffix, undefined, true);
+
+		this.renderHsmWriteRow();
+		this.renderCanvasSaveRow(snapshot);
+		this.renderCanvasIngestRow();
+
+		if (stores === null) {
+			this.row("stores", "checking…", "muted");
+			return;
+		}
+		this.row(
+			"stores",
+			`${stores.cls === "ok" ? "✓" : "✗"} ${stores.label}`,
+			stores.cls,
+		);
+	}
+
+	/**
+	 * Obsidian's native canvas save (view → disk), the counterpart of the
+	 * note strip's editor save. Unsaved is the rendered view disagreeing with
+	 * the file, measured the same way: a comparison against disk content and
+	 * the adapter's mtime.
+	 */
+	private renderCanvasSaveRow(snapshot: CanvasContentSnapshot | null): void {
+		if (!snapshot || snapshot.view === null) return;
+		if (snapshot.disk === null) {
+			this.row("obsidian save", "not on disk", "warn");
+			return;
+		}
+		const diskMtime = this.diskStatMtime ?? snapshot.disk.mtime;
+		const flushAge = this.fmtAge(this.context.timeProvider.now() - diskMtime);
+		const unsaved = !areCanvasDataEqual(
+			snapshot.view.data as CanvasData,
+			snapshot.disk.data as CanvasData,
+		);
+		if (unsaved) {
+			this.row("obsidian save", `unsaved · last flush ${flushAge} ago`, "warn");
+			return;
+		}
+		this.row("obsidian save", `✓ flushed ${flushAge} ago`, "ok");
+	}
+
+	/**
+	 * The canvas ingest lane. The machine names this one outright — a disk
+	 * change it has to merge parks it in idle.ingesting — where a document's
+	 * lane has to be inferred from a pending buffer. Tracked outside render so
+	 * a completed merge stays readable for the same window a completed write
+	 * does, instead of vanishing on the next repaint.
+	 */
+	private trackCanvasIngestLane(): void {
+		const statePath = this.canvasHsm?.statePath;
+		if (statePath === undefined) return;
+		const now = this.context.timeProvider.now();
+		if (statePath === "idle.ingesting") {
+			this.canvasIngestStartedAt ??= now;
+			return;
+		}
+		if (this.canvasIngestStartedAt !== null) {
+			this.canvasIngestCompleted = {
+				took: now - this.canvasIngestStartedAt,
+				at: now,
+			};
+			this.canvasIngestStartedAt = null;
+		}
+		if (
+			this.canvasIngestCompleted !== null &&
+			now - this.canvasIngestCompleted.at > COMPLETED_WRITE_TTL_MS
+		) {
+			this.canvasIngestCompleted = null;
+		}
+	}
+
+	private renderCanvasIngestRow(): void {
+		const now = this.context.timeProvider.now();
+		if (this.canvasIngestStartedAt !== null) {
+			const age = now - this.canvasIngestStartedAt;
+			this.row(
+				"disk ingest",
+				`ingesting ${this.fmtAge(age)}`,
+				age > STUCK_MS ? "bad" : "warn",
+			);
+			return;
+		}
+		const completed = this.canvasIngestCompleted;
+		if (completed !== null) {
+			this.row(
+				"disk ingest",
+				`✓ merged in ${this.fmtAge(completed.took)} · ${this.fmtAge(now - completed.at)} ago`,
+				"ok",
+			);
+			return;
+		}
+		this.row("disk ingest", "none", "muted");
+	}
+
+	/**
+	 * The canvas pill, resolved in the same order the note pill uses: the
+	 * machine's actionable posture, then measured agreement named by mode,
+	 * then the failing pair, then the machine's own posture when nothing was
+	 * measurable. The lane rungs the note checks in between have no canvas
+	 * equivalent — a canvas has no editor buffer to be mid-flight.
+	 */
+	private canvasVerdict(
+		statePath: string,
+		stores: StoresCheck | null,
+	): Verdict {
+		// The canvas machine has no conflict states of its own; parked
+		// divergence is the posture a document's conflict states occupy.
+		if (statePath === "idle.diverged") {
+			return { label: "conflict", cls: "bad" };
+		}
+		if (stores?.cls === "ok") {
+			if (statePath === "active") return { label: "tracking", cls: "ok" };
+			if (statePath === "idle.synced") return { label: "synced", cls: "ok" };
+			return { label: "ok", cls: "ok" };
+		}
+		if (stores) return { label: stores.label, cls: stores.cls };
+		if (statePath === "active") return { label: "tracking", cls: "ok" };
+		if (statePath === "idle.synced") return { label: "synced", cls: "ok" };
+		return { label: statePath, cls: "warn" };
+	}
+
+	/**
+	 * The canvas's agreement check: which representation, if any, disagrees
+	 * with the localDoc. An absent representation — no view open, nothing on
+	 * disk yet — has nothing to disagree with, and a canvas with no measurable
+	 * representation at all reads as unmeasured rather than converged.
+	 */
+	private canvasStoresCheck(
+		snapshot: CanvasContentSnapshot | null,
+	): StoresCheck | null {
+		if (!snapshot) return null;
+		// The server copy is deliberately absent: reading it costs a download,
+		// and this check runs on a timer.
+		const checks: [string, boolean | null][] = [
+			["disk", snapshot.diskMatchesLocal],
+			["view", snapshot.viewMatchesLocal],
+			["remote", snapshot.localRemoteContentEqual],
+		];
+		const diverged = checks.find(([, agrees]) => agrees === false);
+		if (diverged) return { label: `localDoc ≠ ${diverged[0]}`, cls: "bad" };
+		if (checks.every(([, agrees]) => agrees === null)) return null;
+		return { label: "converged", cls: "ok" };
 	}
 
 	/** WRITE_DISK effects observed since the strip bound to this note. */
