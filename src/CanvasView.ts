@@ -25,6 +25,10 @@ export interface CanvasView {
 
 export interface CanvasNode {
 	id: string;
+	/** The node's own text; what getData reports for a text node. */
+	text: string;
+	/** True while the node's embedded editor is open. */
+	isEditing: boolean;
 	getData(): CanvasNodeData;
 	setText(text: string): void;
 }

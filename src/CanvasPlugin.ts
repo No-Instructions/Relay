@@ -8,6 +8,7 @@ import {
 	mergeCanvasViewData,
 } from "./CanvasData";
 import type {
+	CanvasData,
 	CanvasEdge,
 	CanvasEdgeData,
 	CanvasNode,
@@ -87,6 +88,8 @@ export class CanvasPlugin extends HasLogging {
 	 * plugin exists to prevent.
 	 */
 	private pendingViewIngest: { seq: number; file: TFile } | null = null;
+	/** True while a deferred save for directly assigned card text is pending. */
+	private adoptionSaveQueued = false;
 
 	constructor(
 		private connectionManager: LiveViewManager,
@@ -166,10 +169,16 @@ export class CanvasPlugin extends HasLogging {
 		if (node.type === "text") {
 			const ytext = this.relayCanvas.textNode(node);
 			const nodeId = node.id;
+			// One observer per node: observeNode runs again for every node
+			// update that arrives through the CRDT, and a second observer on
+			// the same Y.Text would deliver every later change twice.
+			this.observedTextNodes.add(nodeId);
 			const _textObserver = (event: Y.YTextEvent) => {
 				const node = this.canvas.nodes.get(nodeId);
 				if (node) {
-					node.setText(ytext.toJSON());
+					if (this.adoptNodeText(node, ytext.toJSON())) {
+						this.requestSaveAfterAdoption();
+					}
 					this.canvas.markDirty(node);
 				}
 			};
@@ -179,6 +188,70 @@ export class CanvasPlugin extends HasLogging {
 				this.observedTextNodes.delete(nodeId);
 			});
 		}
+	}
+
+	/**
+	 * Give a card node the CRDT's text without writing through an open card
+	 * editor.
+	 *
+	 * A card whose editor is open is driven by the CM6 binding, which applies
+	 * each Y.Text delta to that editor as a sync-annotated dispatch and skips
+	 * annotated transactions when it reads the editor back. Obsidian's setText
+	 * replaces the editor's document with a plain transaction instead, and the
+	 * binding reads a plain transaction as typing: it re-inserts those
+	 * characters into the same Y.Text, so text delivered this way arrives
+	 * twice and both copies replicate. Assigning the node's own text keeps
+	 * getData, the save path, and the rendered card on the CRDT value and
+	 * leaves the editor to the binding.
+	 *
+	 * Returns true when the editor was left alone this way.
+	 */
+	private adoptNodeText(node: CanvasNode, text: string): boolean {
+		if (!node.isEditing) {
+			node.setText(text);
+			return false;
+		}
+		node.text = text;
+		return true;
+	}
+
+	/**
+	 * Ask Obsidian to save a canvas whose card text this plugin assigned
+	 * directly. The card editor's own save is what marks the canvas dirty for
+	 * that node, and it compares the editor's text against the node's — which
+	 * already holds the delivered value — so it finds nothing to do and the
+	 * file would never be written. Deferred past the CRDT transaction that
+	 * delivered the text: a save reads the whole view, and every observer for
+	 * that transaction has to have updated the view before it does, or the
+	 * save reports a view that is missing content the transaction just added.
+	 */
+	private requestSaveAfterAdoption(): void {
+		if (this.adoptionSaveQueued) return;
+		this.adoptionSaveQueued = true;
+		void Promise.resolve().then(() => {
+			this.adoptionSaveQueued = false;
+			if (!this.canvas || !this.relayCanvas) return;
+			this.canvas.requestSave();
+		});
+	}
+
+	/**
+	 * Write shared canvas data into the view. Cards whose editor is open take
+	 * their text first: importData reaches setText through setData, and
+	 * setText writes through an open editor. Once the node already holds the
+	 * text, Obsidian's setText finds nothing to change and leaves the editor
+	 * alone.
+	 */
+	private importCanvasData(data: CanvasData): void {
+		for (const nodeData of data.nodes) {
+			if (nodeData.type !== "text") continue;
+			if (typeof nodeData.text !== "string") continue;
+			const node = this.canvas.nodes.get(nodeData.id);
+			if (node?.isEditing) {
+				this.adoptNodeText(node, nodeData.text);
+			}
+		}
+		this.canvas.importData(data, true);
 	}
 
 	public getEmbedViews(): EmbedEditorView[] {
@@ -569,7 +642,7 @@ export class CanvasPlugin extends HasLogging {
 			this.view.file?.path,
 			merged,
 		);
-		this.canvas.importData(merged, true);
+		this.importCanvasData(merged);
 		this.canvas.requestSave();
 	}
 
@@ -710,7 +783,7 @@ export class CanvasPlugin extends HasLogging {
 				this.relayCanvas.path,
 				exported,
 			);
-			this.canvas.importData(exported, true);
+			this.importCanvasData(exported);
 			this.canvas.requestSave();
 			for (const key of event.keysChanged as Set<string>) {
 				const node = store.get(key);
