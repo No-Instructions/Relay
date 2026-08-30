@@ -1,4 +1,4 @@
 {
 	"description": "product sources",
-	"run": "npx eslint . --ext .ts"
+	"run": "npx eslint . --ext .ts,.svelte"
 }

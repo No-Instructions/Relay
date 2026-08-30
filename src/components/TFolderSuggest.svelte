@@ -2,23 +2,16 @@
 	import { onMount, onDestroy, createEventDispatcher, tick } from "svelte";
 	import { App, TFolder } from "obsidian";
 
+	import { ownerDoc, ownerWin } from "./ownerWindow";
 	// The dropdown portals out to body level so it escapes the modal's
 	// overflow. That makes its target document a real choice rather than a
 	// formality: settings can render in its own window, and a node appended
 	// to the wrong body opens in a window the user is not looking at. Every
 	// placement decision below — body, viewport, listeners, focus — reads
 	// the document the input itself belongs to.
-	function inputDoc(): Document {
-		return inputEl?.ownerDocument ?? document;
-	}
-
-	function inputWin(): Window {
-		return inputDoc().defaultView ?? window;
-	}
-
 	// Portal action to render content at body level
 	function portal(node: HTMLElement) {
-		inputDoc().body.appendChild(node);
+		ownerDoc(inputEl).body.appendChild(node);
 		return {
 			destroy() {
 				node.remove();
@@ -29,7 +22,7 @@
 	// Action to position the element once it's in the portal
 	function positionWhenReady(node: HTMLElement) {
 		// Wait for the element to be moved to body by the portal action
-		setTimeout(() => {
+		ownerWin(inputEl).setTimeout(() => {
 			suggestEl = node;
 			positionSuggest();
 		}, 0);
@@ -129,7 +122,7 @@
 			return;
 		}
 
-		const win = inputWin();
+		const win = ownerWin(inputEl);
 		const rect = inputEl.getBoundingClientRect();
 		const viewportWidth = win.innerWidth;
 		const viewportHeight = win.innerHeight;
@@ -278,8 +271,8 @@
 
 	function handleBlur(e: FocusEvent) {
 		// Delay close to allow click events on suggestions
-		setTimeout(() => {
-			if (!suggestEl?.contains(inputDoc().activeElement)) {
+		ownerWin(inputEl).setTimeout(() => {
+			if (!suggestEl?.contains(ownerDoc(inputEl).activeElement)) {
 				closeSuggestions();
 			}
 		}, 200);
@@ -310,8 +303,8 @@
 	let listenerWin: Window;
 
 	onMount(() => {
-		listenerDoc = inputDoc();
-		listenerWin = inputWin();
+		listenerDoc = ownerDoc(inputEl);
+		listenerWin = ownerWin(inputEl);
 		listenerDoc.addEventListener("click", handleDocumentClick);
 		listenerWin.addEventListener("resize", handleWindowResize);
 	});

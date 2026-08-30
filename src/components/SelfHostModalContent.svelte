@@ -7,6 +7,7 @@
 	import { writable } from "svelte/store";
 	import { customFetch } from "../customFetch";
 
+	import { ownerWin } from "./ownerWindow";
 	export let onConfirm: (
 		url?: string,
 		providerId?: string,
@@ -59,7 +60,7 @@
 			}
 
 			// Set a new timeout to validate after user stops typing
-			urlValidationTimeout = setTimeout(() => {
+			urlValidationTimeout = ownerWin(rootEl).setTimeout(() => {
 				const urlError = validateUrl(url);
 				if (urlError) {
 					errors.url = urlError;
@@ -232,9 +233,10 @@
 			selectedProvider.set(existingHosts[0]);
 		}
 	});
+	let rootEl: HTMLElement;
 </script>
 
-<div class="self-host-modal">
+<div class="self-host-modal" bind:this={rootEl}>
 	<div class="setting-item-description" style="margin-bottom: 16px;">
 		<p>
 			Create a new self-hosted Relay Server. Select an existing host or add a

@@ -13,6 +13,7 @@
 	import { FolderSuggestModal } from "../ui/FolderSuggestModal";
 	import { handleServerError } from "src/utils/toastStore";
 
+	import { ownerDoc, ownerWin } from "./ownerWindow";
 	export let app: App;
 	export let relay: Relay;
 	export let relayManager: RelayManager;
@@ -204,17 +205,17 @@
 
 	// Focus trap functionality
 	onMount(() => {
-		document.addEventListener("keydown", handleGlobalKeyDown);
+		ownerDoc(modalEl).addEventListener("keydown", handleGlobalKeyDown);
 
 		// Desktop auto-opens the suggest overlay; mobile shows the inline picker.
 		if (!isMobile && !acceptedFolder) {
-			setTimeout(() => {
+			ownerWin(modalEl).setTimeout(() => {
 				openFolderSuggest();
 			}, 100);
 		}
 
 		return () => {
-			document.removeEventListener("keydown", handleGlobalKeyDown);
+			ownerDoc(modalEl).removeEventListener("keydown", handleGlobalKeyDown);
 		};
 	});
 
@@ -231,13 +232,13 @@
 
 		if (e.shiftKey) {
 			// Shift + Tab
-			if (document.activeElement === firstFocusable) {
+			if (ownerDoc(modalEl).activeElement === firstFocusable) {
 				e.preventDefault();
 				lastFocusable.focus();
 			}
 		} else {
 			// Tab
-			if (document.activeElement === lastFocusable) {
+			if (ownerDoc(modalEl).activeElement === lastFocusable) {
 				e.preventDefault();
 				firstFocusable.focus();
 			}
