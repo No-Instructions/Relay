@@ -3,6 +3,7 @@
 	import { Notice, debounce, setIcon } from "obsidian";
 	import { createEventDispatcher } from "svelte";
 
+	import { ownerWin } from "./ownerWindow";
 	// Event dispatcher
 	const dispatch = createEventDispatcher();
 
@@ -69,7 +70,7 @@
 			.then(() => {
 				new Notice(successMessage);
 				showClipboardIcon.set(true);
-				setTimeout(() => {
+				ownerWin(rootEl).setTimeout(() => {
 					showClipboardIcon.set(false);
 				}, 800);
 			})
@@ -77,9 +78,10 @@
 				console.error("Failed to copy: ", err);
 			});
 	}
+	let rootEl: HTMLElement;
 </script>
 
-<div class="input-with-icon">
+<div class="input-with-icon" bind:this={rootEl}>
 	{#if $showSecret}
 		<input
 			{value}

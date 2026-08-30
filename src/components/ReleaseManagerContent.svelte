@@ -7,6 +7,7 @@
 	import { onMount } from "svelte";
 	import type { Release } from "src/UpdateManager";
 
+	import { ownerDoc } from "./ownerWindow";
 	export let plugin: Live;
 	export let version: string | undefined;
 
@@ -163,7 +164,7 @@
 	}
 
 	async function render(md: string): Promise<string> {
-		const el = document.createElement("div");
+		const el = ownerDoc(rootEl).createElement("div");
 		await MarkdownRenderer.render(plugin.app, md, el, "", plugin);
 		return el.innerHTML;
 	}
@@ -298,10 +299,11 @@
 	function openSelectedRelease(tagName: string) {
 		plugin.openGithubRelease(findReleaseByTag(tagName) ?? tagName);
 	}
+	let rootEl: HTMLElement;
 </script>
 
 <div class="modal-title">{version ? "Relay download" : "Relay releases"}</div>
-<div class="modal-content">
+<div class="modal-content" bind:this={rootEl}>
 	<div class="settings-spacer"></div>
 
 	<div class="settings-container">

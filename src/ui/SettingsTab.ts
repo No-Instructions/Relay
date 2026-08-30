@@ -31,6 +31,7 @@ export class LiveSettingsTab extends PluginSettingTab {
 			target: this.targetEl,
 			props: {
 				plugin: this.plugin,
+				containerEl: this.targetEl,
 				close: () => {
 					(
 						this as Partial<{

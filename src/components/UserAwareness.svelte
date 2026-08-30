@@ -1,6 +1,6 @@
 <script lang="ts">
 	import Avatar from "./Avatar.svelte";
-	import { onDestroy, onMount } from "svelte";
+	import { onDestroy } from "svelte";
 	import type { Awareness } from "y-protocols/awareness.js";
 	import type { RelayUser } from "../Relay";
 	import { derived, writable } from "svelte/store";
@@ -14,6 +14,7 @@
 	import { flags } from "../flagManager";
 	import { ANONYMOUS_PROFILE_NAME } from "../User";
 
+	import { ownerDoc } from "./ownerWindow";
 	export let awareness: Awareness;
 	export let relayUsers: any;
 	export let vertical = false;
@@ -201,24 +202,34 @@
 					: "-1.8em";
 	}
 
-	onMount(() => {
-		document.addEventListener("click", handleClickOutside);
-		return () => {
-			document.removeEventListener("click", handleClickOutside);
+	// An outside click closes the popover, so the listener belongs to the
+	// document the popover is mounted in. As an action its lifetime is the
+	// element's, and it detaches from the document it attached to.
+	function closeOnClickOutside(node: HTMLElement) {
+		const doc = ownerDoc(node);
+		doc.addEventListener("click", handleClickOutside);
+		return {
+			destroy() {
+				doc.removeEventListener("click", handleClickOutside);
+			},
 		};
-	});
+	}
 
 	// Cleanup on component destroy
 	onDestroy(() => {
 		if (cleanupFunction) {
 			cleanupFunction();
 		}
-		document.removeEventListener("click", handleClickOutside);
 	});
 </script>
 
 {#if $allUsers.length > 0}
-	<div class="user-awareness" class:vertical bind:this={popoverElement}>
+	<div
+		class="user-awareness"
+		class:vertical
+		bind:this={popoverElement}
+		use:closeOnClickOutside
+	>
 		<!-- Stacked avatars -->
 		<div
 			class="avatar-stack"
