@@ -1,56 +1,112 @@
 {
-    "root": true,
-    "parser": "@typescript-eslint/parser",
-    "env": { "node": true },
-    "plugins": [
-      "@typescript-eslint"
-    ],
-    "extends": [
-      "eslint:recommended",
-      "plugin:@typescript-eslint/eslint-recommended",
-      "plugin:@typescript-eslint/recommended"
-    ], 
-    "parserOptions": {
-        "sourceType": "module"
-    },
-    "rules": {
-      "no-unused-vars": "off",
-      "@typescript-eslint/no-unused-vars": ["error", { "args": "none" }],
-      "@typescript-eslint/ban-ts-comment": "off",
-      "no-prototype-builtins": "off",
-      "@typescript-eslint/no-empty-function": "off",
-      "@typescript-eslint/no-explicit-any": "off",
-      "no-restricted-imports": [
-         "error",
-         {
-           "paths": [
-             {
-               "name": "fs",
-               "message": "Do not use Node's fs module."
-             },
-             {
-               "name": "path",
-               "message": "Do not use Node's path module."
-             },
-             {
-               "name": "http",
-               "message": "Do not use Node's http module."
-             },
-             {
-               "name": "crypto",
-               "message": "Do not use Node's crypto module."
-             }
-           ]
-         }
-       ]
-    },
-    "overrides": [
+  "root": true,
+  "parser": "@typescript-eslint/parser",
+  "env": {
+    "node": true
+  },
+  "plugins": [
+    "@typescript-eslint"
+  ],
+  "extends": [
+    "eslint:recommended",
+    "plugin:@typescript-eslint/eslint-recommended",
+    "plugin:@typescript-eslint/recommended"
+  ],
+  "parserOptions": {
+    "sourceType": "module"
+  },
+  "rules": {
+    "no-unused-vars": "off",
+    "@typescript-eslint/no-unused-vars": [
+      "error",
       {
-        "files": ["__tests__/**/*.ts", "unit/**/*.ts"],
-        "rules": {
-          "no-restricted-imports": "off",
-          "@typescript-eslint/no-var-requires": "off"
-        }
+        "args": "none"
+      }
+    ],
+    "@typescript-eslint/ban-ts-comment": "off",
+    "no-prototype-builtins": "off",
+    "@typescript-eslint/no-empty-function": "off",
+    "@typescript-eslint/no-explicit-any": "off",
+    "no-restricted-imports": [
+      "error",
+      {
+        "paths": [
+          {
+            "name": "fs",
+            "message": "Do not use Node's fs module."
+          },
+          {
+            "name": "path",
+            "message": "Do not use Node's path module."
+          },
+          {
+            "name": "http",
+            "message": "Do not use Node's http module."
+          },
+          {
+            "name": "crypto",
+            "message": "Do not use Node's crypto module."
+          }
+        ]
       }
     ]
-  }
+  },
+  "overrides": [
+    {
+      "files": [
+        "__tests__/**/*.ts",
+        "unit/**/*.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": "off",
+        "@typescript-eslint/no-var-requires": "off"
+      }
+    },
+    {
+      "files": [
+        "**/*.svelte"
+      ],
+      "parser": "svelte-eslint-parser",
+      "parserOptions": {
+        "parser": "@typescript-eslint/parser"
+      },
+      "env": {
+        "browser": true,
+        "es2021": true
+      },
+      "rules": {
+        "no-inner-declarations": "off",
+        "no-self-assign": "off",
+        "no-mixed-spaces-and-tabs": "off",
+        "@typescript-eslint/no-unused-vars": "warn",
+        "no-case-declarations": "warn",
+        "no-restricted-globals": [
+          "error",
+          {
+            "name": "document",
+            "message": "Reach the document through an element you own: el.ownerDocument."
+          },
+          {
+            "name": "setTimeout",
+            "message": "Reach timers through the owning window: el.ownerDocument.defaultView.setTimeout."
+          },
+          {
+            "name": "setInterval",
+            "message": "Reach timers through the owning window: el.ownerDocument.defaultView.setInterval."
+          },
+          {
+            "name": "requestAnimationFrame",
+            "message": "Reach the scheduler through the owning window: el.ownerDocument.defaultView.requestAnimationFrame."
+          }
+        ],
+        "no-restricted-syntax": [
+          "error",
+          {
+            "selector": "MemberExpression[object.name='window'][property.name=/^(innerWidth|innerHeight|outerWidth|outerHeight|scrollX|scrollY|pageXOffset|pageYOffset|visualViewport|devicePixelRatio)$/]",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          }
+        ]
+      }
+    }
+  ]
+}
