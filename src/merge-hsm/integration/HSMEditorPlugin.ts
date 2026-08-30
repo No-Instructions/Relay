@@ -450,13 +450,11 @@ export class HSMEditorPluginValue implements PluginValue {
       return false;
     }
 
-    // Create CM6Integration with a validity check that requires both the
-    // expected document GUID and the current editor identity. This detects
-    // same-file editor replacement where the old EditorView still resolves to
-    // the same document but is no longer the active editor instance. For a
-    // born-attached view that LiveViews has not adopted yet, validity is keyed
-    // off file identity instead; once LiveViews has adopted the editor, the
-    // stricter identity check owns validity permanently.
+    // Create CM6Integration with a validity check that requires the expected
+    // document and an exact current-editor identity. LiveViews registry
+    // membership and positive MarkdownView ownership are independent proofs
+    // of that identity. A born-attached view can additionally use file
+    // identity until LiveViews first adopts it.
     const expectedFile = editorFile;
     let adoptedByLiveView = false;
     this.cm6Integration = new CM6Integration(hsm, this.editor, () => {
@@ -466,6 +464,18 @@ export class HSMEditorPluginValue implements PluginValue {
       if (this.bornAttachedRenderPending) return false;
       if (this.isCurrentEditorInstance(expectedGuid)) {
         adoptedByLiveView = true;
+        return true;
+      }
+      // The owning MarkdownView is the authoritative identity for its current
+      // EditorView. LiveViews can briefly miss that association while Obsidian
+      // rebuilds or transfers a view; rejecting input in that window leaves an
+      // apparently healthy active integration that drops every later change.
+      // A replaced EditorView fails the owner-adoption check because the
+      // MarkdownView's editor getter resolves to its replacement.
+      if (
+        this.ownerEditorView() === this.editor &&
+        this.isEditorShowingFile(expectedGuid, expectedFile)
+      ) {
         return true;
       }
       if (!bornAttached || adoptedByLiveView) return false;
