@@ -2,9 +2,23 @@
 	import { onMount, onDestroy, createEventDispatcher, tick } from "svelte";
 	import { App, TFolder } from "obsidian";
 
+	// The dropdown portals out to body level so it escapes the modal's
+	// overflow. That makes its target document a real choice rather than a
+	// formality: settings can render in its own window, and a node appended
+	// to the wrong body opens in a window the user is not looking at. Every
+	// placement decision below — body, viewport, listeners, focus — reads
+	// the document the input itself belongs to.
+	function inputDoc(): Document {
+		return inputEl?.ownerDocument ?? document;
+	}
+
+	function inputWin(): Window {
+		return inputDoc().defaultView ?? window;
+	}
+
 	// Portal action to render content at body level
 	function portal(node: HTMLElement) {
-		document.body.appendChild(node);
+		inputDoc().body.appendChild(node);
 		return {
 			destroy() {
 				node.remove();
@@ -115,9 +129,10 @@
 			return;
 		}
 
+		const win = inputWin();
 		const rect = inputEl.getBoundingClientRect();
-		const viewportWidth = window.innerWidth;
-		const viewportHeight = window.innerHeight;
+		const viewportWidth = win.innerWidth;
+		const viewportHeight = win.innerHeight;
 
 		// Force fixed positioning with high z-index to break out of modal
 		suggestEl.style.position = "fixed";
@@ -264,7 +279,7 @@
 	function handleBlur(e: FocusEvent) {
 		// Delay close to allow click events on suggestions
 		setTimeout(() => {
-			if (!suggestEl?.contains(document.activeElement)) {
+			if (!suggestEl?.contains(inputDoc().activeElement)) {
 				closeSuggestions();
 			}
 		}, 200);
@@ -289,14 +304,21 @@
 		}
 	}
 
+	// Captured at mount: the binding is cleared before teardown runs, so the
+	// listeners have to be removed from the pair they were added to.
+	let listenerDoc: Document;
+	let listenerWin: Window;
+
 	onMount(() => {
-		document.addEventListener("click", handleDocumentClick);
-		window.addEventListener("resize", handleWindowResize);
+		listenerDoc = inputDoc();
+		listenerWin = inputWin();
+		listenerDoc.addEventListener("click", handleDocumentClick);
+		listenerWin.addEventListener("resize", handleWindowResize);
 	});
 
 	onDestroy(() => {
-		document.removeEventListener("click", handleDocumentClick);
-		window.removeEventListener("resize", handleWindowResize);
+		listenerDoc?.removeEventListener("click", handleDocumentClick);
+		listenerWin?.removeEventListener("resize", handleWindowResize);
 	});
 </script>
 
