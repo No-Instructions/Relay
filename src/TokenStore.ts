@@ -421,14 +421,12 @@ export class TokenStore<TokenType extends HasToken> {
 	private getTokenFromNetwork(
 		documentId: string,
 		friendlyName: string,
-		callback: (token: TokenType) => void,
 	) {
 		if (this.destroyed) {
 			return Promise.reject(this.getDestroyedError());
 		}
 		const activePromise = this._activePromises.get(documentId);
 		if (activePromise) {
-			this.callbacks.set(documentId, callback);
 			return activePromise;
 		}
 		const existing = this.tokenMap.get(documentId);
@@ -438,7 +436,6 @@ export class TokenStore<TokenType extends HasToken> {
 			expiryTime: 0,
 			attempts: existing?.attempts ?? 0,
 		});
-		this.callbacks.set(documentId, callback);
 		const sharedPromise = this.onRefresh(documentId)
 			.then((newToken: TokenType) => {
 				if (this.destroyed) {
@@ -470,10 +467,10 @@ export class TokenStore<TokenType extends HasToken> {
 		if (this.destroyed || !this.tokenMap) {
 			return Promise.reject(this.getDestroyedError());
 		}
+		this.callbacks.set(documentId, callback);
 		if (this.tokenMap.has(documentId)) {
 			const tokenInfo = this.tokenMap.get(documentId)!;
 			if (tokenInfo.token && this.isTokenValid(tokenInfo)) {
-				this.callbacks.set(documentId, callback);
 				tokenInfo.friendlyName = friendlyName;
 				callback(tokenInfo.token);
 				this.log("token was valid, cache hit!");
@@ -481,7 +478,32 @@ export class TokenStore<TokenType extends HasToken> {
 				return Promise.resolve(tokenInfo.token);
 			}
 		}
-		return this.getTokenFromNetwork(documentId, friendlyName, callback);
+		return this.getTokenFromNetwork(documentId, friendlyName);
+	}
+
+	/**
+	 * Get a token for a bounded request without keeping the document in the
+	 * proactive refresh set. One-shot callers still share the token cache and
+	 * in-flight network requests with live providers, but they never add or
+	 * replace a provider refresh callback.
+	 */
+	async getTokenOnce(
+		documentId: string,
+		friendlyName: string,
+	): Promise<TokenType> {
+		this.log(`getting one-shot token ${friendlyName}`);
+		if (this.destroyed || !this.tokenMap) {
+			return Promise.reject(this.getDestroyedError());
+		}
+		if (this.tokenMap.has(documentId)) {
+			const tokenInfo = this.tokenMap.get(documentId)!;
+			if (tokenInfo.token && this.isTokenValid(tokenInfo)) {
+				tokenInfo.friendlyName = friendlyName;
+				this.log("one-shot token was valid, cache hit!");
+				return Promise.resolve(tokenInfo.token);
+			}
+		}
+		return this.getTokenFromNetwork(documentId, friendlyName);
 	}
 
 	_reportWithFilter(filter: (documentId: string) => boolean) {

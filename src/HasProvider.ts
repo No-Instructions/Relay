@@ -399,6 +399,14 @@ export class HasProvider extends HasLogging {
 		return tokenPromise;
 	}
 
+	async getRequestToken(): Promise<ClientToken> {
+		this.log("get request token");
+		return this.tokenStore.getTokenOnce(
+			S3RN.encode(this.s3rn),
+			this.path || "unknown",
+		);
+	}
+
 	providerActive() {
 		if (this.clientToken && this._provider) {
 			const tokenIsSet = this._provider.hasUrl(this.clientToken.url);
