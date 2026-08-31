@@ -1207,7 +1207,7 @@ export class BackgroundSync extends HasLogging {
 			throw new Error(`Unable to decode S3RN: ${S3RN.encode(entity)}`);
 		}
 
-		const clientToken = await item.getProviderToken();
+		const clientToken = await item.getRequestToken();
 		const headers = this.getAuthHeader(clientToken);
 		const baseUrl = this.getBaseUrl(clientToken, entity);
 		const url = `${baseUrl}/as-update`;
@@ -1263,10 +1263,9 @@ export class BackgroundSync extends HasLogging {
 					);
 		this.log("[downloadByGuid]", path, S3RN.encode(entity));
 
-		const clientToken = await sharedFolder.tokenStore.getToken(
+		const clientToken = await sharedFolder.tokenStore.getTokenOnce(
 			S3RN.encode(entity),
 			path,
-			() => {},
 		);
 		const headers = this.getAuthHeader(clientToken);
 		const baseUrl = this.getBaseUrl(clientToken, entity);
@@ -1709,7 +1708,7 @@ export class BackgroundSync extends HasLogging {
 export interface RemoteEntityFile {
 	readonly path: string;
 	readonly s3rn: S3RNType;
-	getProviderToken(): Promise<ClientToken>;
+	getRequestToken(): Promise<ClientToken>;
 }
 
 /** Metric label for what a session-scope operation awaits. */
