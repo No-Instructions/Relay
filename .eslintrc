@@ -53,8 +53,16 @@
     "no-restricted-syntax": [
       "error",
       {
+        "selector": "MemberExpression[object.name='window'][property.name=/^(innerWidth|innerHeight|outerWidth|outerHeight|scrollX|scrollY|pageXOffset|pageYOffset|visualViewport|devicePixelRatio)$/]",
+        "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+      },
+      {
         "selector": "BinaryExpression[operator='instanceof'][right.name=/^(MouseEvent|KeyboardEvent|PointerEvent|FocusEvent|DragEvent|TouchEvent|InputEvent|Event|Node|Element|HTMLElement|HTMLInputElement|HTMLTextAreaElement|HTMLAnchorElement|HTMLDivElement|HTMLButtonElement)$/]",
         "message": "Each window has its own DOM constructors, so instanceof rejects everything built in another one. Discriminate on event.type, a property, or nodeType."
+      },
+      {
+        "selector": "CallExpression[callee.name=/^(setTimeout|setInterval|requestAnimationFrame)$/]",
+        "message": "Reach timers through the window that owns the work: an element's ownerDocument.defaultView, or the plugin window."
       }
     ]
   },
@@ -93,18 +101,6 @@
           {
             "name": "document",
             "message": "Reach the document through an element you own: el.ownerDocument."
-          },
-          {
-            "name": "setTimeout",
-            "message": "Reach timers through the owning window: el.ownerDocument.defaultView.setTimeout."
-          },
-          {
-            "name": "setInterval",
-            "message": "Reach timers through the owning window: el.ownerDocument.defaultView.setInterval."
-          },
-          {
-            "name": "requestAnimationFrame",
-            "message": "Reach the scheduler through the owning window: el.ownerDocument.defaultView.requestAnimationFrame."
           }
         ],
         "no-restricted-syntax": [
@@ -116,6 +112,10 @@
           {
             "selector": "BinaryExpression[operator='instanceof'][right.name=/^(MouseEvent|KeyboardEvent|PointerEvent|FocusEvent|DragEvent|TouchEvent|InputEvent|Event|Node|Element|HTMLElement|HTMLInputElement|HTMLTextAreaElement|HTMLAnchorElement|HTMLDivElement|HTMLButtonElement)$/]",
             "message": "Each window has its own DOM constructors, so instanceof rejects everything built in another one. Discriminate on event.type, a property, or nodeType."
+          },
+          {
+            "selector": "CallExpression[callee.name=/^(setTimeout|setInterval|requestAnimationFrame)$/]",
+            "message": "Reach timers through the window that owns the work: an element's ownerDocument.defaultView, or the plugin window."
           }
         ]
       }
