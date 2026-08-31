@@ -68,7 +68,12 @@ export interface DocumentContentSnapshot {
  * Data payloads are CanvasData exports; equality flags use the
  * order-insensitive canvas comparison.
  */
-export interface CanvasContentSnapshot {
+/**
+ * Every local representation of a canvas: both in-memory replicas, the file
+ * on disk, an open view, the persisted machine record, and the equality flags
+ * among them. Reads nothing over the network, so a probe may poll it.
+ */
+export interface CanvasStateSnapshot {
   path: string;
   guid: string;
   folder: string;
@@ -79,13 +84,12 @@ export interface CanvasContentSnapshot {
   userLock: boolean;
   downloadPending: boolean;
   local: { data: unknown; snapshot: string } | null;
+  /** The provider-facing replica, held in memory alongside the local one. */
   remote: { data: unknown; snapshot: string } | null;
   disk: { data: unknown; mtime: number; parseError: boolean } | null;
   view: { data: unknown } | null;
-  server: { data: unknown; snapshot: string; updateSize: number } | null;
   localRemoteContentEqual: boolean | null;
   diskMatchesLocal: boolean | null;
-  serverMatchesLocal: boolean | null;
   viewMatchesLocal: boolean | null;
   lca: { present: boolean; diskHash: string | null; diskMtime: number | null };
   persisted: {
@@ -96,6 +100,17 @@ export interface CanvasContentSnapshot {
   } | null;
   /** Ring buffer of recent machine transitions, oldest first. */
   recentTransitions: HsmStateTransition[];
+}
+
+/**
+ * A state snapshot plus the server's own copy of the canvas. Obtaining the
+ * server copy costs a full-state download, which is the same request the
+ * sync machine issues, so asking for it attaches the canvas server side.
+ * Read it deliberately; never poll it.
+ */
+export interface CanvasContentSnapshot extends CanvasStateSnapshot {
+  server: { data: unknown; snapshot: string; updateSize: number } | null;
+  serverMatchesLocal: boolean | null;
 }
 
 export interface HsmStateTransition {
@@ -380,13 +395,22 @@ export interface RelayDebugGlobal {
    */
   awaitHsmState: (path: string, statePrefix: string, timeoutMs: number) => Promise<string>;
   /**
-   * Snapshot every representation of a canvas — localDoc, remoteDoc, disk,
-   * open view, server copy — plus machine posture, LCA presence, and the
-   * persisted record, with cross-representation equality flags. Reading the
-   * localDoc materializes a hibernated canvas; pass `{ wake: false }` for a
-   * non-waking probe (local/view come back null while hibernated).
+   * Snapshot every local representation of a canvas — localDoc, remoteDoc,
+   * disk, open view — plus machine posture, LCA presence, and the persisted
+   * record, with cross-representation equality flags. Reads nothing over the
+   * network, so this is safe to poll. Reading the localDoc materializes a
+   * hibernated canvas; pass `{ wake: false }` for a non-waking probe
+   * (local/view come back null while hibernated).
    */
-  getCanvasState: (path: string, options?: { wake?: boolean }) => Promise<CanvasContentSnapshot>;
+  getCanvasState: (path: string, options?: { wake?: boolean }) => Promise<CanvasStateSnapshot>;
+  /**
+   * The same snapshot plus the server's own copy of the canvas.
+   *
+   * Note: fetches remote server state. That download is the request the sync
+   * machine issues, so it attaches the canvas server side — call it to settle
+   * a question about the server, and poll `getCanvasState` instead.
+   */
+  getCanvasContent: (path: string) => Promise<CanvasContentSnapshot>;
   /**
    * Wait for a canvas machine to reach a state path that starts with
    * `statePrefix`. Thin bridge over `CanvasHSM.awaitState` — event-driven.
@@ -659,6 +683,7 @@ export class RelayDebugAPI {
       listEditors: () => this.listEditors(),
       getDocumentContent: async (path) => this.getDocumentContent(path),
       getCanvasState: async (path, options) => this.getCanvasState(path, options),
+      getCanvasContent: async (path) => this.getCanvasContent(path),
       awaitCanvasState: async (path, statePrefix, timeoutMs) =>
         this.awaitCanvasState(path, statePrefix, timeoutMs),
       getHsmStateSnapshot: async (path) => this.getHsmStateSnapshot(path),
@@ -1270,13 +1295,13 @@ export class RelayDebugAPI {
   private async getCanvasState(
     path: string,
     options?: { wake?: boolean },
-  ): Promise<CanvasContentSnapshot> {
+  ): Promise<CanvasStateSnapshot> {
     const { canvas, folder, guid } = this.lookupCanvas(path);
     const wake = options?.wake ?? true;
     const wasMaterialized = !!canvas.isMaterialized;
     const machine = canvas.hsm.getSnapshot();
 
-    const result: CanvasContentSnapshot = {
+    const result: CanvasStateSnapshot = {
       path,
       guid,
       folder: folder.path || folder.name,
@@ -1289,10 +1314,8 @@ export class RelayDebugAPI {
       remote: null,
       disk: null,
       view: null,
-      server: null,
       localRemoteContentEqual: null,
       diskMatchesLocal: null,
-      serverMatchesLocal: null,
       viewMatchesLocal: null,
       lca: {
         present: !!machine.hasLCA,
@@ -1362,20 +1385,6 @@ export class RelayDebugAPI {
       });
     } catch { /* view not readable */ }
 
-    // Server copy
-    try {
-      const response = await folder.backgroundSync.downloadItem(canvas);
-      const rawUpdate = new Uint8Array(response.arrayBuffer);
-      const tempDoc = new Y.Doc();
-      Y.applyUpdate(tempDoc, rawUpdate);
-      result.server = {
-        data: Canvas.exportCanvasData(tempDoc),
-        snapshot: this.toHex(snapshotFromDoc(tempDoc).snapshot),
-        updateSize: rawUpdate.byteLength,
-      };
-      tempDoc.destroy();
-    } catch { /* server download failed */ }
-
     // Persisted machine record
     try {
       const record = await folder.loadCanvasState(guid);
@@ -1400,11 +1409,47 @@ export class RelayDebugAPI {
     if (result.local && result.disk && !result.disk.parseError) {
       result.diskMatchesLocal = eq(result.disk.data, result.local.data);
     }
-    if (result.local && result.server) {
-      result.serverMatchesLocal = eq(result.server.data, result.local.data);
-    }
     if (result.local && result.view) {
       result.viewMatchesLocal = eq(result.view.data, result.local.data);
+    }
+
+    return result;
+  }
+
+  /**
+   * A canvas's state snapshot together with the server's copy.
+   *
+   * Downloading the server copy is the same full-state request the sync
+   * machine issues, so it attaches the canvas server side: this is a
+   * participant's read, not an observer's. Call it to settle a question about
+   * the server; poll getCanvasState instead.
+   */
+  private async getCanvasContent(path: string): Promise<CanvasContentSnapshot> {
+    const { canvas, folder } = this.lookupCanvas(path);
+    const result: CanvasContentSnapshot = {
+      ...(await this.getCanvasState(path)),
+      server: null,
+      serverMatchesLocal: null,
+    };
+
+    try {
+      const response = await folder.backgroundSync.downloadItem(canvas);
+      const rawUpdate = new Uint8Array(response.arrayBuffer);
+      const tempDoc = new Y.Doc();
+      Y.applyUpdate(tempDoc, rawUpdate);
+      result.server = {
+        data: Canvas.exportCanvasData(tempDoc),
+        snapshot: this.toHex(snapshotFromDoc(tempDoc).snapshot),
+        updateSize: rawUpdate.byteLength,
+      };
+      tempDoc.destroy();
+    } catch { /* server download failed */ }
+
+    if (result.local && result.server) {
+      result.serverMatchesLocal = areCanvasDataEqual(
+        result.server.data as CanvasData | null | undefined,
+        result.local.data as CanvasData | null | undefined,
+      );
     }
 
     return result;
