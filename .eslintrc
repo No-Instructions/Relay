@@ -49,6 +49,13 @@
           }
         ]
       }
+    ],
+    "no-restricted-syntax": [
+      "error",
+      {
+        "selector": "BinaryExpression[operator='instanceof'][right.name=/^(MouseEvent|KeyboardEvent|PointerEvent|FocusEvent|DragEvent|TouchEvent|InputEvent|Event|Node|Element|HTMLElement|HTMLInputElement|HTMLTextAreaElement|HTMLAnchorElement|HTMLDivElement|HTMLButtonElement)$/]",
+        "message": "Each window has its own DOM constructors, so instanceof rejects everything built in another one. Discriminate on event.type, a property, or nodeType."
+      }
     ]
   },
   "overrides": [
@@ -59,7 +66,8 @@
       ],
       "rules": {
         "no-restricted-imports": "off",
-        "@typescript-eslint/no-var-requires": "off"
+        "@typescript-eslint/no-var-requires": "off",
+        "no-restricted-syntax": "off"
       }
     },
     {
@@ -104,6 +112,10 @@
           {
             "selector": "MemberExpression[object.name='window'][property.name=/^(innerWidth|innerHeight|outerWidth|outerHeight|scrollX|scrollY|pageXOffset|pageYOffset|visualViewport|devicePixelRatio)$/]",
             "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          },
+          {
+            "selector": "BinaryExpression[operator='instanceof'][right.name=/^(MouseEvent|KeyboardEvent|PointerEvent|FocusEvent|DragEvent|TouchEvent|InputEvent|Event|Node|Element|HTMLElement|HTMLInputElement|HTMLTextAreaElement|HTMLAnchorElement|HTMLDivElement|HTMLButtonElement)$/]",
+            "message": "Each window has its own DOM constructors, so instanceof rejects everything built in another one. Discriminate on event.type, a property, or nodeType."
           }
         ]
       }
