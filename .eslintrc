@@ -61,7 +61,7 @@
         "message": "Each window has its own DOM constructors, so instanceof rejects everything built in another one. Discriminate on event.type, a property, or nodeType."
       },
       {
-        "selector": "CallExpression[callee.name=/^(setTimeout|setInterval|requestAnimationFrame)$/]",
+        "selector": "CallExpression[callee.name=/^(setTimeout|setInterval|requestAnimationFrame|clearTimeout|clearInterval|cancelAnimationFrame)$/]",
         "message": "Reach timers through the window that owns the work: an element's ownerDocument.defaultView, or the plugin window."
       }
     ]
@@ -101,6 +101,46 @@
           {
             "name": "document",
             "message": "Reach the document through an element you own: el.ownerDocument."
+          },
+          {
+            "name": "innerWidth",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          },
+          {
+            "name": "innerHeight",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          },
+          {
+            "name": "outerWidth",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          },
+          {
+            "name": "outerHeight",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          },
+          {
+            "name": "scrollX",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          },
+          {
+            "name": "scrollY",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          },
+          {
+            "name": "pageXOffset",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          },
+          {
+            "name": "pageYOffset",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          },
+          {
+            "name": "visualViewport",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          },
+          {
+            "name": "devicePixelRatio",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
           }
         ],
         "no-restricted-syntax": [
@@ -114,7 +154,7 @@
             "message": "Each window has its own DOM constructors, so instanceof rejects everything built in another one. Discriminate on event.type, a property, or nodeType."
           },
           {
-            "selector": "CallExpression[callee.name=/^(setTimeout|setInterval|requestAnimationFrame)$/]",
+            "selector": "CallExpression[callee.name=/^(setTimeout|setInterval|requestAnimationFrame|clearTimeout|clearInterval|cancelAnimationFrame)$/]",
             "message": "Reach timers through the window that owns the work: an element's ownerDocument.defaultView, or the plugin window."
           }
         ]
