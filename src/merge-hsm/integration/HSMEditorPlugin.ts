@@ -38,6 +38,7 @@ type EditorConnectionManager = {
     lookup(path: string): { getFile(file: TFile): unknown } | null;
   };
   findCanvas(editor: EditorView): unknown;
+  findCanvasEmbed?(editor: EditorView): { file: TFile } | undefined;
   findView(editor: EditorView): { document: Document } | undefined;
 };
 
@@ -110,6 +111,7 @@ export class HSMEditorPluginValue implements PluginValue {
         owner: EditorView | null;
         connected: boolean;
         canvas: boolean;
+        canvasEmbed: boolean;
       }
     | null = null;
   private log: (...args: unknown[]) => void;
@@ -129,9 +131,6 @@ export class HSMEditorPluginValue implements PluginValue {
       hsm.send(event);
     }
     this.clearPendingEdits();
-    if (this.embed) {
-      this.document?.requestSave();
-    }
     return true;
   }
 
@@ -192,7 +191,10 @@ export class HSMEditorPluginValue implements PluginValue {
     if (!connectionManager) return null;
 
     const fileInfo = this.editor.state.field(editorInfoField, false);
-    const file = fileInfo?.file;
+    // A canvas embed's CM6 lives in an iframe whose info field carries no
+    // file, so it cannot name its own document. The node that owns the embed
+    // does: find the node whose child is this editor and take its file.
+    const file = fileInfo?.file ?? this.embeddedNodeFile(connectionManager);
     if (!file) return null;
 
     const folder = connectionManager.sharedFolders.lookup(file.path);
@@ -211,6 +213,16 @@ export class HSMEditorPluginValue implements PluginValue {
   }
 
   /**
+   * The file of the canvas node whose embedded editor is this one, when this
+   * editor is an embed. Null for every other editor.
+   */
+  private embeddedNodeFile(
+    connectionManager: EditorConnectionManager,
+  ): TFile | null {
+    return connectionManager.findCanvasEmbed?.(this.editor)?.file ?? null;
+  }
+
+  /**
    * Check whether this EditorView is still the active editor instance for the
    * expected document. GUID matching alone is insufficient because Obsidian can
    * replace the editor while keeping the same file open.
@@ -224,7 +236,8 @@ export class HSMEditorPluginValue implements PluginValue {
       return (
         currentDoc !== null &&
         currentDoc.guid === expectedGuid &&
-        connectionManager.findCanvas(this.editor) !== undefined
+        (connectionManager.findCanvas(this.editor) !== undefined ||
+          connectionManager.findCanvasEmbed?.(this.editor) !== undefined)
       );
     }
 
@@ -295,7 +308,18 @@ export class HSMEditorPluginValue implements PluginValue {
     const fragmentScoped = typeof subpath === "string" && subpath.length > 0;
     if (!fragmentScoped) {
       const connectionManager = getConnectionManager(this.editor);
+      // A canvas editor is not an embed-owned sub-editor: it is the surface a
+      // person types into. A text card's editor carries its node in its own
+      // CM6 state, so findCanvas names it. A file embed's editor carries no
+      // such field and can only be named by the node that renders it —
+      // without this second hatch it falls through and is marked inert
+      // permanently, which is what stops it ever binding to its document.
       if (connectionManager?.findCanvas(this.editor) !== undefined) return false;
+      if (connectionManager?.findCanvasEmbed?.(this.editor) !== undefined) {
+        return false;
+      }
+      // Not yet attached: refuse for now, but without latching, so the editor
+      // can be reconsidered once the canvas has wired it up.
       if (!this.editor.dom.isConnected) return true;
     }
     this.debug(
@@ -402,7 +426,9 @@ export class HSMEditorPluginValue implements PluginValue {
     // Registered canvas editors have no MarkdownView wrapper and do not
     // auto-save. Registry membership is the same positive proof used by the
     // owner allow-list and does not depend on DOM attachment timing.
-    this.embed = connectionManager.findCanvas(this.editor) !== undefined;
+    this.embed =
+      connectionManager.findCanvas(this.editor) !== undefined ||
+      connectionManager.findCanvasEmbed?.(this.editor) !== undefined;
 
     this.document = this.resolveCurrentDocument();
     if (!this.document) return false;
@@ -414,7 +440,7 @@ export class HSMEditorPluginValue implements PluginValue {
     // When multiple SharedFolders have the same relative path, ensure the
     // editor connects to the HSM for its actual file.
     const fileInfo = this.editor.state.field(editorInfoField, false);
-    const editorFile = fileInfo?.file;
+    const editorFile = fileInfo?.file ?? this.embeddedNodeFile(connectionManager);
 
     // Verify the Document's TFile matches the editor's TFile
     const documentTFile = this.document.tfile;
@@ -711,6 +737,23 @@ export class HSMEditorPluginValue implements PluginValue {
       }
     }
 
+    // An embed's editor is replaced when Obsidian re-renders the node. The
+    // superseded instance still resolves the same document, so the document
+    // check below cannot see it — but the node names exactly one editor as
+    // its own, and anything else is stale. Leaving it bound leaves two
+    // integrations bootstrapping one document against each other.
+    if (this.embed && this.cm6Integration) {
+      const manager = getConnectionManager(this.editor);
+      if (
+        manager &&
+        manager.findCanvas(this.editor) === undefined &&
+        manager.findCanvasEmbed?.(this.editor) === undefined
+      ) {
+        this.resetForDocumentChange(null);
+        return;
+      }
+    }
+
     // Detect when the editor is now showing a different document.
     // This happens when Obsidian reuses an editor view for a new file,
     // after a file rename where the Document object changes, or after a
@@ -766,6 +809,8 @@ export class HSMEditorPluginValue implements PluginValue {
         const connected = this.editor.dom.isConnected;
         const canvas =
           getConnectionManager(this.editor)?.findCanvas(this.editor) !== undefined;
+        const canvasEmbed =
+          getConnectionManager(this.editor)?.findCanvasEmbed?.(this.editor) !== undefined;
         const prior = this.lastInitializationRetry;
         if (
           !prior ||
@@ -773,9 +818,17 @@ export class HSMEditorPluginValue implements PluginValue {
           prior.live !== live ||
           prior.owner !== owner ||
           prior.connected !== connected ||
-          prior.canvas !== canvas
+          prior.canvas !== canvas ||
+          prior.canvasEmbed !== canvasEmbed
         ) {
-          this.lastInitializationRetry = { file, live, owner, connected, canvas };
+          this.lastInitializationRetry = {
+            file,
+            live,
+            owner,
+            connected,
+            canvas,
+            canvasEmbed,
+          };
           this.initializeIfReady();
         }
       }
@@ -867,10 +920,11 @@ export class HSMEditorPluginValue implements PluginValue {
     // Forward to CM6Integration which sends to HSM
     this.cm6Integration.onEditorUpdate(update);
 
-    // Embedded canvas editors don't auto-save — trigger explicit save
-    if (this.embed && this.document) {
-      this.document.requestSave();
-    }
+    // A bound embed needs no save of its own. Its edits reach the document
+    // through this integration, and the document's own machine writes disk.
+    // Asking the document to save here re-renders the canvas node, which
+    // replaces the editor and discards the buffer being typed into — the
+    // save lands, and the text the person just wrote does not.
   }
 
   /**

@@ -1559,6 +1559,34 @@ export class LiveViewManager {
 		});
 	}
 
+	/**
+	 * The canvas node embed an editor belongs to, when it is one.
+	 *
+	 * A text card's editor carries its canvas node in its own CM6 state, which
+	 * is what findCanvas reads. A file embed's editor does not carry that
+	 * field at all, so it cannot name itself; the node that renders it is the
+	 * only thing that can, and it is identified by owning this exact editor.
+	 */
+	findCanvasEmbed(
+		cmEditor: EditorView,
+	): { view: RelayCanvasView; file: TFile } | undefined {
+		for (const view of this.views.filter(isRelayCanvasView)) {
+			const canvas = view.view.canvas;
+			if (!canvas?.nodes) continue;
+			for (const [, node] of canvas.nodes) {
+				const child = (
+					node as unknown as {
+						child?: { file?: TFile; editor?: { cm?: EditorView } };
+					}
+				).child;
+				if (child?.editor?.cm === cmEditor && child.file) {
+					return { view, file: child.file };
+				}
+			}
+		}
+		return undefined;
+	}
+
 	findCanvas(cmEditor: EditorView): RelayCanvasView | undefined {
 		const state = (
 			cmEditor.state as unknown as {
