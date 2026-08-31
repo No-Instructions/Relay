@@ -56,7 +56,7 @@
 
 			// Clear any existing timeout
 			if (urlValidationTimeout) {
-				clearTimeout(urlValidationTimeout);
+				ownerWin(rootEl).clearTimeout(urlValidationTimeout);
 			}
 
 			// Set a new timeout to validate after user stops typing
