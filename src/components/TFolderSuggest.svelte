@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy, createEventDispatcher, tick } from "svelte";
 	import { App, TFolder } from "obsidian";
+	import { folderSuggestHeight } from "./folderSuggestLayout";
 
 	// The dropdown portals out to body level so it escapes the modal's
 	// overflow. That makes its target document a real choice rather than a
@@ -140,13 +141,7 @@
 
 		const isMobile = viewportWidth < 768;
 
-		// Calculate height based on number of suggestions
-		const suggestionHeight = 40; // Approximate height per suggestion item (increased for padding)
-		const containerPadding = 8; // Container padding
-		const actualHeight = Math.min(
-			suggestions.length * suggestionHeight + containerPadding,
-			isMobile ? 240 : 300,
-		);
+		const actualHeight = folderSuggestHeight(suggestions.length);
 
 		// Clear any existing positioning
 		suggestEl.style.top = "";
@@ -204,6 +199,13 @@
 		inputEl?.blur();
 	}
 
+	async function scrollSelectedSuggestionIntoView() {
+		await tick();
+		suggestEl
+			?.querySelector<HTMLElement>(".suggestion-item.is-selected")
+			?.scrollIntoView({ block: "nearest" });
+	}
+
 	function handleKeydown(e: KeyboardEvent) {
 		if (!isOpen) {
 			if (e.key === "Enter" && inputValue.trim()) {
@@ -220,10 +222,12 @@
 			case "ArrowDown":
 				e.preventDefault();
 				selectedIndex = Math.min(selectedIndex + 1, suggestions.length - 1);
+				void scrollSelectedSuggestionIntoView();
 				break;
 			case "ArrowUp":
 				e.preventDefault();
 				selectedIndex = Math.max(selectedIndex - 1, -1);
+				void scrollSelectedSuggestionIntoView();
 				break;
 			case "Enter":
 				e.preventDefault();
