@@ -30,6 +30,7 @@ import {
 } from './ui/SyncStatusModel';
 import type { FolderSyncSnapshot } from './BackgroundSyncProgress';
 import { Canvas, isCanvas } from './Canvas';
+import type { CanvasHSM } from './canvas-hsm/CanvasHSM';
 import type { CanvasData } from './CanvasView';
 import type { ConflictData } from './merge-hsm/conflict';
 import type Live from './main';
@@ -314,6 +315,14 @@ interface DebugSyncGateRaw {
 export interface DebugDocumentLookup {
   doc: MergeManagerDocument;
   hsm: MergeHSM;
+  guid: string;
+  folder: SharedFolder;
+  filePath: string;
+}
+
+export interface DebugCanvasLookup {
+  canvas: Canvas;
+  hsm: CanvasHSM;
   guid: string;
   folder: SharedFolder;
   filePath: string;
@@ -1289,10 +1298,30 @@ export class RelayDebugAPI {
   }
 
   /**
+   * The already-loaded canvas at a vault-level path, or null. Unlike
+   * lookupCanvas this answers rather than throws, and it resolves only
+   * through the folder's loaded files: lookupCanvas falls back to getFile,
+   * which mints a handle for a canvas that is not loaded. This runs on the
+   * in-plugin inspector's timer, and watching a canvas must not be what
+   * brings it into existence.
+   */
+  findCanvas(path: string): DebugCanvasLookup | null {
+    const sharedFolders = this.plugin?.sharedFolders;
+    if (!sharedFolders || !path) return null;
+    const folder = sharedFolders.lookup(path);
+    if (!folder) return null;
+    const guid = folder.syncStore?.get(folder.getVirtualPath(path));
+    if (!guid) return null;
+    const canvas = folder.files.get(guid);
+    if (!isCanvas(canvas)) return null;
+    return { canvas, hsm: canvas.hsm, guid, folder, filePath: path };
+  }
+
+  /**
    * Snapshot every representation of a canvas plus machine posture and
    * cross-representation equality flags. See CanvasContentSnapshot.
    */
-  private async getCanvasState(
+  async getCanvasState(
     path: string,
     options?: { wake?: boolean },
   ): Promise<CanvasStateSnapshot> {
