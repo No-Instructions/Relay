@@ -346,47 +346,6 @@ export class CanvasPlugin extends HasLogging {
 		}
 	}
 
-	private requestNativeEmbedSave(
-		embedView: EmbedEditorView,
-		state: { saving: boolean },
-	): void {
-		state.saving = true;
-		try {
-			embedView.requestSave!();
-		} finally {
-			state.saving = false;
-		}
-	}
-
-	private syncDocumentToEmbedView(
-		document: Document,
-		embedView: EmbedEditorView,
-		viewRef: EditorViewRef,
-		state: { saving: boolean; tracking: boolean },
-		reason: string,
-	): boolean {
-		if (typeof embedView?.setViewData !== "function") {
-			return false;
-		}
-
-		const contents = document.localText;
-		if (viewRef.getViewData() === contents) {
-			state.tracking = true;
-			return false;
-		}
-
-		this.debug("syncing canvas embed HSM to view", document.path, reason);
-		state.saving = true;
-		try {
-			embedView.setViewData(contents, false);
-		} finally {
-			state.saving = false;
-		}
-		this.requestNativeEmbedSave(embedView, state);
-		state.tracking = true;
-		return true;
-	}
-
 	private connectEmbedView(embedView: EmbedEditorView): void {
 		if (!embedView.file) {
 			return;
@@ -417,17 +376,11 @@ export class CanvasPlugin extends HasLogging {
 				}
 				const viewRef = this.createEmbedEditorViewRef(embedView);
 				const syncEmbedViewToDocument = this.syncEmbedViewToDocument.bind(this);
-				const syncDocumentToEmbedView = this.syncDocumentToEmbedView.bind(this);
 				const logError = this.error.bind(this);
 				const plugin = new ViewHookPlugin(
 					embedView as unknown as MarkdownView,
 					document,
 				);
-				const state = { saving: false, tracking: false };
-				let observedYText: Y.Text | null = null;
-				let ytextObserver:
-					| ((event: Y.YTextEvent, tr: Y.Transaction) => void)
-					| null = null;
 				const requestSaveUnsubscribe = getPatcher().patch(embedView, {
 					requestSave: (old: (...args: unknown[]) => unknown) => {
 						return function (this: {
@@ -435,14 +388,13 @@ export class CanvasPlugin extends HasLogging {
 							app?: { metadataCache?: { trigger?: (name: string, file: unknown) => void } };
 							file?: unknown;
 						}) {
-							if (!state.saving && !this?.__relaySaving) {
+							if (!this?.__relaySaving) {
 								try {
 									syncEmbedViewToDocument(
 										document,
 										viewRef,
 										"requestSave",
 									);
-									state.tracking = true;
 								} catch (error: unknown) {
 									logError(
 										"Error syncing canvas embed during requestSave:",
@@ -502,34 +454,6 @@ export class CanvasPlugin extends HasLogging {
 							}
 						}
 
-						const localDoc = document.localDoc;
-						if (localDoc) {
-							observedYText = localDoc.getText("contents");
-							ytextObserver = (_event: Y.YTextEvent, tr: Y.Transaction) => {
-								if (cancelled || document.destroyed) {
-									return;
-								}
-								if (tr.origin === document || tr.origin === document.hsm) {
-									return;
-								}
-								syncDocumentToEmbedView(
-									document,
-									embedView,
-									viewRef,
-									state,
-									"localDoc.observe",
-								);
-							};
-							observedYText.observe(ytextObserver);
-						}
-
-						syncDocumentToEmbedView(
-							document,
-							embedView,
-							viewRef,
-							state,
-							"initial-sync",
-						);
 
 						const cm = embedView.editor?.cm;
 						const hsmEditorPlugin = cm?.plugin?.(HSMEditorPlugin);
@@ -553,9 +477,6 @@ export class CanvasPlugin extends HasLogging {
 					cancelled = true;
 					this.trackedEmbedViews.delete(embedView);
 					requestSaveUnsubscribe();
-					if (observedYText && ytextObserver) {
-						observedYText.unobserve(ytextObserver);
-					}
 					plugin.destroy();
 					if (lockAcquired) {
 						this.connectionManager.releaseDocumentLock(
