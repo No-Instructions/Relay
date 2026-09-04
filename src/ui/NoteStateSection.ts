@@ -15,6 +15,9 @@ import type { CanvasEffect } from "../canvas-hsm/types";
 import { generateHash } from "../hashing";
 import type { MergeEffect, MergeState } from "../merge-hsm/types";
 import type { TimeProvider } from "../TimeProvider";
+import NoteStateSectionView from "../components/NoteStateSectionView.svelte";
+import { mountComponent, type MountedComponent } from "./svelteHost.svelte";
+import { writable, type Readable, type Writable } from "svelte/store";
 
 /** A lane is rendered as stuck once it waits this long. */
 const STUCK_MS = 5000;
@@ -74,6 +77,42 @@ interface Verdict {
 	cls: "ok" | "warn" | "bad" | "muted";
 }
 
+export interface NoteStateRow {
+	label: string;
+	value: string;
+	cls?: "ok" | "warn" | "bad" | "muted";
+	mono: boolean;
+}
+
+export interface NoteStateViewModel {
+	title: string;
+	verdict: Verdict;
+	rows: NoteStateRow[];
+}
+
+function sameViewModel(
+	left: NoteStateViewModel,
+	right: NoteStateViewModel,
+): boolean {
+	if (
+		left.title !== right.title ||
+		left.verdict.label !== right.verdict.label ||
+		left.verdict.cls !== right.verdict.cls ||
+		left.rows.length !== right.rows.length
+	) {
+		return false;
+	}
+	return left.rows.every((row, index) => {
+		const other = right.rows[index];
+		return (
+			row.label === other.label &&
+			row.value === other.value &&
+			row.cls === other.cls &&
+			row.mono === other.mono
+		);
+	});
+}
+
 interface StoresCheck {
 	label: string;
 	cls: "ok" | "warn" | "bad";
@@ -115,6 +154,12 @@ type LookupResult =
  */
 export class NoteStateSection {
 	readonly el: HTMLElement;
+	private component: MountedComponent<{
+		viewModel: Readable<NoteStateViewModel>;
+	}>;
+	private viewModel: Writable<NoteStateViewModel>;
+	private publishedView: NoteStateViewModel;
+	private pendingView: NoteStateViewModel | null = null;
 
 	private boundPath: string | null = null;
 	private hsm: MergeHSM | null = null;
@@ -167,6 +212,18 @@ export class NoteStateSection {
 
 	constructor(private context: NoteStateSectionContext) {
 		this.el = createDiv({ cls: "system3-note-state" });
+		this.publishedView = {
+			title: "Note state",
+			verdict: { label: "unknown", cls: "muted" },
+			rows: [],
+		};
+		this.viewModel = writable(this.publishedView);
+		this.component = mountComponent(NoteStateSectionView, {
+			target: this.el,
+			props: {
+				viewModel: this.viewModel,
+			},
+		});
 		this.timer = context.timeProvider.setInterval(() => this.tick(), TICK_MS);
 		this.editorChangeRef = context.app.workspace.on(
 			"editor-change",
@@ -188,6 +245,7 @@ export class NoteStateSection {
 		this.context.timeProvider.clearInterval(this.timer);
 		this.context.app.workspace.offref(this.editorChangeRef);
 		this.unsubscribeHsm();
+		this.component.destroy();
 		this.el.remove();
 	}
 
@@ -1111,20 +1169,25 @@ export class NoteStateSection {
 		cls?: "ok" | "warn" | "bad" | "muted",
 		mono = false,
 	): void {
-		const row = this.el.createDiv({ cls: "system3-note-state-row" });
-		row.createSpan({ cls: "system3-note-state-label", text: label });
-		row.createSpan({
-			cls:
-				"system3-note-state-value" +
-				(cls ? ` system3-note-state-${cls}` : "") +
-				(mono ? " system3-note-state-mono" : ""),
-			text: value,
-		});
+		if (!this.pendingView) throw new Error("Note state render has not started");
+		this.pendingView.rows.push({ label, value, cls, mono });
+	}
+
+	private beginRender(title: string, verdict: Verdict): void {
+		this.pendingView = { title, verdict, rows: [] };
+	}
+
+	private finishRender(): void {
+		if (!this.pendingView) return;
+		const nextView = this.pendingView;
+		this.pendingView = null;
+		if (sameViewModel(this.publishedView, nextView)) return;
+		this.publishedView = nextView;
+		this.viewModel.set(nextView);
 	}
 
 	private render(): void {
 		if (this.destroyed) return;
-		this.el.empty();
 
 		if (this.canvasTarget) {
 			this.renderCanvas(this.canvasTarget);
@@ -1145,16 +1208,7 @@ export class NoteStateSection {
 		// here. It is still a canvas: keep its heading and its row label so
 		// the strip does not rename the file it is describing.
 		const isCanvas = this.boundPath?.endsWith(".canvas") ?? false;
-
-		const header = this.el.createDiv({ cls: "system3-note-state-header" });
-		header.createDiv({
-			cls: "system3-note-state-title",
-			text: isCanvas ? "Canvas state" : "Note state",
-		});
-		header.createDiv({
-			cls: `system3-note-state-pill system3-note-state-${verdict.cls}`,
-			text: verdict.label,
-		});
+		this.beginRender(isCanvas ? "Canvas state" : "Note state", verdict);
 
 		const name =
 			this.boundPath?.split("/").pop() ??
@@ -1173,6 +1227,7 @@ export class NoteStateSection {
 						: "no merge HSM",
 				"muted",
 			);
+			this.finishRender();
 			return;
 		}
 
@@ -1202,6 +1257,7 @@ export class NoteStateSection {
 				stores.cls,
 			);
 		}
+		this.finishRender();
 	}
 
 	/**
@@ -1216,16 +1272,7 @@ export class NoteStateSection {
 		const stores = this.canvasStoresCheck(snapshot);
 		const statePath = machine.statePath;
 		const verdict = this.canvasVerdict(statePath, stores);
-
-		const header = this.el.createDiv({ cls: "system3-note-state-header" });
-		header.createDiv({
-			cls: "system3-note-state-title",
-			text: "Canvas state",
-		});
-		header.createDiv({
-			cls: `system3-note-state-pill system3-note-state-${verdict.cls}`,
-			text: verdict.label,
-		});
+		this.beginRender("Canvas state", verdict);
 
 		const name = this.boundPath?.split("/").pop() ?? "(no canvas)";
 		const viewSuffix = snapshot?.view === null ? " · no view" : "";
@@ -1246,6 +1293,7 @@ export class NoteStateSection {
 
 		if (stores === null) {
 			this.row("stores", "checking…", "muted");
+			this.finishRender();
 			return;
 		}
 		this.row(
@@ -1253,6 +1301,7 @@ export class NoteStateSection {
 			`${stores.cls === "ok" ? "✓" : "✗"} ${stores.label}`,
 			stores.cls,
 		);
+		this.finishRender();
 	}
 
 	/**
