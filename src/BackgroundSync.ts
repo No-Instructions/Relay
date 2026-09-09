@@ -610,6 +610,11 @@ export class BackgroundSync extends HasLogging {
 		request: WorkRequest<SyncParticipant>,
 		options: { deferFlush?: boolean } = {},
 	): Promise<WorkCompletion> {
+		try {
+			request.target.checkSyncWork?.(request.intent);
+		} catch (error) {
+			return Promise.reject(error);
+		}
 		if (request.scope === "session" && !request.target.acceptsSession()) {
 			this.clearFailure(this.failureKey(laneFailureKind(request.scope), request.guid));
 			return Promise.resolve({ outcome: "completed" });
@@ -678,6 +683,11 @@ export class BackgroundSync extends HasLogging {
 		request: WorkRequest<SyncParticipant>,
 		error: Error,
 	): Promise<WorkCompletion> {
+		try {
+			request.target.checkSyncWork?.(request.intent);
+		} catch (error) {
+			return Promise.reject(error);
+		}
 		if (request.scope === "session" && !request.target.acceptsSession()) {
 			this.clearFailure(this.failureKey(laneFailureKind(request.scope), request.guid));
 			return Promise.resolve({ outcome: "completed" });

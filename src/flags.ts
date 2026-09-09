@@ -1,4 +1,7 @@
 export interface FeatureFlags {
+	enableStreamingDownloads: boolean;
+	enableStreamingUploads: boolean;
+	enableAttachmentSizeLimit: boolean;
 	enableDocumentStatus: boolean;
 	enableNewLinkFormat: boolean;
 	enableDiffLinkStatus: boolean;
@@ -50,6 +53,18 @@ export interface FeatureFlagSchemaEntry {
 export const FeatureFlagSchema: {
 	[K in keyof FeatureFlags]: FeatureFlagSchemaEntry;
 } = {
+	enableStreamingDownloads: {
+		default: false, category: "labs", title: "Stream attachment downloads",
+		description: "Download and verify attachments in bounded chunks.",
+	},
+	enableStreamingUploads: {
+		default: false, category: "labs", title: "Stream desktop attachment uploads",
+		description: "Read and upload desktop attachments without loading the whole file into memory.",
+	},
+	enableAttachmentSizeLimit: {
+		default: false, category: "labs", title: "Limit attachments on this device",
+		description: "Skip attachments above this device's size limit when planning sync.",
+	},
 	enableDocumentStatus: {
 		default: false,
 		category: "debugging",

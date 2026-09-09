@@ -10,6 +10,8 @@ import { HasLogging } from "./debug";
 import { type FileMetas, type SyncFileType } from "./SyncTypes";
 import { TFile, type Vault, type TFolder, type FileStats } from "obsidian";
 import { Observable, type Unsubscriber } from "./observable/Observable";
+import { snapshotAttachment, desktopAttachmentIO, checkAttachmentAbort } from "./AttachmentIO";
+import { AttachmentLimitError, type AttachmentTask } from "./AttachmentTransfers";
 import { generateHash } from "./hashing";
 import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
@@ -24,6 +26,7 @@ import type {
 import {
 	createWorkRequest,
 	type WorkRequest,
+	type WorkIntent,
 } from "./background-sync/WorkRequest";
 
 export function isSyncFile(file: IFile | undefined): file is SyncFile {
@@ -302,6 +305,11 @@ export class ContentAddressedFile extends HasLogging {
 	}
 
 	async _hash(): Promise<string> {
+		if (flags().enableStreamingUploads && desktopAttachmentIO(this.vault)) {
+			const version = await snapshotAttachment(this.vault, this.path, undefined, new AbortController().signal);
+			await this.store.saveHash(this.path, version.hash, version.mtime, this.guidProvider?.());
+			return version.hash;
+		}
 		const mtime = this.tfile.stat.mtime;
 		const content = await this.vault.readBinary(this.tfile);
 		const hash = await generateHash(content);
@@ -444,6 +452,7 @@ export class SyncFile
 			this.vault,
 			this.sharedFolder.getPath(path),
 			this.hashStore,
+			() => this.guid,
 		);
 
 		this.log("created");
@@ -550,6 +559,7 @@ export class SyncFile
 			this.log("skipping push -- folder is set to disconnected");
 			return;
 		}
+		await this.prepareSyncWork("upload");
 		const hash = await this.caf.hash();
 		this._refreshMeta();
 		if (this.meta?.hash === hash) {
@@ -568,8 +578,8 @@ export class SyncFile
 		});
 		if (!this.meta || (hash && this.meta.hash !== hash) || force) {
 			try {
-				await this.sharedFolder.cas.writeFile(this);
-				await this.sharedFolder.markUploaded(this);
+				const uploaded = await this.sharedFolder.cas.writeFile(this);
+				await this.sharedFolder.markUploaded(this, "completed", uploaded);
 				this.uploadError = undefined;
 				this.notifyListeners();
 				this.debug("push complete", {
@@ -616,6 +626,7 @@ export class SyncFile
 	}
 
 	private async syncOnce() {
+		await this.prepareSyncWork("converge");
 		this.log("sync");
 		this._refreshMeta();
 		const localExists = this.caf.exists();
@@ -808,8 +819,63 @@ export class SyncFile
 		return this.sharedFolder.cas.verify(this);
 	}
 
+	public attachmentTask(): AttachmentTask {
+		return { key: `${this.sharedFolder.guid}:${this.guid}`, path: this.caf.path, retry: () => this.sync() };
+	}
+
+	private async pullStaged(): Promise<void> {
+		const manager = this.sharedFolder.attachmentTransfers!;
+		const task = this.attachmentTask();
+		const meta = this.meta!;
+		await manager.run(task, async (row, signal) => {
+			const destination = this.caf.path;
+			const before = await this.vault.adapter.stat(destination);
+			const partial = manager.partialPath(task);
+			try {
+				row.phase = "downloading";
+				manager.notifyListeners();
+				await this.sharedFolder.cas.downloadTo(this, partial, signal, (bytes, total) => {
+					row.bytes = bytes; row.total = total; manager.notifyListeners();
+				});
+				row.phase = "verifying";
+				manager.notifyListeners();
+				const stat = await this.vault.adapter.stat(partial);
+				const current = await this.vault.adapter.stat(destination);
+				this._refreshMeta();
+				checkAttachmentAbort(signal);
+				if (this.destroyed || destination !== this.caf.path || this.meta?.hash !== meta.hash ||
+					before?.mtime !== current?.mtime || before?.size !== current?.size) throw new Error("Attachment changed during download; local file was preserved");
+				if (!stat) throw new Error("Partial attachment is missing");
+				const io = desktopAttachmentIO(this.vault);
+				let replacement: ArrayBuffer | undefined;
+				let mtime = stat.mtime;
+				if (current && !io) {
+					// The portable adapter cannot replace a destination by rename.
+					replacement = await this.vault.adapter.readBinary(partial);
+					const latest = await this.vault.adapter.stat(destination);
+					if (latest?.mtime !== current.mtime || latest?.size !== current.size) throw new Error("Attachment changed during download; local file was preserved");
+					mtime = Date.now();
+				}
+				checkAttachmentAbort(signal);
+				const previous = this.lastServerEdit;
+				this.lastServerEdit = { mtime, size: stat.size, hash: meta.hash };
+				try {
+					if (replacement) await this.vault.adapter.writeBinary(destination, replacement, { mtime });
+					else if (current && io) await io.fs.promises.rename(io.fullPath(partial), io.fullPath(destination));
+					else await this.vault.adapter.rename(partial, destination);
+				} catch (error) { this.lastServerEdit = previous; throw error; }
+				await this.hashStore.saveHash(destination, meta.hash, mtime, this.guid);
+				this.uploadError = undefined;
+				this.notifyListeners();
+			} finally {
+				if (await manager.vault.adapter.exists(partial)) await manager.vault.adapter.remove(partial);
+			}
+		});
+	}
+
 	public async pull() {
 		this.log("pull");
+		await this.prepareSyncWork("download");
 		this._refreshMeta();
 		if (!this.meta) {
 			throw new Error("cannot pull without meta");
@@ -834,6 +900,10 @@ export class SyncFile
 			}
 		}
 		try {
+			if (this.sharedFolder.attachmentTransfers && flags().enableStreamingDownloads) {
+				await this.pullStaged();
+				return;
+			}
 			const content = await this.sharedFolder.cas.readFile(this);
 			const vaultPath = this.sharedFolder.getPath(this.path);
 			const edit: ServerEditMarker = {
@@ -907,7 +977,51 @@ export class SyncFile
 		if (this.destroyed) return [];
 		if (context.occasion.kind !== "sweep") return [];
 		if (this.sharedFolder.shouldDeferPendingPublication(this.path)) return [];
+		try {
+			this.checkSyncWork("converge");
+		} catch (error) {
+			if (error instanceof AttachmentLimitError) return [];
+			throw error;
+		}
 		return [createWorkRequest(this, "converge", "sweep")];
+	}
+
+	private remoteSize?: { hash: string; size: number };
+
+	/** Decide from listing metadata without reading or hashing file contents. */
+	checkSyncWork(intent: WorkIntent): void {
+		const manager = this.sharedFolder.attachmentTransfers;
+		if (!manager) return;
+		this._refreshMeta();
+		const local = this.vault.getAbstractFileByPath(this.sharedFolder.getPath(this.path));
+		const localSize = local instanceof TFile ? local.stat.size : 0;
+		const remoteSize = intent === "upload" ? 0 : this.meta?.size ??
+			(this.meta?.hash === this.remoteSize?.hash ? this.remoteSize?.size : undefined) ?? 0;
+		const mayUpload = intent !== "download" && local instanceof TFile &&
+			(intent === "upload" || !this.meta || local.stat.mtime > this.meta.synctime);
+		const serverMaxBytes = mayUpload ? this.sharedFolder.remote?.relay.storageQuota?.maxFileSize : undefined;
+		manager.check(this.attachmentTask(), Math.max(localSize, remoteSize), serverMaxBytes, localSize);
+	}
+
+	/** Resolve missing listing sizes before this sync attempt touches content. */
+	private async prepareSyncWork(intent: WorkIntent): Promise<void> {
+		this.checkSyncWork(intent);
+		const manager = this.sharedFolder.attachmentTransfers;
+		if (!manager) return;
+		const deviceLimit = flags().enableAttachmentSizeLimit && manager.maxBytes > 0;
+		const serverLimit = intent !== "download" ? this.sharedFolder.remote?.relay.storageQuota?.maxFileSize : undefined;
+		if (!deviceLimit && serverLimit === undefined) return;
+		const local = await this.vault.adapter.stat(this.caf.path);
+		const mayUpload = intent !== "download" && local && (intent === "upload" || !this.meta || local.mtime > this.meta.synctime);
+		if (local) manager.check(this.attachmentTask(), local.size, mayUpload ? serverLimit : undefined);
+		const meta = this.meta;
+		if (deviceLimit && intent !== "upload" && meta && meta.size === undefined && this.remoteSize?.hash !== meta.hash) {
+			const size = await this.sharedFolder.cas.fileSize(this, meta.hash);
+			this._refreshMeta();
+			if (this.meta?.hash !== meta.hash) throw new Error("Attachment changed while checking its size");
+			this.remoteSize = { hash: meta.hash, size };
+		}
+		this.checkSyncWork(intent);
 	}
 
 	acceptsSession(): boolean {
@@ -969,6 +1083,7 @@ export class SyncFile
 	cleanup() {}
 
 	destroy() {
+		this.sharedFolder.attachmentTransfers?.forget(this.attachmentTask().key);
 		this.destroyed = true;
 		this.offFileInfo?.();
 		this.offFileInfo = null as unknown as typeof this.offFileInfo;
