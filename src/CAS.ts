@@ -1,3 +1,7 @@
+import { generateHash } from "./hashing";
+import { flags } from "./flagManager";
+import { checkAttachmentAbort, snapshotAttachment, streamAttachmentPut, desktopAttachmentIO, type AttachmentVersion } from "./AttachmentIO";
+import { downloadAttachment, probeAttachmentSize } from "./AttachmentDownload";
 import type { LiveTokenStore } from "./LiveTokenStore";
 import { S3RN } from "./S3RN";
 import type { SharedFolder } from "./SharedFolder";
@@ -138,9 +142,65 @@ export class ContentAddressedStore extends HasLogging {
 		}
 	}
 
-	async writeFile(syncFile: SyncFile): Promise<void> {
+	private async downloadUrl(syncFile: SyncFile, hash: string): Promise<string> {
+		const token = await this.tokenStore.getFileToken(S3RN.encode(syncFile.s3rn), hash, syncFile.mimetype, 0);
+		const response = await customFetch(token.baseUrl + "/download-url", { headers: { Authorization: `Bearer ${token.token}` }, relayNetworkDomain: "relay" });
+		if (!response.ok) throw await this.s3ResponseError(response, "download attachment url");
+		return (await response.json() as { downloadUrl: string }).downloadUrl;
+	}
+
+	async fileSize(syncFile: SyncFile, hash: string): Promise<number> {
+		return this.s3Request(async () => probeAttachmentSize(await this.downloadUrl(syncFile, hash)), "probe attachment size");
+	}
+
+	async downloadTo(syncFile: SyncFile, path: string, signal: AbortSignal, progress: (bytes: number, total: number) => void): Promise<void> {
+		const meta = syncFile.meta!;
+		const getUrl = async () => {
+			checkAttachmentAbort(signal);
+			return this.downloadUrl(syncFile, meta.hash);
+		};
+		await this.s3Request(() => downloadAttachment(syncFile.vault, getUrl, path, meta.hash, signal, progress), "download attachment");
+	}
+
+	private async writeStreaming(syncFile: SyncFile): Promise<AttachmentVersion> {
+		const manager = this.sharedFolder.attachmentTransfers!;
+		const task = syncFile.attachmentTask();
+		return manager.run(task, async (row, signal) => {
+			const snapshot = manager.partialPath(task, "upload");
+			try {
+				row.phase = "preparing";
+				const version = await snapshotAttachment(syncFile.vault, task.path, snapshot, signal, (bytes, total) => {
+					row.bytes = bytes; row.total = total; manager.notifyListeners();
+				});
+				await this.withTransientRetry("upload attachment", async () => {
+					checkAttachmentAbort(signal);
+					const token = await this.tokenStore.getFileToken(S3RN.encode(syncFile.s3rn), version.hash, syncFile.mimetype, version.size);
+					const response = await customFetch(token.baseUrl + "/upload-url", { method: "POST", headers: { Authorization: `Bearer ${token.token}` }, relayNetworkDomain: "relay" });
+					if (!response.ok) throw await this.s3ResponseError(response, "upload attachment url");
+					const { uploadUrl } = await response.json() as { uploadUrl: string };
+					row.phase = "uploading"; row.bytes = 0; manager.notifyListeners();
+					const status = await streamAttachmentPut(syncFile.vault, uploadUrl, snapshot, version.size, syncFile.mimetype, signal, bytes => { row.bytes = bytes; manager.notifyListeners(); });
+					if (status < 200 || status >= 300) throw s3ApiErrorFromResponse(status, "", "upload attachment");
+				});
+				return version;
+			} finally {
+				if (await manager.vault.adapter.exists(snapshot)) await manager.vault.adapter.remove(snapshot);
+			}
+		});
+	}
+
+	async writeFile(syncFile: SyncFile): Promise<AttachmentVersion | undefined> {
+		if (flags().enableStreamingUploads && this.sharedFolder.attachmentTransfers && desktopAttachmentIO(syncFile.vault)) return this.writeStreaming(syncFile);
+		return this.s3Request(() => this.writeBuffered(syncFile), "upload attachment");
+	}
+
+	private async writeBuffered(syncFile: SyncFile, signal?: AbortSignal): Promise<AttachmentVersion> {
+		if (signal) checkAttachmentAbort(signal);
+		const mtime = syncFile.stat.mtime;
 		const content = await syncFile.caf.read();
-		const hash = await syncFile.caf.hash();
+		if (!content) throw new Error("Attachment is missing");
+		const hash = await generateHash(content);
+		if (signal) checkAttachmentAbort(signal);
 		this.log("writeFile", hash);
 		if (!(content && hash)) {
 			throw new Error("invalid caf");
@@ -174,13 +234,14 @@ export class ContentAddressedStore extends HasLogging {
 		if (!uploadResponse.ok) {
 			throw await this.s3ResponseError(uploadResponse, "upload attachment");
 		}
-		return;
+		if (signal) checkAttachmentAbort(signal);
+		return { hash, size: content.byteLength, mtime };
 	}
 
-	private async s3Request(
-		request: () => Promise<Response>,
+	private async s3Request<T>(
+		request: () => Promise<T>,
 		operation: string,
-	): Promise<Response> {
+	): Promise<T> {
 		try {
 			return await request();
 		} catch (error) {
