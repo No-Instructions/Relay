@@ -98,8 +98,10 @@ Document storage is backed by our real-time CRDT servers, while Attachments are 
 Document storage:
 -   Folders
 -   Markdown files
+-   Canvases
 
 Attachment storage:
+-   Bases
 -   Images
 -   Audio
 -   Video
@@ -107,7 +109,7 @@ Attachment storage:
 -   Other files (must be enabled in settings)
 
 
-You need to have available Attachment storage in order to sync images/audio/video/PDFs/etc.
+You need to have available Attachment storage in order to sync bases/images/audio/video/PDFs/etc.
 
 
 ### How much does Relay cost?
@@ -115,35 +117,32 @@ You need to have available Attachment storage in order to sync images/audio/vide
 #### Free ($0)
 - Up to 3 users
 - 2 devices per user
-- Unlimited markdown files
+- Unlimited markdown and canvas files
 - No cloud storage (0 MB)
-- Self-hosted deployment
 - Cloud deployment (.md only)
-- BYO Relay Server
+- Self-hosted Relay Server
 - BYO storage (unmetered, self-host only)
 - Community support
 
 #### Hobby ($5 per month total)
 - Up to 6 users
 - 3 devices per user
-- Unlimited markdown files
-- 10GB cloud storage included
-- Self-hosted deployment
-- BYO Relay Server
+- Unlimited markdown and canvas files
+- 10 GB cloud storage included
+- Self-hosted Relay Server
 - BYO storage (unmetered, self-host only)
 - Community support
 
 #### Starter ($6 per user per month)
-- Unlimited users
+- Up to 50 users
 - 6 devices per user
-- Unlimited markdown files
-- 20GB + 5GB/user cloud storage included
-- Self-hosted deployment
-- BYO Relay Server
+- Unlimited markdown and canvas files
+- 20 GB + 5 GB/user cloud storage included
+- Self-hosted Relay Server
 - BYO storage (unmetered)
 - Role-based access control
 - Single sign-on
-- Private Discord
+- Private Discord / Slack channel
 - Email support
 
 
@@ -169,18 +168,18 @@ Our login, permissions, and billing server code is proprietary.
 
 ### Can I self-host?
 
-We support "On-Prem" deployment of a Relay Server.
+You can self-host your Relay Server on any tier (we don't charge for privacy).
 
-If you self-host your Relay Server on a private network then your users will still perform login and permissions checks through our servers, but they will connect directly to your server. Your content will be completely private and inaccessible by us.
+If you self-host your Relay Server on a private network then your users will still perform login and permissions checks through our control plane, but they will connect directly to your server. Your content will be completely private and inaccessible by us.
 
 For instructions on hosting your Relay Server on fly.io, see [Relay Server Template](https://github.com/No-Instructions/relay-server-template).
 
-[Join our Discord](https://discord.system3.md) for help on configuring your on-prem deployment.
+[Join our Discord](https://discord.system3.md) for help configuring your self-hosted Relay Server.
 
 
 ### Who's behind Relay?
 
-Relay is made by [System 3](https://system3.md/). The legal entity behind System 3 is [No Instructions, LLC](http://noinstructions.ai/).
+Relay is made by [System 3](https://system3.md/). The legal entity behind System 3 is No Instructions, LLC.
 
 Right now the whole operation is two people:
 
