@@ -536,13 +536,49 @@ function encodeDecodedSnapshot(sv: DecodedSV, ds: DecodedDeleteSet): Uint8Array 
 	);
 }
 
+interface UpdateStruct {
+	clock: number;
+	length: number;
+	skip: boolean;
+}
+
+/** An update's structs grouped by client and sorted by clock. */
+function updateStructsByClient(update: Uint8Array): Map<number, UpdateStruct[]> {
+	const byClient = new Map<number, UpdateStruct[]>();
+	for (const struct of decodeUpdateData(update).structs) {
+		const list = byClient.get(struct.id.client) ?? [];
+		list.push({
+			clock: struct.id.clock,
+			length: struct.length,
+			skip: struct instanceof Y.Skip,
+		});
+		byClient.set(struct.id.client, list);
+	}
+	for (const structs of byClient.values()) {
+		structs.sort((a, b) => a.clock - b.clock);
+	}
+	return byClient;
+}
+
 /**
  * The snapshot metadata carried by an update: the insert clocks it covers
- * plus its delete set. Lets a doc-less consumer track a remote head from
- * update bytes alone.
+ * plus its delete set. Per client the covered clock is the end of the
+ * update's first contiguous run of structs; a run that starts past clock
+ * zero still counts, because whoever produced the update held every clock
+ * below it. A Skip struct or a gap ends the run. Lets a doc-less consumer
+ * track a remote head from update bytes alone.
  */
 export function snapshotMetaFromUpdate(update: Uint8Array): YjsSnapshot {
-	const sv = decodeSV(Y.encodeStateVectorFromUpdate(update));
+	const sv: DecodedSV = new Map();
+	for (const [client, structs] of updateStructsByClient(update)) {
+		let end: number | null = null;
+		for (const struct of structs) {
+			if (struct.skip) break;
+			if (end !== null && struct.clock > end) break;
+			end = Math.max(end ?? 0, struct.clock + struct.length);
+		}
+		if (end !== null && end > 0) sv.set(client, end);
+	}
 	const ds = decodeUpdateDeleteSet(update);
 	return { snapshot: encodeDecodedSnapshot(sv, ds) };
 }
