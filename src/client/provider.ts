@@ -16,6 +16,7 @@ import { ObservableV2 } from "lib0/observable";
 import * as math from "lib0/math";
 import * as url from "lib0/url";
 import { decode as decodeCBOR } from "cbor-x";
+import type { OutboundRejectedEvent } from "./types";
 import { metrics, curryLog, describeError } from "../debug";
 import type { TimeProvider } from "../TimeProvider";
 
@@ -35,6 +36,15 @@ export const messageEventSubscribe = 5;
 export const messageEventUnsubscribe = 6;
 export const messageQuerySubdocs = 7;
 export const messageSubdocs = 8;
+/**
+ * Sync-status echo. The server answers this message by returning it
+ * verbatim, and it handles a connection's frames in order, so an echo of
+ * version N proves every frame sent before status frame N was processed:
+ * applied and broadcast, or refused with a permission-denied control
+ * message. The payload is a varUint version inside a length-prefixed
+ * byte string, matching the upstream y-sweet client.
+ */
+export const messageSyncStatus = 102;
 
 const SUBDOC_QUERY_PAGE_SIZE = 100;
 
@@ -175,6 +185,45 @@ messageHandlers[messageSubdocs] = (
 	}
 };
 
+messageHandlers[messageSyncStatus] = (
+	_encoder,
+	decoder,
+	provider,
+	_emitSynced,
+	_messageType,
+) => {
+	const payload = decoding.readVarUint8Array(decoder);
+	const version = decoding.readVarUint(decoding.createDecoder(payload));
+	provider.handleSyncStatusEcho(version);
+};
+
+/** Encode a sync-status frame carrying VERSION. */
+function encodeSyncStatus(version: number): Uint8Array {
+	const encoder = encoding.createEncoder();
+	encoding.writeVarUint(encoder, messageSyncStatus);
+	const versionEncoder = encoding.createEncoder();
+	encoding.writeVarUint(versionEncoder, version);
+	encoding.writeVarUint8Array(encoder, encoding.toUint8Array(versionEncoder));
+	return encoding.toUint8Array(encoder);
+}
+
+/**
+ * The update carried by a client SyncStep2 reply frame, or null when the
+ * frame is not a SyncStep2 or carries no structs and no deletes. An empty
+ * Yjs update encodes as two zero bytes: zero struct clients, zero delete
+ * clients.
+ */
+function syncStep2ReplyUpdate(frame: Uint8Array): Uint8Array | null {
+	const decoder = decoding.createDecoder(frame);
+	if (decoding.readVarUint(decoder) !== messageSync) return null;
+	if (decoding.readVarUint(decoder) !== syncProtocol.messageYjsSyncStep2) {
+		return null;
+	}
+	const update = decoding.readVarUint8Array(decoder);
+	if (update.length === 2 && update[0] === 0 && update[1] === 0) return null;
+	return update;
+}
+
 // @todo - this should depend on awareness.outdatedTime
 const messageReconnectTimeout = 30000;
 
@@ -192,6 +241,9 @@ export const RECONNECT_MAX_DELAY_MS = 30000;
 export const RECONNECT_STABILITY_MS = 30000;
 
 const permissionDeniedHandler = (provider: YSweetProvider, reason: string) => {
+	// Authorization is fixed per connection, so one refused write means every
+	// write outstanding on this connection was refused too.
+	provider.rejectOutbound(reason);
 	provider.setReadOnly(true);
 	providerWarn("Permission denied", {
 		room: provider.roomname,
@@ -303,7 +355,9 @@ const setupWS = (provider: YSweetProvider) => {
 				true,
 			);
 			if (encoding.length(encoder) > 1) {
-				websocket.send(encoding.toUint8Array(encoder));
+				const reply = encoding.toUint8Array(encoder);
+				websocket.send(reply);
+				provider.afterServerReply(reply);
 			}
 		};
 		websocket.onerror = (event) => {
@@ -474,6 +528,30 @@ export interface PermissionDeniedEvent {
 	reason: string;
 }
 
+export type { OutboundRejectedEvent };
+
+/** A `whenAcked` wait whose write the server refused. */
+export class OutboundRejectedError extends Error {
+	constructor(
+		public readonly reason: string,
+		public readonly versions: number[],
+	) {
+		super(`outbound write rejected: ${reason}`);
+		this.name = "OutboundRejectedError";
+	}
+}
+
+interface LedgerEntry {
+	version: number;
+	update: Uint8Array;
+}
+
+interface AckWaiter {
+	version: number;
+	resolve: () => void;
+	reject: (error: Error) => void;
+}
+
 /** The close details the provider reports, from a socket or its own disconnect. */
 export type CloseEventLike = Pick<CloseEvent, "code" | "reason" | "wasClean">;
 
@@ -485,6 +563,10 @@ export interface YSweetProviderEvents {
 	"connection-error": (error: unknown, provider: YSweetProvider) => void;
 	"connection-close": (event: CloseEventLike, provider: YSweetProvider) => void;
 	"permission-denied": (event: PermissionDeniedEvent) => void;
+	/** The server processed every write through this version. */
+	ack: (ackedVersion: number) => void;
+	/** Outstanding writes were refused; see OutboundRejectedEvent. */
+	rejected: (event: OutboundRejectedEvent) => void;
 	event: (message: EventMessage) => void;
 }
 
@@ -659,6 +741,20 @@ export class YSweetProvider extends ObservableV2<YSweetProviderEvents> {
 	private _pendingSubdocIndex: SubdocIndex | null;
 	private _timeProvider: TimeProvider | null;
 	beforeReconnect: BeforeReconnect | null;
+	/**
+	 * Outbound ledger. Every write-carrying frame gets the next version and
+	 * is followed by a sync-status frame; the server's echo of that frame
+	 * drains the ledger through that version. Entries survive a socket
+	 * close with unknown status until the next handshake resolves them.
+	 */
+	private _ledger: LedgerEntry[];
+	/** Version assigned to the most recent write. Monotonic; never reset. */
+	localVersion: number;
+	/** Highest version the server has echoed. */
+	ackedVersion: number;
+	/** Inclusive version ranges the server refused. */
+	private _rejectedRanges: Array<[number, number]>;
+	private _ackWaiters: AckWaiter[];
 
 	_setInterval(
 		callback: () => void,
@@ -772,6 +868,11 @@ export class YSweetProvider extends ObservableV2<YSweetProviderEvents> {
 		this._pendingSubdocIndexResponses = 0;
 		this._pendingSubdocIndex = null;
 		this.beforeReconnect = null;
+		this._ledger = [];
+		this.localVersion = 0;
+		this.ackedVersion = 0;
+		this._rejectedRanges = [];
+		this._ackWaiters = [];
 
 		this._resyncInterval = 0;
 		if (resyncInterval > 0) {
@@ -799,18 +900,25 @@ export class YSweetProvider extends ObservableV2<YSweetProviderEvents> {
 		 * Listens to Yjs updates and sends them to remote peers (ws and broadcastchannel)
 		 */
 		this._updateHandler = (update: Uint8Array, origin: unknown) => {
-			if (origin !== this) {
-				if (this.readOnly) {
-					return;
-				}
-				metrics.recordProtocolMessage("sync", "out", update.length);
-				const encoder = encoding.createEncoder();
-				encoding.writeVarUint(encoder, messageSync);
-				syncProtocol.writeUpdate(encoder, update);
-				broadcastMessage(this, encoding.toUint8Array(encoder));
-			} else {
-				// Skipped because origin === this (our own sync response)
+			if (origin === this || origin === this.doc) {
+				// A delta the provider applied itself, or one a host applied
+				// with the doc as origin: the convention for bytes that reached
+				// the client from the server by another route (a content
+				// download, a REMOTE_UPDATE payload). Neither is a local write,
+				// so neither is versioned or sent back.
+				return;
 			}
+			if (this.readOnly) {
+				return;
+			}
+			const version = ++this.localVersion;
+			this._ledger.push({ version, update });
+			metrics.recordProtocolMessage("sync", "out", update.length);
+			const encoder = encoding.createEncoder();
+			encoding.writeVarUint(encoder, messageSync);
+			syncProtocol.writeUpdate(encoder, update);
+			broadcastMessage(this, encoding.toUint8Array(encoder));
+			this.sendSyncStatus();
 		};
 
 		this.doc.on("update", this._updateHandler);
@@ -976,6 +1084,7 @@ export class YSweetProvider extends ObservableV2<YSweetProviderEvents> {
 	}
 
 	destroy() {
+		this.failAckWaiters(new Error("Provider destroyed"));
 		if (this._resyncInterval !== 0) {
 			this._clearInterval(this._resyncInterval);
 		}
@@ -1124,6 +1233,132 @@ export class YSweetProvider extends ObservableV2<YSweetProviderEvents> {
 		this.readOnly = readOnly;
 		if (readOnly) {
 			this._pendingMessages = [];
+			// A read-only provider answers no SyncStep1, so nothing outstanding
+			// can ever be resent or acknowledged.
+			this.rejectOutbound("read-only token");
+		}
+	}
+
+	// =========================================================================
+	// Outbound ledger
+	// =========================================================================
+
+	/** Whether any write is outstanding: sent or buffered, not yet echoed. */
+	get hasUnackedChanges(): boolean {
+		return this._ledger.length > 0;
+	}
+
+	/**
+	 * Resolve once the server has processed VERSION (default: every write so
+	 * far); reject with OutboundRejectedError if that write was refused.
+	 */
+	whenAcked(version: number = this.localVersion): Promise<void> {
+		version = Math.min(version, this.localVersion);
+		if (this.isRejectedVersion(version)) {
+			return Promise.reject(
+				new OutboundRejectedError("rejected", [version]),
+			);
+		}
+		if (version <= this.ackedVersion) {
+			return Promise.resolve();
+		}
+		return new Promise<void>((resolve, reject) => {
+			this._ackWaiters.push({ version, resolve, reject });
+		});
+	}
+
+	/** Refuse every outstanding write. */
+	rejectOutbound(reason: string): void {
+		const entries = this._ledger;
+		this._ledger = [];
+		this.rejectEntries(entries, reason);
+	}
+
+	/**
+	 * Send the sync-status frame for the current local version. Only over the
+	 * live socket: the frame proves ordering on one connection, so it is
+	 * never buffered or broadcast to peers.
+	 */
+	sendSyncStatus(): void {
+		const ws = this.ws;
+		if (this.wsconnected && ws && ws.readyState === ws.OPEN) {
+			ws.send(encodeSyncStatus(this.localVersion));
+		}
+	}
+
+	/**
+	 * Called after a reply frame was sent to the server. A non-empty SyncStep2
+	 * reply is a write (the reconnect catch-up), so it joins the ledger; a
+	 * status frame follows any SyncStep2 reply while writes are outstanding,
+	 * because that reply is what resends them on this connection.
+	 */
+	afterServerReply(reply: Uint8Array): void {
+		const update = syncStep2ReplyUpdate(reply);
+		if (update) {
+			this._ledger.push({ version: ++this.localVersion, update });
+		}
+		const isSyncStep2 =
+			update !== null ||
+			(reply.length >= 2 &&
+				reply[0] === messageSync &&
+				reply[1] === syncProtocol.messageYjsSyncStep2);
+		if (isSyncStep2 && this._ledger.length > 0) {
+			this.sendSyncStatus();
+		}
+	}
+
+	/** The server echoed status frame VERSION. */
+	handleSyncStatusEcho(version: number): void {
+		if (version <= this.ackedVersion || version > this.localVersion) {
+			return;
+		}
+		this.ackedVersion = version;
+		this._ledger = this._ledger.filter((entry) => entry.version > version);
+		this.settleAckWaiters();
+		this.emit("ack", [version]);
+	}
+
+	private rejectEntries(entries: LedgerEntry[], reason: string): void {
+		if (entries.length === 0) return;
+		const versions = entries.map((entry) => entry.version);
+		this._rejectedRanges.push([versions[0], versions[versions.length - 1]]);
+		const update =
+			entries.length === 1
+				? entries[0].update
+				: Y.mergeUpdates(entries.map((entry) => entry.update));
+		this.settleAckWaiters(reason);
+		this.emit("rejected", [{ versions, update, reason }]);
+	}
+
+	private isRejectedVersion(version: number): boolean {
+		return this._rejectedRanges.some(
+			([from, to]) => version >= from && version <= to,
+		);
+	}
+
+	private settleAckWaiters(rejectReason?: string): void {
+		const pending: AckWaiter[] = [];
+		for (const waiter of this._ackWaiters) {
+			if (this.isRejectedVersion(waiter.version)) {
+				waiter.reject(
+					new OutboundRejectedError(rejectReason ?? "rejected", [
+						waiter.version,
+					]),
+				);
+			} else if (waiter.version <= this.ackedVersion) {
+				waiter.resolve();
+			} else {
+				pending.push(waiter);
+			}
+		}
+		this._ackWaiters = pending;
+	}
+
+	private failAckWaiters(error: Error): void {
+		const waiters = this._ackWaiters;
+		this._ackWaiters = [];
+		for (const waiter of waiters) {
+			waiter.reject(error);
 		}
 	}
 

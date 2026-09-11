@@ -109,9 +109,7 @@ export class HasProvider extends HasLogging {
 	private _ydoc: Y.Doc | null = null;
 	clientToken: ClientToken;
 	private _deferredDisconnectTimer: number | null = null;
-	private _deferredDisconnectStatusListener:
-		| ((state: ConnectionState) => void)
-		| null = null;
+	private _deferredDisconnectSettledListener: (() => void) | null = null;
 	private _providerSyncAbortHandlers = new Set<(reason: Error) => void>();
 	private _providerConnectedAbortHandlers = new Set<(reason: Error) => void>();
 	// Track whether the current provider connection has completed sync.
@@ -251,6 +249,16 @@ export class HasProvider extends HasLogging {
 		this._offSynced = syncedSub.off;
 
 		return this._ydoc;
+	}
+
+	/** Writes sent or buffered that the server has not acknowledged. */
+	public get hasUnackedChanges(): boolean {
+		return this._provider?.hasUnackedChanges ?? false;
+	}
+
+	/** Resolves once the server has processed every write sent so far. */
+	whenAcked(): Promise<void> {
+		return this._provider ? this._provider.whenAcked() : Promise.resolve();
 	}
 
 	/**
@@ -513,73 +521,63 @@ export class HasProvider extends HasLogging {
 			this.timeProvider.clearTimeout(this._deferredDisconnectTimer);
 			this._deferredDisconnectTimer = null;
 		}
-		if (this._provider && this._deferredDisconnectStatusListener) {
-			this._provider.off("status", this._deferredDisconnectStatusListener);
+		if (this._provider && this._deferredDisconnectSettledListener) {
+			this._provider.off("ack", this._deferredDisconnectSettledListener);
+			this._provider.off("rejected", this._deferredDisconnectSettledListener);
 		}
-		this._deferredDisconnectStatusListener = null;
+		this._deferredDisconnectSettledListener = null;
 	}
 
 	protected shouldCompleteDeferredDisconnect(): boolean {
 		return true;
 	}
 
-	deferDisconnectForPendingMessages(timeoutMs: number = 2000): boolean {
+	/**
+	 * Hold an idle session open until the server has acknowledged every write
+	 * the provider sent, then disconnect. Returns false, without
+	 * disconnecting, when nothing is outstanding. A socket that is not open is
+	 * reconnected so the handshake can resend the outstanding writes; the
+	 * fallback timeout disconnects regardless, so a dead server cannot pin the
+	 * session — the writes stay in the ledger for the next session's handshake.
+	 */
+	deferDisconnectForUnackedWrites(timeoutMs: number = 5000): boolean {
 		const provider = this._provider;
-		if (!provider || provider._pendingMessages.length === 0) {
+		if (!provider || !provider.hasUnackedChanges) {
 			return false;
 		}
 
 		this.clearDeferredDisconnect();
 
 		const finishDisconnect = () => {
+			this.clearDeferredDisconnect();
 			if (this._provider !== provider) {
-				this.clearDeferredDisconnect();
 				return;
 			}
 			if (!this.shouldCompleteDeferredDisconnect()) {
-				this.clearDeferredDisconnect();
 				return;
 			}
 			this.disconnect();
 		};
 
-		const queueDisconnect = () => {
-			// YSweetProvider emits "status: connected" before its onopen
-			// handler flushes buffered sync frames. Defer one task so the
-			// pending messages are actually sent before we close the socket.
-			this._deferredDisconnectTimer = this.timeProvider.setTimeout(
-				finishDisconnect,
-				0,
-			);
-		};
-
-		this._deferredDisconnectStatusListener = (state: ConnectionState) => {
+		// Settles on the ack that drains the ledger, or on a refusal, which
+		// empties it too: either way nothing is left to wait for.
+		this._deferredDisconnectSettledListener = () => {
 			if (this._provider !== provider) {
 				this.clearDeferredDisconnect();
 				return;
 			}
-			if (state.status === "connected") {
-				this.clearDeferredDisconnect();
-				queueDisconnect();
+			if (!provider.hasUnackedChanges) {
+				finishDisconnect();
 			}
 		};
-		provider.on("status", this._deferredDisconnectStatusListener);
+		provider.on("ack", this._deferredDisconnectSettledListener);
+		provider.on("rejected", this._deferredDisconnectSettledListener);
 
-		this._deferredDisconnectTimer = this.timeProvider.setTimeout(() => {
-			if (this._provider !== provider) {
-				this.clearDeferredDisconnect();
-				return;
-			}
-			if (!this.shouldCompleteDeferredDisconnect()) {
-				this.clearDeferredDisconnect();
-				return;
-			}
-			this.disconnect();
-		}, timeoutMs);
+		this._deferredDisconnectTimer = this.timeProvider.setTimeout(
+			finishDisconnect,
+			timeoutMs,
+		);
 
-		// Keep the in-flight connection attempt alive. If the socket was
-		// dropped during a brief disconnect window, reconnect so the buffered
-		// sync frames can flush on open.
 		if (provider.connectionState.status !== "connected") {
 			void this.connect();
 		}
@@ -589,7 +587,7 @@ export class HasProvider extends HasLogging {
 
 	releaseIdleSession(): void {
 		if (!this.shouldCompleteDeferredDisconnect()) return;
-		if (!this.deferDisconnectForPendingMessages()) {
+		if (!this.deferDisconnectForUnackedWrites()) {
 			this.disconnect();
 		}
 	}

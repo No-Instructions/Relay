@@ -95,3 +95,14 @@ export function decodeClientToken(token: string): ClientToken {
 	const jsonString = base64ToString(base64);
 	return JSON.parse(jsonString) as ClientToken;
 }
+
+/**
+ * Outbound writes the server refused, or that a read-only provider never
+ * sent. `update` merges every refused write into one Yjs update so a
+ * consumer can tell exactly which ops the server does not hold.
+ */
+export interface OutboundRejectedEvent {
+	versions: number[];
+	update: Uint8Array;
+	reason: string;
+}
