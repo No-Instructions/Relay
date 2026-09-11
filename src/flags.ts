@@ -3,6 +3,7 @@ export interface FeatureFlags {
 	enableNewLinkFormat: boolean;
 	enableDiffLinkStatus: boolean;
 	enableDeltaLogging: boolean;
+	enableNativeNetworking: boolean;
 	enableNetworkLogging: boolean;
 	enableVerifyUploads: boolean;
 	enableDiscordLogin: boolean;
@@ -98,6 +99,12 @@ export const FeatureFlagSchema: {
 		title: "CRDT and merge diagnostics",
 		description:
 			"Log Yjs deltas, diff operations, byte mismatches, and merge payload details.",
+	},
+	enableNativeNetworking: {
+		default: false,
+		category: "labs",
+		title: "Native networking",
+		description: "Use Node's HTTP stack for Relay requests on desktop. Responses are uncompressed. May not work with system proxies or private certificates. Has no effect on mobile.",
 	},
 	enableNetworkLogging: {
 		default: false,

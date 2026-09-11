@@ -34,7 +34,7 @@
              },
              {
                "name": "http",
-               "message": "Do not use Node's http module."
+               "message": "Use the desktop-gated NodeHttp transport for native HTTP."
              },
              {
                "name": "crypto",
@@ -45,6 +45,14 @@
        ]
     },
     "overrides": [
+      {
+        "files": ["src/NodeHttp.ts"],
+        "rules": {
+          "@typescript-eslint/no-var-requires": "off",
+          "no-restricted-imports": ["error", "fs", "path", "crypto"],
+          "no-restricted-modules": ["error", "fs", "path", "crypto"]
+        }
+      },
       {
         "files": ["__tests__/**/*.ts", "unit/**/*.ts"],
         "rules": {
