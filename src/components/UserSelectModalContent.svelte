@@ -4,8 +4,6 @@
 	import { derived, writable } from "svelte/store";
 	import { handleServerError } from "src/utils/toastStore";
 	import RoleSelect from "./RoleSelect.svelte";
-	import { flags } from "src/flagManager";
-	import { effectiveFolderGrantRole } from "src/readOnlyPermissions";
 
 	export let relayManager: RelayManager;
 	export let folder: RemoteSharedFolder;
@@ -13,7 +11,6 @@
 		grants: Pick<FolderRoleDAO, "user" | "role">[],
 	) => Promise<void>;
 	export let preSelectedUserIds: string[] = [];
-	const readOnlyPermissionsEnabled = flags().enableReadOnlyPermissions;
 
 	interface UserSelection {
 		user: RelayUser;
@@ -138,7 +135,7 @@
 		const grants: Pick<FolderRoleDAO, "user" | "role">[] = Array.from(
 			currentSelectedUsers.entries(),
 		).map(([user, requestedRole]) => {
-			const roleName = effectiveFolderGrantRole(requestedRole);
+			const roleName = requestedRole;
 			const role = relayManager.roles.find((item) => item.name === roleName);
 			if (!role) throw new Error(`Failed to find role: ${roleName}`);
 			return { user, role: role.id };
@@ -225,7 +222,7 @@
 
 					{#if userSelection.hasAccess}
 						<div class="user-status">Already has access</div>
-					{:else if userSelection.selected && readOnlyPermissionsEnabled}
+					{:else if userSelection.selected}
 						<RoleSelect
 							{relayManager}
 							value={userSelection.role}

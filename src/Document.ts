@@ -11,7 +11,7 @@ import type { TFile, Vault, TFolder } from "obsidian";
 import { debounce, normalizePath } from "obsidian";
 import type { Unsubscriber } from "./observable/Observable";
 import { Dependency, Lifetime } from "./promiseUtils";
-import { flags, withFlag } from "./flagManager";
+import { withFlag } from "./flagManager";
 import { flag } from "./flags";
 import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
@@ -1129,9 +1129,6 @@ export class Document
 	 * failing open avoids stranding writes on missing client state.
 	 */
 	public get canWriteContent(): boolean {
-		if (!flags().enableReadOnlyPermissions) {
-			return true;
-		}
 		const policy = this.sharedFolder?.canWriteContentAnswer ?? null;
 		// A folder-level denial is authoritative even if this document still
 		// holds a token granting write access.
@@ -1207,7 +1204,6 @@ export class Document
 			this.path || "unknown",
 			this.refreshProvider.bind(this),
 			(token) => {
-				if (!flags().enableReadOnlyPermissions) return false;
 				const policy = this.sharedFolder?.canWriteContentAnswer ?? null;
 				return policy !== null && capabilitiesOf(token.authorization).writeContent !== policy;
 			},
@@ -1884,9 +1880,6 @@ export class Document
 	 * carries nothing local, so leaving read access replaces nothing.
 	 */
 	public notifyAccessModeChanged(): void {
-		if (!flags().enableReadOnlyPermissions) {
-			return;
-		}
 		const accessMode = this.activeAccessMode;
 		if (accessMode === "read" && this._remoteDocAccessMode !== "read") {
 			this.replaceRemoteDocForReadAccess();

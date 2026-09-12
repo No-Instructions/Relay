@@ -13,8 +13,6 @@
 	import { derived, writable } from "svelte/store";
 	import { FolderSuggestModal } from "../ui/FolderSuggestModal";
 	import { handleServerError } from "src/utils/toastStore";
-	import { flags } from "src/flagManager";
-	import { effectiveFolderGrantRole } from "src/readOnlyPermissions";
 
 	export let app: App;
 	export let relay: Relay;
@@ -33,7 +31,6 @@
 	let inputValue = "";
 	let acceptedFolder = "";
 	let sharing = false;
-	const readOnlyPermissionsEnabled = flags().enableReadOnlyPermissions;
 
 	// Obsidian's mobile clients have no room for the desktop suggest overlay,
 	// which hides the platform modal and mounts an unpositioned prompt. Mobile
@@ -175,7 +172,7 @@
 			)
 				.filter(([userId]) => userId !== currentUserId)
 				.map(([user, requestedRole]) => {
-					const roleName = effectiveFolderGrantRole(requestedRole);
+					const roleName = requestedRole;
 					const role = relayManager.roles.find((item) => item.name === roleName);
 					if (!role) throw new Error(`Failed to find role: ${roleName}`);
 					return { user, role: role.id };
@@ -393,7 +390,7 @@
 							</div>
 							{#if userSelection.isCurrentUser}
 								<div class="user-status">Required (You)</div>
-							{:else if userSelection.selected && readOnlyPermissionsEnabled}
+							{:else if userSelection.selected}
 								<RoleSelect
 									{relayManager}
 									value={userSelection.role}

@@ -2,14 +2,11 @@
 	import type { Role } from "src/Relay";
 	import type { RelayManager } from "src/RelayManager";
 	import { derived } from "svelte/store";
-	import { flags } from "src/flagManager";
 
 	export let relayManager: RelayManager;
 	export let value: Role = "Member";
 	export let excludeOwner = true;
 	export let onChange: (role: Role) => void = () => {};
-
-	const readOnlyPermissionsEnabled = flags().enableReadOnlyPermissions;
 
 	function rolePrioritySort(a: { name: Role }, b: { name: Role }) {
 		const priority: Record<Role, number> = { Owner: 0, Member: 1, Reader: 2 };
@@ -22,9 +19,6 @@
 		return $roles
 			.values()
 			.filter((role) => !excludeOwner || role.name !== "Owner")
-			.filter(
-				(role) => readOnlyPermissionsEnabled || role.name !== "Reader",
-			)
 			.sort(rolePrioritySort);
 	});
 

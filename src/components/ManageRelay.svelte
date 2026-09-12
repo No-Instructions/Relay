@@ -34,10 +34,6 @@
 	import SettingGroup from "./SettingGroup.svelte";
 	import RelayConfigBlock from "./RelayConfigBlock.svelte";
 	import { uuidv4 } from "lib0/random";
-	import {
-		effectiveRoleChange,
-		filterRolesForReadOnlyFeature,
-	} from "src/readOnlyPermissions";
 
 	export let relay: Relay;
 	const remoteFolders = relay.folders;
@@ -154,7 +150,7 @@
 
 	// Dynamic role loading for forwards compatibility
 	const availableRoles = derived([plugin.relayManager.roles], ([$roles]) => {
-		return filterRolesForReadOnlyFeature($roles.values()).sort(
+		return [...$roles.values()].sort(
 			rolePrioritySort,
 		);
 	});
@@ -376,7 +372,7 @@
 		try {
 			await plugin.relayManager.updateRelayRole(
 				relay_role,
-				effectiveRoleChange(newRole),
+				newRole,
 			);
 		} catch (error) {
 			handleServerError(error, "Failed to change user role.");

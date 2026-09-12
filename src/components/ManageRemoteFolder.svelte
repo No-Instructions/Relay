@@ -31,10 +31,6 @@
 	import { Check, Edit } from "lucide-svelte";
 	import { UserSelectModal } from "src/ui/UserSelectModal";
 	import { handleServerError } from "src/utils/toastStore";
-	import {
-		effectiveRoleChange,
-		filterRolesForReadOnlyFeature,
-	} from "src/readOnlyPermissions";
 	export let plugin: Live;
 	export let remoteFolder: RemoteSharedFolder;
 	export let sharedFolders: SharedFolders;
@@ -60,7 +56,7 @@
 
 	// Dynamic role loading for forwards compatibility
 	const availableRoles = derived([plugin.relayManager.roles], ([$roles]) => {
-		return filterRolesForReadOnlyFeature($roles.values()).sort(
+		return [...$roles.values()].sort(
 			rolePrioritySort,
 		);
 	});
@@ -318,7 +314,7 @@
 		try {
 			await plugin.relayManager.updateFolderRole(
 				folderRole,
-				effectiveRoleChange(newRole),
+				newRole,
 			);
 		} catch (error) {
 			handleServerError(error, "Failed to change user role.");

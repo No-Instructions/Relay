@@ -39,7 +39,7 @@ import type { CanvasView } from "./CanvasView";
 import { isCanvas, type Canvas } from "./Canvas";
 import { CanvasPlugin } from "./CanvasPlugin";
 import { LiveNode } from "./y-codemirror.next/LiveNodePlugin";
-import { FeatureFlagManager, flags } from "./flagManager";
+import { flags } from "./flagManager";
 import { accessModeCompartment, configureAccessMode } from "./readOnlyEditorState";
 import {
 	AwarenessViewPlugin,
@@ -533,7 +533,6 @@ export class LiveView<ViewType extends TextFileView>
 	private _hsmStateUnsubscribe?: () => void;
 	private _hasLock = false;
 	private _released = false;
-	private _flagDisablePromotionPending = false;
 	private readonly _fallbackViewer = Symbol("live-view-viewer");
 
 	constructor(
@@ -597,7 +596,7 @@ export class LiveView<ViewType extends TextFileView>
 	 * on `tracking`, connection UI on `live`.
 	 */
 	public get reading() {
-		return flags().enableReadOnlyPermissions && this.machineReading;
+		return this.machineReading;
 	}
 
 	private get machineReading() {
@@ -605,12 +604,8 @@ export class LiveView<ViewType extends TextFileView>
 		return statePath === "active.reading" || statePath === "active.reading.repairing";
 	}
 
-	private reconcileAccessModeBanners(
-		statePath: string,
-		readOnlyPermissionsEnabled: boolean,
-	): void {
+	private reconcileAccessModeBanners(statePath: string): void {
 		const showForkNotice =
-			readOnlyPermissionsEnabled &&
 			statePath.startsWith("active.reading") &&
 			(this.document.hsm?.hasFork() ?? false);
 
@@ -775,9 +770,6 @@ export class LiveView<ViewType extends TextFileView>
 	}
 
 	preservedEditsBanner(): void {
-		if (!flags().enableReadOnlyPermissions) {
-			return;
-		}
 		this._forkNotice = new Banner(
 			this.view,
 			{
@@ -900,17 +892,10 @@ export class LiveView<ViewType extends TextFileView>
 						pendingOutbound: this.document.hsm?.pendingOutbound ?? 0,
 						pendingInbound: this.document.hsm?.pendingInbound ?? 0,
 					});
-					this.reconcileAccessModeBanners(
-						state.statePath,
-						currentFlags.enableReadOnlyPermissions,
-					);
+					this.reconcileAccessModeBanners(state.statePath);
 					this.applyEditableState();
 				});
-				const currentFlags = flags();
-				this.reconcileAccessModeBanners(
-					hsm.statePath,
-					currentFlags.enableReadOnlyPermissions,
-				);
+				this.reconcileAccessModeBanners(hsm.statePath);
 			}
 			this._viewActions.set({
 				view: this,
@@ -994,19 +979,14 @@ export class LiveView<ViewType extends TextFileView>
 			return;
 		}
 		const view = this.view;
-		const readOnly =
-			this.machineReading &&
-			(flags().enableReadOnlyPermissions || this._flagDisablePromotionPending);
-		if (!this.machineReading) this._flagDisablePromotionPending = false;
+		const readOnly = this.machineReading;
 		const modeChanged = this._lastEditableReading !== readOnly;
 		if (!modeChanged && !forceEditorConfiguration) return;
 		const previousReading = this._lastEditableReading;
 		this._lastEditableReading = readOnly;
 		queueMicrotask(() => {
 			if (this._released) return;
-			const currentReadOnly =
-				this.machineReading &&
-				(flags().enableReadOnlyPermissions || this._flagDisablePromotionPending);
+			const currentReadOnly = this.machineReading;
 			if (this._lastEditableReading !== readOnly || currentReadOnly !== readOnly) {
 				return;
 			}
@@ -1043,16 +1023,6 @@ export class LiveView<ViewType extends TextFileView>
 			if (!cm) return;
 			configureAccessMode(cm, readOnly);
 		});
-	}
-
-	public reconcileReadOnlyPermissionsDisabled(): void {
-		const hsm = this.document?.hsm;
-		if (hsm && this.machineReading) {
-			this._flagDisablePromotionPending = true;
-			hsm.send({ type: "PROMOTE_TO_WRITE" });
-			if (!this.machineReading) this._flagDisablePromotionPending = false;
-		}
-		this.applyEditableState(true);
 	}
 
 	attach(): Promise<this> {
@@ -1240,7 +1210,6 @@ export class LiveViewManager {
 	refreshQueue: (() => Promise<boolean>)[];
 	private documentViewers: Map<string, Set<DocumentViewer>>;
 	private canvasViewers: Map<string, Set<DocumentViewer>>;
-	private readOnlyPermissionsEnabled: boolean;
 	private textViewRegistry: TextViewRegistry;
 	log: (message: string, ...args: unknown[]) => void;
 	warn: (message: string, ...args: unknown[]) => void;
@@ -1263,7 +1232,6 @@ export class LiveViewManager {
 		this.refreshQueue = [];
 		this.documentViewers = new Map();
 		this.canvasViewers = new Map();
-		this.readOnlyPermissionsEnabled = flags().enableReadOnlyPermissions;
 
 		this.log = curryLog("[LiveViews]", "log");
 		this.warn = curryLog("[LiveViews]", "warn");
@@ -1284,19 +1252,6 @@ export class LiveViewManager {
 				void this.refresh("[LoginManager]");
 			}),
 		);
-		this.offListeners.push(
-			FeatureFlagManager.getInstance().subscribe((manager) => {
-				const enabled = manager.getFlag("enableReadOnlyPermissions");
-				const disabledNow = this.readOnlyPermissionsEnabled && !enabled;
-				this.readOnlyPermissionsEnabled = enabled;
-				for (const view of this.views) {
-					if (!(view instanceof LiveView)) continue;
-					if (disabledNow) view.reconcileReadOnlyPermissionsDisabled();
-					else view.applyEditableState(true);
-				}
-			}),
-		);
-
 		const folderSub = (folder: SharedFolder) => {
 			if (!folder.ready) {
 				void (async () => {

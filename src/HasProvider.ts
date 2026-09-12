@@ -7,13 +7,12 @@ import {
 	type CloseEventLike,
 	type PermissionDeniedEvent,
 } from "./client/provider";
-import { flags } from "./flagManager";
 export type { ConnectionState, ConnectionIntent };
 import { User } from "./User";
 import { HasLogging } from "./debug";
 import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
-import { capabilitiesOf, type Capabilities, type ClientToken } from "./client/types";
+import { capabilitiesOf, type ClientToken } from "./client/types";
 import { S3RN, type S3RNType } from "./S3RN";
 import { encodeClientToken } from "./client/types";
 import type { TimeProvider } from "./TimeProvider";
@@ -76,25 +75,12 @@ function makeProvider(
 			awareness,
 			params: params,
 			disableBc: true,
-			capabilities: providerCapabilities(clientToken),
+			capabilities: capabilitiesOf(clientToken.authorization),
 			timeProvider,
 		},
 	);
 
 	return provider;
-}
-
-/**
- * The grant as this provider should honor it. With the read-only feature
- * off, a token that cannot write stays silent as well, so nothing about a
- * Reader's connection changes until the feature ships.
- */
-function providerCapabilities(clientToken: ClientToken): Capabilities {
-	const capabilities = capabilitiesOf(clientToken.authorization);
-	if (!capabilities.writeContent && !flags().enableReadOnlyPermissions) {
-		return { ...capabilities, presence: false };
-	}
-	return capabilities;
 }
 
 /** Disconnected state returned when no provider exists */
@@ -337,9 +323,6 @@ export class HasProvider extends HasLogging {
 	 * carries drives the access-mode transition like any other refresh.
 	 */
 	protected handlePermissionDenied(): void {
-		if (!flags().enableReadOnlyPermissions) {
-			return;
-		}
 		this.tokenStore.forceRefresh(S3RN.encode(this.s3rn));
 	}
 
@@ -461,7 +444,7 @@ export class HasProvider extends HasLogging {
 			? capabilitiesOf(this.clientToken.authorization).writeContent
 			: null;
 		this.clientToken = clientToken;
-		const capabilities = providerCapabilities(clientToken);
+		const capabilities = capabilitiesOf(clientToken.authorization);
 		this.onClientToken(clientToken);
 
 		if (this._provider) {

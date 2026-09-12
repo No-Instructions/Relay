@@ -67,7 +67,7 @@ import { ContentAddressedStore } from "./CAS";
 import { SyncSettingsManager, type SyncFlags } from "./SyncSettings";
 import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
 import { Canvas, isCanvas } from "./Canvas";
-import { FeatureFlagManager, flags } from "./flagManager";
+import { flags } from "./flagManager";
 import { MergeManager } from "./merge-hsm/MergeManager";
 import {
 	E2ERecordingBridge,
@@ -1935,9 +1935,6 @@ export class SharedFolder extends HasProvider {
 	 * authorization either way.
 	 */
 	public get canWriteContent(): boolean {
-		if (!flags().enableReadOnlyPermissions) {
-			return true;
-		}
 		return (
 			this._lastCanWriteContent ??
 			this.canWriteContentAnswer ??
@@ -1947,11 +1944,6 @@ export class SharedFolder extends HasProvider {
 
 	/** Whether local create, rename, move, and delete intent may change membership. */
 	public get canManageFiles(): boolean {
-		// Read the live flag object rather than calling flags(): this getter
-		// runs once per file while the tree is decorated, and flags() copies.
-		if (!FeatureFlagManager.getInstance().flags.enableReadOnlyPermissions) {
-			return true;
-		}
 		if (this._canManageFilesAnswerCache === undefined) {
 			this._canManageFilesAnswerCache = this.deriveCanManageFilesAnswer();
 		}
@@ -1995,15 +1987,6 @@ export class SharedFolder extends HasProvider {
 	 * provider's authorization catches up with the role-derived policy.
 	 */
 	private refreshPermissionPolicy(): void {
-		if (!flags().enableReadOnlyPermissions) {
-			// Flag-off role notifications retain legacy behavior and avoid
-			// paying for a policy derivation nobody consumes.
-			this._canWriteContentAnswerCache = undefined;
-			this._canManageFilesAnswerCache = undefined;
-			this._lastCanWriteContent = null;
-			this._lastCanManageFiles = null;
-			return;
-		}
 		const writeAnswer = this.deriveCanWriteContentAnswer();
 		const manageAnswer = this.deriveCanManageFilesAnswer();
 		this._canWriteContentAnswerCache = writeAnswer;
@@ -2042,9 +2025,6 @@ export class SharedFolder extends HasProvider {
 	}
 
 	private refreshDocumentTokensForPermissionChange(): void {
-		if (!flags().enableReadOnlyPermissions) {
-			return;
-		}
 		this.debug(
 			`content-write permission changed; refreshing document tokens`,
 		);
@@ -2180,7 +2160,6 @@ export class SharedFolder extends HasProvider {
 		} catch {
 			// The memo is a cold-start hint; a failed write costs nothing now.
 		}
-		if (!flags().enableReadOnlyPermissions) return;
 		if (this.canWriteContentAnswer !== null) return;
 		this.notifyFolderPermissionSubscribers();
 		this.files.forEach((file) => {
@@ -3285,7 +3264,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	public recordReaderEditOverwrite(guid: string, path: string): void {
-		if (this.destroyed || !flags().enableReadOnlyPermissions) return;
+		if (this.destroyed) return;
 		const file = this.files.get(guid);
 		const fullPath =
 			file && (isDocument(file) || isCanvas(file))
