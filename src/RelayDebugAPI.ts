@@ -30,6 +30,7 @@ import {
 } from './ui/SyncStatusModel';
 import type { FolderSyncSnapshot } from './BackgroundSyncProgress';
 import { Canvas, isCanvas } from './Canvas';
+import { readCanvasPresence, readCanvasPresenceUser, type CanvasPresenceState, type CanvasPresenceUser } from './canvas-presence/types';
 import type { CanvasHSM } from './canvas-hsm/CanvasHSM';
 import type { CanvasData } from './CanvasView';
 import type { ConflictData } from './merge-hsm/conflict';
@@ -61,6 +62,13 @@ export interface DocumentContentSnapshot {
   disk: { content: string; mtime: number } | null;
   /** Independently downloaded and reconstructed server state. */
   server: { content: string; snapshot: string; updateSize: number } | null;
+}
+
+/** Locally held canvas awareness, without waking a document or fetching remote state. */
+export interface CanvasPresenceSnapshot {
+  localClientId: number | null;
+  canPublishContent: boolean;
+  states: Array<{ clientId: number; user?: CanvasPresenceUser; canvas: CanvasPresenceState | null }>;
 }
 
 /**
@@ -420,6 +428,8 @@ export interface RelayDebugGlobal {
    * (local/view come back null while hibernated).
    */
   getCanvasState: (path: string, options?: { wake?: boolean }) => Promise<CanvasStateSnapshot>;
+  /** Read locally held canvas awareness without waking a document. */
+  getCanvasPresence: (path: string) => CanvasPresenceSnapshot;
   /**
    * The same snapshot plus the server's own copy of the canvas.
    *
@@ -700,6 +710,7 @@ export class RelayDebugAPI {
       listEditors: () => this.listEditors(),
       getDocumentContent: async (path) => this.getDocumentContent(path),
       getCanvasState: async (path, options) => this.getCanvasState(path, options),
+      getCanvasPresence: (path) => this.getCanvasPresence(path),
       getCanvasContent: async (path) => this.getCanvasContent(path),
       awaitCanvasState: async (path, statePrefix, timeoutMs) =>
         this.awaitCanvasState(path, statePrefix, timeoutMs),
@@ -1323,6 +1334,19 @@ export class RelayDebugAPI {
     const canvas = folder.files.get(guid);
     if (!isCanvas(canvas)) return null;
     return { canvas, hsm: canvas.hsm, guid, folder, filePath: path };
+  }
+
+  /** Read locally held canvas awareness without waking a document. */
+  getCanvasPresence(path: string): CanvasPresenceSnapshot {
+    const canvas = this.findCanvas(path)?.canvas;
+    const awareness = canvas?._provider?.awareness;
+    return {
+      localClientId: awareness?.clientID ?? null,
+      canPublishContent: canvas?.canPublishContent ?? false,
+      states: Array.from(awareness?.getStates() ?? [], ([clientId, state]) => ({
+        clientId, user: readCanvasPresenceUser(state), canvas: readCanvasPresence(state),
+      })),
+    };
   }
 
   /**
