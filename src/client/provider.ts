@@ -829,7 +829,17 @@ export class YSweetProvider extends ObservableV2<YSweetProviderEvents> {
 			if (this.readOnly) {
 				return;
 			}
-			const changedClients = added.concat(updated).concat(removed);
+			// Only this client's own state goes out. Peers' updates already
+			// came from the server; sending them back would have every client
+			// echo every cursor move, and the server relay each echo to every
+			// other client.
+			const changedClients = added
+				.concat(updated)
+				.concat(removed)
+				.filter((clientID) => clientID === doc.clientID);
+			if (changedClients.length === 0) {
+				return;
+			}
 			const encoder = encoding.createEncoder();
 			encoding.writeVarUint(encoder, messageAwareness);
 			encoding.writeVarUint8Array(
