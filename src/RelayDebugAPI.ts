@@ -1744,7 +1744,7 @@ export class RelayDebugAPI {
     };
   }
 
-  private async getConflictInfo(path: string): Promise<ConflictInfoSnapshot> {
+  async getConflictInfo(path: string): Promise<ConflictInfoSnapshot> {
     const { manager, guid, folder, filePath } = this.resolveConflictTarget(path);
     if (typeof manager.getConflictInfo !== 'function') {
       throw new Error(`Conflict info is not available: ${path}`);
@@ -1756,7 +1756,7 @@ export class RelayDebugAPI {
     };
   }
 
-  private async resolveConflict(path: string, contents: string): Promise<string> {
+  async resolveConflict(path: string, contents: string): Promise<string> {
     const { manager, guid } = this.resolveConflictTarget(path);
     if (typeof manager.resolveConflict !== 'function') {
       throw new Error(`Conflict resolution is not available: ${path}`);
@@ -1805,7 +1805,7 @@ export class RelayDebugAPI {
     return '/' + folder.getPath(vpath);
   }
 
-  private getFolderSyncStatus(folderGuid: string): { guid: string; path: string; status: string }[] {
+  getFolderSyncStatus(folderGuid: string): { guid: string; path: string; status: string }[] {
     const folder = this.getFolderByGuid(folderGuid);
     const mm = folder?.mergeManager;
     if (!folder || !mm?.syncStatus) return [];
@@ -1836,7 +1836,7 @@ export class RelayDebugAPI {
       .map(({ guid, path }) => ({ guid, path }));
   }
 
-  private listAllConflicts(): { folderGuid: string; folderPath: string; guid: string; path: string }[] {
+  listAllConflicts(): { folderGuid: string; folderPath: string; guid: string; path: string }[] {
     if (!this.plugin?.sharedFolders) return [];
     const out: { folderGuid: string; folderPath: string; guid: string; path: string }[] = [];
     for (const folder of this.plugin.sharedFolders.items()) {
@@ -1849,7 +1849,7 @@ export class RelayDebugAPI {
     return out;
   }
 
-  private getSyncPanelStatus(folderGuid: string): SyncPanelStatus {
+  getSyncPanelStatus(folderGuid: string): SyncPanelStatus {
     const folder = this.getFolderByGuid(folderGuid);
     if (!folder) {
       throw new Error(`Folder not found: ${folderGuid}`);
@@ -1857,7 +1857,7 @@ export class RelayDebugAPI {
     return this.serializeSyncPanelStatus(folder, buildFolderSyncStatusModel(folder));
   }
 
-  private listSyncPanelStatus(): SyncPanelStatus[] {
+  listSyncPanelStatus(): SyncPanelStatus[] {
     if (!this.plugin?.sharedFolders) return [];
     const panels: SyncPanelStatus[] = [];
     for (const folder of this.plugin.sharedFolders.items()) {
@@ -1939,7 +1939,7 @@ export class RelayDebugAPI {
     return this.hsmInternals(hsm)._statePath || 'unknown';
   }
 
-  private async resolveHunk(
+  async resolveHunk(
     path: string,
     hunkId: string,
     resolution: 'ours' | 'theirs' | 'both' | 'neither',
