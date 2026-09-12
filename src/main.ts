@@ -623,6 +623,20 @@ export default class Live extends Plugin {
 				);
 			}),
 		);
+
+		// Canvas presence attaches and detaches with its flag: a refresh
+		// re-attaches every live view, which creates or destroys the
+		// presence plugin for open canvases.
+		let canvasPresence = flagManager.getFlag(flag.enableCanvasPresence);
+		this.register(
+			flagManager.subscribe((manager) => {
+				if (this._unloading) return;
+				const enabled = manager.getFlag(flag.enableCanvasPresence);
+				if (enabled === canvasPresence) return;
+				canvasPresence = enabled;
+				void this._liveViews?.refresh("[Canvas presence flag]");
+			}),
+		);
 		this.savingFlagPolyfill.setEnabled(
 			flagManager.getFlag(flag.enableSavingFlagPolyfill),
 		);

@@ -511,3 +511,62 @@ button.system3-login-button {
 .system3-note-state-muted {
 	color: var(--text-faint);
 }
+
+/* Canvas presence: every peer cursor is drawn on this one surface over
+ * the wrapper, so nothing per cursor exists for the page to style or
+ * layer. Peers' selections, moving nodes, and connections are Obsidian's
+ * own elements, so they use Obsidian's styles. */
+canvas.relay-canvas-presence {
+	position: absolute;
+	left: 0;
+	top: 0;
+	pointer-events: none;
+	z-index: 100000;
+}
+
+/* Peers' active states are Obsidian's own state classes mirrored under a
+ * peer prefix. Each rule below copies Obsidian's rule for that state with
+ * the peer's color in place of the accent. A selected card or edge is
+ * `is-focused` (one item) or `is-selected` (several). */
+.canvas-node.relay-peer-is-focused .canvas-node-container,
+.canvas-node.relay-peer-is-selected .canvas-node-container {
+	border-color: var(--relay-presence-color);
+	box-shadow:
+		var(--shadow-stationary),
+		0 0 0 2px var(--relay-presence-color);
+}
+
+.canvas-edges g.relay-peer-is-focused path.canvas-display-path {
+	stroke: var(--relay-presence-color);
+	stroke-width: calc(5.5px * var(--zoom-multiplier));
+}
+
+.canvas-edges g.relay-peer-is-focused path.canvas-interaction-path {
+	stroke: color-mix(in oklch, var(--relay-presence-color) 15%, transparent);
+}
+
+.canvas-edges g.relay-peer-is-focused polygon.canvas-path-end {
+	stroke: var(--relay-presence-color);
+	fill: var(--relay-presence-color);
+}
+
+/* A node a peer is dragging or resizing is the local node element moved
+ * to the peer's live geometry; it wears Obsidian's drag shadow, and with
+ * the focused ring in the peer's color when the peer also has it focused. */
+.canvas-node.relay-peer-is-dragging .canvas-node-container {
+	box-shadow: var(--shadow-drag);
+}
+
+.canvas-node.relay-peer-is-focused.relay-peer-is-dragging .canvas-node-container,
+.canvas-node.relay-peer-is-selected.relay-peer-is-dragging .canvas-node-container {
+	box-shadow:
+		var(--shadow-drag),
+		0 0 0 2px var(--relay-presence-color);
+}
+
+/* A borrowed edge draws with Obsidian's paths but is not in the canvas's
+ * edge map, so it must never be hovered, clicked, or grabbed. */
+.canvas-edges g.relay-presence-edge,
+.canvas-edges g.relay-presence-edge * {
+	pointer-events: none !important;
+}
