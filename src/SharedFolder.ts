@@ -1898,6 +1898,27 @@ export class SharedFolder extends HasProvider {
 		return this.canWriteContentAnswer ?? this.persistedAccessAllows;
 	}
 
+	/** Peer editing presence is shown only when the synced role policy grants it. */
+	public canUserWriteContent(userId: string | undefined): boolean {
+		const remote = this.remote;
+		if (!userId || !remote) return false;
+		return this.relayManager.policyManager?.isAllowed({
+			principal: userId,
+			action: "edit_content",
+			resource: ["folder", remote.id],
+		}).allowed ?? false;
+	}
+
+	/** Role changes for any peer, including changes that leave our own access unchanged. */
+	public subscribeToPeerPermissionChanges(callback: () => void): () => void {
+		const off = [
+			this.relayManager.folderRoles.subscribe(callback),
+			this.relayManager.relayRoles.subscribe(callback),
+			this.relayManager.remoteFolders.subscribe(callback),
+		];
+		return () => off.forEach((unsubscribe) => unsubscribe());
+	}
+
 	public get canManageFilesAnswer(): boolean | null {
 		if (this._canManageFilesAnswerCache === undefined) {
 			this._canManageFilesAnswerCache = this.deriveCanManageFilesAnswer();
