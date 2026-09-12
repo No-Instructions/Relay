@@ -304,6 +304,8 @@ export class CanvasPresenceOverlay {
 	readonly surface: HTMLCanvasElement;
 	private readonly ctx: CanvasRenderingContext2D | null;
 	private readonly labelFont: string;
+	/** The theme's background, backing stroked glyphs so the canvas does not show through them. */
+	private readonly glyphBacking: string;
 	private surfaceWidth = 0;
 	private surfaceHeight = 0;
 	private surfaceScale = 0;
@@ -345,6 +347,9 @@ export class CanvasPresenceOverlay {
 				win.getComputedStyle(doc.body).fontFamily
 			: "sans-serif";
 		this.labelFont = `${LABEL_FONT_PX}px ${family}`;
+		this.glyphBacking = win
+			? win.getComputedStyle(doc.body).getPropertyValue("--background-primary").trim() || "#fff"
+			: "#fff";
 		const firstEdge = canvas.edges.values().next().value as CanvasEdge | undefined;
 		if (firstEdge) adoptEdgeConstructor(firstEdge);
 		this.requestDraw();
@@ -779,6 +784,11 @@ export class CanvasPresenceOverlay {
 						ctx.fill(path);
 					}
 				} else {
+					// An outline icon is see-through; a cursor is not. Fill the
+					// regions its paths enclose with the theme background first,
+					// then draw the outline in the peer's color over them.
+					ctx.fillStyle = this.glyphBacking;
+					for (const path of glyph.paths) ctx.fill(path);
 					ctx.lineWidth = 2;
 					ctx.strokeStyle = peer.color;
 					for (const path of glyph.paths) ctx.stroke(path);
