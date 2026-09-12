@@ -37,6 +37,8 @@ import * as Differ from "./differ/differencesView";
 import type { CanvasView } from "./CanvasView";
 import { isCanvas, type Canvas } from "./Canvas";
 import { CanvasPlugin } from "./CanvasPlugin";
+import { CanvasPresencePlugin } from "./canvas-presence";
+import { ANONYMOUS_PROFILE_NAME } from "./User";
 import { LiveNode } from "./y-codemirror.next/LiveNodePlugin";
 import { flags } from "./flagManager";
 import {
@@ -258,6 +260,7 @@ export class RelayCanvasView implements S3View {
 	private _parent: LiveViewManager;
 	private _banner?: Banner;
 	private _awarenessPlugin?: AwarenessViewPlugin;
+	private _presencePlugin?: CanvasPresencePlugin;
 	private _lockViewer?: DocumentViewer;
 	tracking: boolean;
 
@@ -390,6 +393,20 @@ export class RelayCanvasView implements S3View {
 			this.plugin = new CanvasPlugin(this._parent, this);
 		}
 
+		const presenceEnabled = flags().enableCanvasPresence;
+		if (!this._presencePlugin && presenceEnabled) {
+			this._presencePlugin = new CanvasPresencePlugin(this.view, this.canvas, {
+				resolveName: (user) =>
+					flags().enableStreamerMode
+						? ANONYMOUS_PROFILE_NAME
+						: user?.name || ANONYMOUS_PROFILE_NAME,
+			});
+		} else if (this._presencePlugin && !presenceEnabled) {
+			// The flag was turned off while the canvas was open.
+			this._presencePlugin.destroy();
+			this._presencePlugin = undefined;
+		}
+
 		if (!this._awarenessPlugin) {
 			const viewEl = this.view.containerEl;
 			this._awarenessPlugin = new AwarenessViewPlugin(
@@ -404,6 +421,9 @@ export class RelayCanvasView implements S3View {
 							: null;
 					},
 					vertical: true,
+					locateUser: presenceEnabled
+						? (userId) => this._presencePlugin?.locateUser(userId) ?? false
+						: undefined,
 					configureContainer: (el) => {
 						const controls =
 							viewEl.querySelector<HTMLElement>(".canvas-controls");
@@ -463,6 +483,8 @@ export class RelayCanvasView implements S3View {
 
 		this.plugin?.destroy();
 		this.plugin = undefined;
+		this._presencePlugin?.destroy();
+		this._presencePlugin = undefined;
 		this._awarenessPlugin?.destroy();
 		this._awarenessPlugin = undefined;
 		this._viewActions?.destroy();
