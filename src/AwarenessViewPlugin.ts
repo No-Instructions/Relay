@@ -32,6 +32,12 @@ export interface AwarenessHost {
 	 * attached to. When present, the popover exposes attribution controls.
 	 */
 	getEditor?: () => unknown;
+	/**
+	 * Optional: bring the host view to where a peer is looking. When
+	 * present, clicking a peer's avatar calls it with that peer's user id;
+	 * returns false when the peer has published nothing to go to.
+	 */
+	locateUser?: (userId: string) => boolean;
 }
 
 export interface AwarenessAnchor {
@@ -223,6 +229,7 @@ export class AwarenessViewPlugin extends HasLogging {
 					relayUsers: this.relayUsersStore,
 					vertical: this.host.vertical ?? false,
 					getEditor: this.host.getEditor,
+					locateUser: this.host.locateUser,
 				},
 			});
 
