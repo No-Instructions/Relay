@@ -104,7 +104,39 @@ export class CanvasPlugin extends HasLogging {
 		this.observedTextNodes = new Set();
 		this.trackedEmbedViews = new Set();
 		this.install();
+		this.installReadOnly();
 		void this.verifyViewDataOwnership();
+	}
+
+	private installReadOnly(): void {
+		const canvas = this.canvas;
+		if (typeof canvas.setReadonly !== "function") return;
+		let forced = false;
+		let previous = canvas.readonly;
+		const owner = () => this;
+		const refresh = () => {
+			if (!this.relayCanvas.canPublishContent) {
+				if (!forced) previous = canvas.readonly;
+				forced = true;
+				canvas.setReadonly(true);
+			} else if (forced) {
+				forced = false;
+				canvas.setReadonly(previous);
+			}
+		};
+		this.unsubscribes.push(
+			getPatcher().patch(canvas, {
+				setReadonly(old: (readOnly: boolean) => void) {
+					return function (this: ObsidianCanvas, readOnly: boolean) {
+						old.call(this, readOnly || !owner().relayCanvas.canPublishContent);
+					};
+				},
+			}),
+			this.relayCanvas.subscribe(this, refresh),
+			this.relayCanvas.sharedFolder.subscribeToPermissionChanges(refresh),
+			() => { if (forced) canvas.setReadonly(previous); },
+		);
+		refresh();
 	}
 
 	/**
