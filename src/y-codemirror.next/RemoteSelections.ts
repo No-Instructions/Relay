@@ -29,17 +29,43 @@ interface CursorAwarenessState {
 import { curryLog } from "src/debug";
 import { editorInfoField, type TFile } from "obsidian";
 import { isDocument, type Document } from "../Document";
+import type { CanvasNodeData } from "../CanvasView";
+import { flags } from "../flagManager";
 
 type LiveViewBridge = {
 	document: Document;
 };
 
+/** A canvas view's model: the canvas's provider and the Y.Text behind each text card. */
+type RelayCanvasViewBridge = {
+	canvas: {
+		_provider: { awareness: Awareness } | null;
+		textNode(node: CanvasNodeData): Y.Text;
+	};
+};
+
 type LiveViewManagerBridge = {
 	findView(editor: EditorView): LiveViewBridge | undefined;
+	findCanvas(editor: EditorView): RelayCanvasViewBridge | undefined;
 	sharedFolders: {
 		lookup(path: string): { getFile(file: TFile): unknown } | undefined;
 	};
 };
+
+/**
+ * What the plugin needs to publish and render carets: the awareness the
+ * editor's peers share, the Y.Text the editor is bound to, and whether a
+ * fork gate is holding local and remote apart so positions would not
+ * resolve on peers. A markdown editor resolves through its Document; a
+ * canvas text card through the canvas and the card's node.
+ */
+interface CaretTarget {
+	awareness: Awareness;
+	ytext: Y.Text;
+	forked: boolean;
+	/** True for a canvas text card, whose caret must be withdrawn when the card editor closes. */
+	card: boolean;
+}
 
 function getConnectionManager(editor: EditorView): LiveViewManagerBridge | null {
 	return getLiveViews(editor) as LiveViewManagerBridge | null;
@@ -185,6 +211,8 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 	private _boundAwareness?: Awareness;
 	_listener?: AwarenessChangeHandler;
 	document?: Document;
+	/** True once this editor has published a card caret that must be withdrawn on close. */
+	private publishedCardCaret = false;
 	private destroyed = false;
 
 	constructor(editor: EditorView) {
@@ -225,9 +253,8 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 		if (this._listener) {
 			return;
 		}
-		this.view = this.connectionManager?.findView(this.editor);
-		const provider = this.view?.document?._provider;
-		if (!provider) {
+		const awareness = this.resolveAwareness();
+		if (!awareness) {
 			return;
 		}
 		this._listener = ({ added, updated, removed }, s, t) => {
@@ -248,7 +275,69 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 				});
 			}
 		};
-		this.bindAwareness(provider.awareness);
+		this.bindAwareness(awareness);
+	}
+
+	/**
+	 * Only the awareness, without touching the text: a Document builds its
+	 * remote doc and provider on first access to its text, and listener
+	 * setup must not be what triggers that.
+	 */
+	private resolveAwareness(): Awareness | undefined {
+		const document = this.getDocument();
+		if (document) {
+			return document._provider?.awareness;
+		}
+		if (!flags().enableCanvasPresence) return undefined;
+		const node = this.getCardNode();
+		const canvasView = node ? this.connectionManager?.findCanvas(this.editor) : undefined;
+		return canvasView?.canvas._provider?.awareness;
+	}
+
+	/** The canvas text card this editor edits, when it is one. */
+	private getCardNode(): CanvasNodeData | undefined {
+		const values = (
+			this.editor.state as unknown as { values?: Array<{ node?: CanvasNodeData }> }
+		).values;
+		return values?.find((value) => value && value.node)?.node;
+	}
+
+	/**
+	 * Resolve what this editor publishes to and renders from. A markdown
+	 * editor resolves through its Document, whose localDoc holds the text.
+	 * A canvas text card resolves through the canvas view and the card's
+	 * node: peers share the canvas's awareness, each card is its own
+	 * top-level Y.Text keyed by node id, and relative positions carry that
+	 * key, so carets in other cards resolve to other types and are skipped.
+	 */
+	private resolveTarget(): CaretTarget | null {
+		const document = this.getDocument();
+		if (document) {
+			this.document = document;
+			const ytext = document.localDoc?.getText("contents") ?? document.ytext;
+			const awareness = document._provider?.awareness;
+			if (!ytext || !ytext.doc || !awareness) return null;
+			return {
+				awareness,
+				ytext,
+				forked: document.hsm?.hasFork() ?? false,
+				card: false,
+			};
+		}
+		// Card carets are part of canvas presence.
+		if (!flags().enableCanvasPresence) return null;
+		const node = this.getCardNode();
+		const canvasView = node ? this.connectionManager?.findCanvas(this.editor) : undefined;
+		if (!node || !canvasView) return null;
+		let ytext: Y.Text;
+		try {
+			ytext = canvasView.canvas.textNode(node);
+		} catch {
+			return null;
+		}
+		const awareness = canvasView.canvas._provider?.awareness;
+		if (!ytext.doc || !awareness) return null;
+		return { awareness, ytext, forked: false, card: true };
 	}
 
 	/**
@@ -305,6 +394,19 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 
 	destroy() {
 		this.destroyed = true;
+		if (this.publishedCardCaret && this._awareness) {
+			// A card editor closes when editing ends; a document's presence is
+			// withdrawn with its lock, but a card's caret would otherwise stay
+			// on peers until the whole canvas closed.
+			try {
+				if (this._awareness.getLocalState() !== null) {
+					this._awareness.setLocalStateField("cursor", null);
+				}
+			} catch {
+				// Presence is cosmetic; a throwing subscriber must not block teardown.
+			}
+			this.publishedCardCaret = false;
+		}
 		if (this._listener) {
 			this._boundAwareness?.off("change", this._listener);
 			this._listener = undefined;
@@ -329,26 +431,22 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 			return;
 		}
 		this.ensureAwarenessListener();
-		this.document = this.getDocument();
-		const ytext = this.document?.localDoc?.getText("contents") ?? this.document?.ytext;
-		if (!(this.document && ytext && ytext.doc)) {
+		const target = this.resolveTarget();
+		if (!target) {
 			return;
 		}
 		// Disable cursors when the fork gate is blocking local↔remote traffic.
 		// Positions created from localDoc won't resolve correctly on remote peers
 		// when the docs have diverged.
-		if (this.document.hsm?.hasFork()) {
+		if (target.forked) {
 			this.decorations = Decoration.none;
 			return;
 		}
-		const provider = this.document._provider;
-		if (!provider) {
-			return;
-		}
-		this.bindAwareness(provider.awareness);
-		const awareness = provider.awareness;
+		this.bindAwareness(target.awareness);
+		const { awareness, ytext } = target;
+		const isCard = target.card;
 
-		const ydoc: Y.Doc = ytext.doc;
+		const ydoc: Y.Doc = ytext.doc as Y.Doc;
 		const decorations: Array<Range<Decoration>> = [];
 		const localAwarenessState =
 			awareness.getLocalState() as CursorAwarenessState | null;
@@ -382,6 +480,7 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 					// Defer awareness update to avoid re-entrant EditorView.update calls.
 					// awareness.setLocalStateField emits synchronously, and listeners
 					// may dispatch to the editor which is not allowed during update().
+					if (isCard) this.publishedCardCaret = true;
 					queueMicrotask(() => {
 						awareness.setLocalStateField("cursor", {
 							anchor,
