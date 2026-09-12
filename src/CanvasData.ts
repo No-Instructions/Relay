@@ -317,3 +317,31 @@ function formatObsidianJsonLines(value: unknown): string[] {
 function isPrimitiveJsonValue(value: unknown): boolean {
 	return typeof value !== "object";
 }
+
+/**
+ * Whether a canvas view's rendered data can be taken as view.file's own.
+ *
+ * Obsidian reuses canvas views across file switches, so between the file
+ * pointer moving and setViewData landing a view still renders the previous
+ * file's nodes. Node ids are random: a non-empty rendered node set drawn
+ * entirely from the ids this file holds — in its local CRDT, on disk, or
+ * across both — cannot be another file's content, while a reused view
+ * mid-switch renders the other file's ids and keeps waiting for its load.
+ * A view with no nodes is evidence only when the disk copy has none
+ * either; an empty view over a populated file is a load still in flight.
+ */
+export function viewDataBelongsToFile(
+	view: CanvasData | null | undefined,
+	local: CanvasData | null | undefined,
+	disk: CanvasData | null | undefined,
+): boolean {
+	if (!view) return false;
+	const rendered = view.nodes ?? [];
+	if (rendered.length === 0) {
+		return !!disk && (disk.nodes ?? []).length === 0;
+	}
+	const known = new Set<string>();
+	for (const node of local?.nodes ?? []) known.add(node.id);
+	for (const node of disk?.nodes ?? []) known.add(node.id);
+	return rendered.every((node) => known.has(node.id));
+}

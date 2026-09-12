@@ -6,6 +6,7 @@ import {
 	areCanvasDataEqual,
 	mergeCanvasThreeWay,
 	mergeCanvasViewData,
+	viewDataBelongsToFile,
 } from "./CanvasData";
 import type {
 	CanvasData,
@@ -45,6 +46,16 @@ interface EmbedEditorView {
 	lastSavedData?: unknown;
 }
 
+/**
+ * A view node as Obsidian renders it: a file node creates its embed child
+ * inside render(), on the frame after a load or when panning first brings
+ * the node into the viewport.
+ */
+type RenderedCanvasNode = CanvasNode & {
+	child?: EmbedEditorView;
+	render?: () => void;
+};
+
 export class CanvasPlugin extends HasLogging {
 	view: CanvasView;
 	relayCanvas: Canvas;
@@ -52,7 +63,16 @@ export class CanvasPlugin extends HasLogging {
 	unsubscribes: Array<() => void>;
 	relayCanvasView: RelayCanvasView;
 	observedTextNodes: Set<string>;
-	trackedEmbedViews: Set<unknown>;
+	/**
+	 * Embedded editors wired to their documents (lock, live session,
+	 * presence), keyed by the embed view Obsidian rendered, with the
+	 * release that undoes the wiring.
+	 */
+	private embedReleases = new Map<EmbedEditorView, () => void>();
+	/** The embed each view node currently has wired, for replacement. */
+	private nodeEmbeds = new Map<CanvasNode, EmbedEditorView>();
+	/** Per view node, the unpatch for its render hook. */
+	private nodeHooks = new Map<CanvasNode, () => void>();
 	/**
 	 * True once the view's rendered data is known to belong to view.file.
 	 * Obsidian reuses canvas views across file switches: between the file
@@ -62,10 +82,16 @@ export class CanvasPlugin extends HasLogging {
 	 * content crosses between the view and the localDoc in either
 	 * direction. Ownership is granted by setViewData (a load for
 	 * view.file), by a native save (which writes the rendered data into
-	 * view.file by definition), or by the construction-time disk
-	 * comparison for views that were already settled.
+	 * view.file by definition), or by evidence that the rendered nodes are
+	 * this file's (viewDataBelongsToFile) — checked at construction, for a
+	 * view whose load ran before the plugin attached, and again whenever
+	 * the machine settles into a reconcile while the view is still unowned.
 	 */
 	private viewDataOwned = false;
+	/** The evidence check in flight, so concurrent requests coalesce. */
+	private ownershipCheck: Promise<void> | null = null;
+	/** A check was requested while one was running; run once more after. */
+	private ownershipCheckQueued = false;
 	/**
 	 * Monotonic count of setViewData deliveries; keys a pending ingest to
 	 * the exact load that armed it.
@@ -102,23 +128,48 @@ export class CanvasPlugin extends HasLogging {
 		this.unsubscribes = [];
 		this.relayCanvasView = relayCanvasView;
 		this.observedTextNodes = new Set();
-		this.trackedEmbedViews = new Set();
 		this.install();
-		void this.verifyViewDataOwnership();
+		this.verifyViewDataOwnership();
 	}
 
 	/**
-	 * Establish ownership by comparing the view's rendered data against
-	 * the file's contents on disk. A mismatch means a load is in flight
-	 * (or the view holds unsaved edits); ownership then arrives with the
-	 * next setViewData or native save instead.
+	 * Establish ownership from evidence that the rendered nodes belong to
+	 * view.file: the rendered node ids are a non-empty subset of the ids
+	 * this file holds in its local CRDT or on disk. A view that still
+	 * renders another file's nodes, or nothing while its load is in
+	 * flight, waits for the next setViewData or native save instead.
+	 *
+	 * Runs at construction and again from every reconcile the machine
+	 * emits while the view is unowned. A plugin that attaches after
+	 * Obsidian's load has already run (a plugin reload with the canvas
+	 * open, a reopened tab whose read finished first) never sees a
+	 * setViewData for that load, so a single attempt is not enough.
+	 * Concurrent requests coalesce into one read, with one more pass
+	 * afterwards if a request arrived mid-flight.
 	 */
-	private async verifyViewDataOwnership(): Promise<void> {
+	private verifyViewDataOwnership(): void {
+		if (this.viewDataOwned) return;
+		if (this.ownershipCheck) {
+			this.ownershipCheckQueued = true;
+			return;
+		}
+		this.ownershipCheck = this.checkViewDataOwnership().finally(() => {
+			this.ownershipCheck = null;
+			if (this.ownershipCheckQueued) {
+				this.ownershipCheckQueued = false;
+				this.verifyViewDataOwnership();
+			}
+		});
+	}
+
+	private async checkViewDataOwnership(): Promise<void> {
 		const file = this.view?.file;
-		if (!file || this.viewDataOwned) return;
+		if (!file || !this.relayCanvas || file !== this.relayCanvas.tfile) {
+			return;
+		}
 		try {
 			const raw = await this.relayCanvas.vault.cachedRead(file);
-			if (!this.canvas || !this.relayCanvas) return;
+			if (this.viewDataOwned || !this.canvas || !this.relayCanvas) return;
 			if (this.view.file !== file) return;
 			const parsed = (raw.trim().length > 0 ? JSON.parse(raw) : {}) as {
 				nodes?: CanvasNodeData[];
@@ -128,22 +179,48 @@ export class CanvasPlugin extends HasLogging {
 				nodes: parsed.nodes ?? [],
 				edges: parsed.edges ?? [],
 			};
-			if (areCanvasDataEqual(diskData, this.canvas.getData())) {
+			const viewData = this.canvas.getData();
+			const localData = this.relayCanvas.exportData();
+			if (viewDataBelongsToFile(viewData, localData, diskData)) {
+				this.debug(
+					"view data ownership established from rendered node ids",
+					file.path,
+				);
 				this.markViewDataOwned();
+			} else {
+				this.debug(
+					"view data ownership deferred to next load",
+					file.path,
+					{
+						rendered: viewData.nodes.map((n) => n.id),
+						local: localData.nodes.map((n) => n.id),
+						disk: diskData.nodes.map((n) => n.id),
+					},
+				);
 			}
 		} catch (e) {
-			this.debug("view data ownership deferred to next load", e);
+			this.debug("view data ownership check failed; deferred to next load", e);
 		}
+	}
+
+	/** Read-only wiring state for the debug surface. */
+	wiringSnapshot(): {
+		owned: boolean;
+		loadSeq: number;
+		trackedEmbeds: number;
+	} {
+		return {
+			owned: this.viewDataOwned,
+			loadSeq: this.loadSeq,
+			trackedEmbeds: this.embedReleases.size,
+		};
 	}
 
 	private markViewDataOwned(): void {
 		if (this.viewDataOwned || !this.relayCanvas) return;
 		this.viewDataOwned = true;
-		for (const node of this.getEmbedViews()) {
-			if (!node.file) {
-				continue;
-			}
-			this.connectEmbedView(node);
+		for (const node of this.canvas.nodes.values()) {
+			this.adoptEmbed(node);
 		}
 		// Content that reached the localDoc before ownership was
 		// established produced no view updates; ask the machine for a
@@ -153,10 +230,19 @@ export class CanvasPlugin extends HasLogging {
 
 	destroy() {
 		if (this.canvas) {
+			for (const release of [...this.embedReleases.values()]) {
+				release();
+			}
+			for (const unhook of this.nodeHooks.values()) {
+				unhook();
+			}
+			this.nodeHooks.clear();
+			this.nodeEmbeds.clear();
 			this.unsubscribes.forEach((unsubscribe) => unsubscribe());
 			this.unsubscribes = [];
 		}
 		this.pendingViewIngest = null;
+		this.ownershipCheckQueued = false;
 		this.relayCanvasView.tracking = false;
 		this.canvas = null as unknown as typeof this.canvas;
 		this.relayCanvas = null as unknown as typeof this.relayCanvas;
@@ -267,8 +353,73 @@ export class CanvasPlugin extends HasLogging {
 		}
 	}
 
-	private isEmbedAlreadyTracked(embedView: unknown): boolean {
-		return this.trackedEmbedViews.has(embedView);
+	/**
+	 * Wire the embed a node renders, once the view is owned. A file node's
+	 * child does not exist until the node first renders, so a sweep at
+	 * ownership time only reaches the children that exist by then; the
+	 * render hook on every node brings the rest here as they appear. A
+	 * node whose child was replaced releases the previous embed first.
+	 */
+	private adoptEmbed(node: CanvasNode): void {
+		if (!this.viewDataOwned || !this.relayCanvas) return;
+		const child = (node as RenderedCanvasNode).child;
+		if (!child?.file) return;
+		const previous = this.nodeEmbeds.get(node);
+		if (previous === child) return;
+		if (previous) {
+			this.releaseEmbed(previous);
+		}
+		this.nodeEmbeds.set(node, child);
+		if (!this.embedReleases.has(child)) {
+			this.connectEmbedView(child);
+		}
+	}
+
+	private releaseEmbed(embedView: EmbedEditorView): void {
+		const release = this.embedReleases.get(embedView);
+		if (release) {
+			release();
+		}
+	}
+
+	/**
+	 * Watch a view node render so the embed it creates gets wired. Nodes
+	 * arrive through the canvas's addNode (a load, an import, a person
+	 * adding one) and leave through removeNode; both are patched in
+	 * install, and the nodes present at install are hooked there.
+	 */
+	private hookNode(node: CanvasNode): void {
+		if (this.nodeHooks.has(node)) return;
+		if (typeof (node as RenderedCanvasNode).render !== "function") return;
+		const owner = () => this;
+		const unpatch = getPatcher().patch(node, {
+			render(old: (...args: unknown[]) => unknown) {
+				return function (this: CanvasNode, ...args: unknown[]) {
+					const res = old.apply(this, args);
+					try {
+						owner().adoptEmbed(this);
+					} catch (e) {
+						owner().log(e);
+					}
+					return res;
+				};
+			},
+		});
+		this.nodeHooks.set(node, unpatch);
+		this.adoptEmbed(node);
+	}
+
+	private unhookNode(node: CanvasNode): void {
+		const unpatch = this.nodeHooks.get(node);
+		if (unpatch) {
+			unpatch();
+			this.nodeHooks.delete(node);
+		}
+		const embed = this.nodeEmbeds.get(node);
+		if (embed) {
+			this.nodeEmbeds.delete(node);
+			this.releaseEmbed(embed);
+		}
 	}
 
 	/**
@@ -359,134 +510,132 @@ export class CanvasPlugin extends HasLogging {
 			return;
 		}
 
-		this.trackedEmbedViews.add(embedView);
-		this.unsubscribes.push(
-			(() => {
-				let document: Document;
-				try {
-					const ifile = this.relayCanvas.sharedFolder.getFile(embedView.file);
-					if (!isDocument(ifile)) {
-						return () => {};
-					}
-					document = ifile;
-				} catch {
-					// No shared handle (membership refused or undecided): the
-					// embed renders without live sync.
+		const release = (() => {
+			let document: Document;
+			try {
+				const ifile = this.relayCanvas.sharedFolder.getFile(embedView.file);
+				if (!isDocument(ifile)) {
 					return () => {};
 				}
-				const viewRef = this.createEmbedEditorViewRef(embedView);
-				const syncEmbedViewToDocument = this.syncEmbedViewToDocument.bind(this);
-				const logError = this.error.bind(this);
-				const plugin = new ViewHookPlugin(
-					embedView as unknown as MarkdownView,
-					document,
-				);
-				const requestSaveUnsubscribe = getPatcher().patch(embedView, {
-					requestSave: (old: (...args: unknown[]) => unknown) => {
-						return function (this: {
-							__relaySaving?: boolean;
-							app?: { metadataCache?: { trigger?: (name: string, file: unknown) => void } };
-							file?: unknown;
-						}) {
-							if (!this?.__relaySaving) {
-								try {
-									syncEmbedViewToDocument(
-										document,
-										viewRef,
-										"requestSave",
-									);
-								} catch (error: unknown) {
-									logError(
-										"Error syncing canvas embed during requestSave:",
-										error,
-									);
-								}
+				document = ifile;
+			} catch {
+				// No shared handle (membership refused or undecided): the
+				// embed renders without live sync.
+				return () => {};
+			}
+			const viewRef = this.createEmbedEditorViewRef(embedView);
+			const syncEmbedViewToDocument = this.syncEmbedViewToDocument.bind(this);
+			const logError = this.error.bind(this);
+			const plugin = new ViewHookPlugin(
+				embedView as unknown as MarkdownView,
+				document,
+			);
+			const requestSaveUnsubscribe = getPatcher().patch(embedView, {
+				requestSave: (old: (...args: unknown[]) => unknown) => {
+					return function (this: {
+						__relaySaving?: boolean;
+						app?: { metadataCache?: { trigger?: (name: string, file: unknown) => void } };
+						file?: unknown;
+					}) {
+						if (!this?.__relaySaving) {
+							try {
+								syncEmbedViewToDocument(
+									document,
+									viewRef,
+									"requestSave",
+								);
+							} catch (error: unknown) {
+								logError(
+									"Error syncing canvas embed during requestSave:",
+									error,
+								);
 							}
-							this?.app?.metadataCache?.trigger?.("resolve", this.file);
-							return old.call(this);
-						};
-					},
-				});
-				const viewer: DocumentViewer =
-					embedView.leaf ?? Symbol(`canvas-embed:${embedView.file.path}`);
-				let cancelled = false;
-				let lockAcquired = false;
+						}
+						this?.app?.metadataCache?.trigger?.("resolve", this.file);
+						return old.call(this);
+					};
+				},
+			});
+			const viewer: DocumentViewer =
+				embedView.leaf ?? Symbol(`canvas-embed:${embedView.file.path}`);
+			let cancelled = false;
+			let lockAcquired = false;
 
-				document
-					.whenReady()
-					.then(async () => {
+			document
+				.whenReady()
+				.then(async () => {
+					if (cancelled) {
+						return;
+					}
+
+					try {
+						const initialContents = viewRef.getViewData();
+						if (!document.hsm?.isActive() && initialContents.length > 0) {
+							// Canvas embeds do not reliably pass through the normal
+							// TextFileView load hooks before ACQUIRE_LOCK. Seed the
+							// HSM with the current embed buffer so active entry does
+							// not reconcile against an empty localDoc.
+							document.hsm?.send({
+								type: "OBSIDIAN_SET_VIEW_DATA",
+								data: initialContents,
+								clear: true,
+							});
+						}
+						this.connectionManager.acquireDocumentLock(
+							document,
+							viewRef,
+							viewer,
+						);
+						lockAcquired = true;
+					} catch (error: unknown) {
+						this.error(
+							"Error acquiring lock for canvas embed:",
+							error,
+						);
+						return;
+					}
+
+					const hsm = document.hsm;
+					if (hsm?.awaitState) {
+						await hsm.awaitState((state) => state.startsWith("active."));
 						if (cancelled) {
 							return;
 						}
-
-						try {
-							const initialContents = viewRef.getViewData();
-							if (!document.hsm?.isActive() && initialContents.length > 0) {
-								// Canvas embeds do not reliably pass through the normal
-								// TextFileView load hooks before ACQUIRE_LOCK. Seed the
-								// HSM with the current embed buffer so active entry does
-								// not reconcile against an empty localDoc.
-								document.hsm?.send({
-									type: "OBSIDIAN_SET_VIEW_DATA",
-									data: initialContents,
-									clear: true,
-								});
-							}
-							this.connectionManager.acquireDocumentLock(
-								document,
-								viewRef,
-								viewer,
-							);
-							lockAcquired = true;
-						} catch (error: unknown) {
-							this.error(
-								"Error acquiring lock for canvas embed:",
-								error,
-							);
-							return;
-						}
-
-						const hsm = document.hsm;
-						if (hsm?.awaitState) {
-							await hsm.awaitState((state) => state.startsWith("active."));
-							if (cancelled) {
-								return;
-							}
-						}
+					}
 
 
-						const cm = embedView.editor?.cm;
-						const hsmEditorPlugin = cm?.plugin?.(HSMEditorPlugin);
-						hsmEditorPlugin?.initializeIfReady();
+					const cm = embedView.editor?.cm;
+					const hsmEditorPlugin = cm?.plugin?.(HSMEditorPlugin);
+					hsmEditorPlugin?.initializeIfReady();
 
-						plugin.initialize().catch((error) => {
-							this.error(
-								"Error initializing ViewHookPlugin for canvas embed:",
-								error,
-							);
-						});
-					})
-					.catch((error: unknown) => {
+					plugin.initialize().catch((error) => {
 						this.error(
-							"Error waiting for canvas embed readiness:",
+							"Error initializing ViewHookPlugin for canvas embed:",
 							error,
 						);
 					});
+				})
+				.catch((error: unknown) => {
+					this.error(
+						"Error waiting for canvas embed readiness:",
+						error,
+					);
+				});
 
-				return () => {
-					cancelled = true;
-					this.trackedEmbedViews.delete(embedView);
-					requestSaveUnsubscribe();
-					plugin.destroy();
-					if (lockAcquired) {
-						this.connectionManager.releaseDocumentLock(
-							document,
-							viewer,
-						);
-					}
-				};
-			})(),
-		);
+			return () => {
+				cancelled = true;
+				this.embedReleases.delete(embedView);
+				requestSaveUnsubscribe();
+				plugin.destroy();
+				if (lockAcquired) {
+					this.connectionManager.releaseDocumentLock(
+						document,
+						viewer,
+					);
+				}
+			};
+		})();
+		this.embedReleases.set(embedView, release);
 	}
 
 	/**
@@ -510,7 +659,13 @@ export class CanvasPlugin extends HasLogging {
 		// canvases at the same relative path), and ownership rejects a
 		// reused view that has not finished loading this file's data.
 		if (!this.view.file || this.view.file !== this.relayCanvas.tfile) return;
-		if (!this.viewDataOwned) return;
+		if (!this.viewDataOwned) {
+			// The machine settled into a reconcile while the view is still
+			// unowned: re-examine the evidence. Ownership granted this way
+			// requests its own reconcile.
+			this.verifyViewDataOwnership();
+			return;
+		}
 		const pending = this.pendingViewIngest;
 		if (pending) {
 			// Consumed or voided either way: the record describes exactly
@@ -664,8 +819,32 @@ export class CanvasPlugin extends HasLogging {
 						return res;
 					};
 				},
+				addNode(old: (...args: unknown[]) => unknown) {
+					return function (this: unknown, node: CanvasNode, ...rest: unknown[]) {
+						const res = old.call(this, node, ...rest);
+						try {
+							owner().hookNode(node);
+						} catch (e) {
+							owner().log(e);
+						}
+						return res;
+					};
+				},
+				removeNode(old: (...args: unknown[]) => unknown) {
+					return function (this: unknown, node: CanvasNode, ...rest: unknown[]) {
+						try {
+							owner().unhookNode(node);
+						} catch (e) {
+							owner().log(e);
+						}
+						return old.call(this, node, ...rest);
+					};
+				},
 			}),
 		);
+		for (const node of this.canvas.nodes.values()) {
+			this.hookNode(node);
+		}
 
 		const _observer = <T extends CanvasNodeData | CanvasEdgeData>(
 			event: Y.YMapEvent<T>,
@@ -711,12 +890,7 @@ export class CanvasPlugin extends HasLogging {
 				if (node) {
 					if (this.canvas.nodes.has(node.id)) {
 						this.observeNode((node as CanvasNode).getData());
-						
-						// Check if this is a newly created embed node that needs ViewHookPlugin
-						const embedView = (node as { child?: EmbedEditorView }).child;
-						if (embedView?.file && !this.isEmbedAlreadyTracked(embedView)) {
-							this.connectEmbedView(embedView);
-						}
+						this.adoptEmbed(node as CanvasNode);
 					}
 					this.canvas.markMoved(node);
 					this.canvas.markDirty(node);

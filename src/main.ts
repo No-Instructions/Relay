@@ -192,6 +192,10 @@ export default class Live extends Plugin {
 	get metadataBridge(): MetadataBridge | undefined {
 		return this._liveViews;
 	}
+	/** The view manager, for the debug surface's read-only probes. */
+	get liveViews(): LiveViewManager | undefined {
+		return this._liveViews;
+	}
 	fileDiffMergeWarningKey = "file-diff-merge-warning";
 	version = GIT_TAG;
 	repo = REPOSITORY;
