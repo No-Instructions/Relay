@@ -18,6 +18,7 @@ export interface FeatureFlags {
 	enableFrontmatterDuplicateRecovery: boolean;
 	enableSingleUserHistory: boolean;
 	enableStreamerMode: boolean;
+	enableCanvasPresence: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -182,6 +183,14 @@ export const FeatureFlagSchema: {
 		title: "Streamer mode",
 		description:
 			"Show only chosen display names and uploaded avatars; hide account names, profile pictures, and email addresses.",
+		requiresReload: false,
+	},
+	enableCanvasPresence: {
+		default: false,
+		category: "labs",
+		title: "Canvas presence",
+		description:
+			"Show collaborators' cursors, viewports, selections, and connections being drawn on shared canvases.",
 		requiresReload: false,
 	},
 };
