@@ -18,6 +18,7 @@
 	export let relayUsers: any;
 	export let vertical = false;
 	export let getEditor: (() => unknown) | undefined = undefined;
+	export let locateUser: ((userId: string) => boolean) | undefined = undefined;
 
 	const filterStore = writable<AttributionFilter>(null);
 	$: attributionAvailable = !!getEditor;
@@ -83,8 +84,30 @@
 			cleanupFunction();
 		}
 
-		const handleChange = () => {
-			awarenessUpdate.update((n) => n + 1);
+		// Cursor, selection, and viewport fields change many times a second;
+		// the stack only cares who is present and how they present themselves.
+		const profiles = new Map<number, string>();
+		const handleChange = ({
+			added,
+			updated,
+			removed,
+		}: {
+			added: number[];
+			updated: number[];
+			removed: number[];
+		}) => {
+			let relevant = added.length > 0 || removed.length > 0;
+			for (const clientId of removed) profiles.delete(clientId);
+			for (const clientId of [...added, ...updated]) {
+				const profile = JSON.stringify(
+					awareness.getStates().get(clientId)?.user ?? null,
+				);
+				if (profiles.get(clientId) !== profile) {
+					profiles.set(clientId, profile);
+					relevant = true;
+				}
+			}
+			if (relevant) awarenessUpdate.update((n) => n + 1);
 		};
 
 		awareness.on("change", handleChange);
@@ -184,6 +207,29 @@
 		if (showPopover) refreshFilter();
 	}
 
+	function isLocalUser(userId: string): boolean {
+		return awareness?.getLocalState()?.user?.id === userId;
+	}
+
+	/** A peer's avatar goes to where they are; anything else opens the list. */
+	function onAvatarClick(event: Event, userId: string) {
+		// The click stops here only when it took the viewer somewhere;
+		// otherwise it reaches the stack and opens the list as always.
+		if (locateUser && !isLocalUser(userId) && locateUser(userId)) {
+			event.stopPropagation();
+		}
+	}
+
+	function onUserRowClick(userId: string) {
+		if (attributionAvailable) {
+			onToggleUser(userId);
+			return;
+		}
+		if (locateUser && !isLocalUser(userId)) {
+			if (locateUser(userId)) showPopover = false;
+		}
+	}
+
 	function handleClickOutside(event: MouseEvent) {
 		if (popoverElement && !popoverElement.contains(event.target as Node)) {
 			showPopover = false;
@@ -232,10 +278,17 @@
 			{#each $displayUsers as user, index (user.id)}
 				<div
 					class="stacked-avatar"
+					class:locatable={!!locateUser && !isLocalUser(user.id)}
 					style="z-index: {10 - index}; {vertical ? 'margin-top' : 'margin-left'}: {getAvatarSpacing(
 						index,
 					)}; transition: all 0.2s ease;"
-					aria-label={user.name}
+					aria-label={locateUser && !isLocalUser(user.id)
+						? `Go to ${user.name}`
+						: user.name}
+					on:click={(e) => onAvatarClick(e, user.id)}
+					on:keydown={(e) => e.key === "Enter" && onAvatarClick(e, user.id)}
+					role="button"
+					tabindex="-1"
 				>
 					{#if user.relayUser}
 						<div class="avatar-with-border" style="border-color: {user.color};">
@@ -294,7 +347,8 @@
 							type="button"
 							class="user-item"
 							class:current-user={index === 0}
-							class:clickable={attributionAvailable}
+							class:clickable={attributionAvailable ||
+								(!!locateUser && !isLocalUser(user.id))}
 							class:attribution-on={attributionAvailable &&
 								attributionIsOn($filterStore) &&
 								included}
@@ -305,13 +359,16 @@
 							attributionIsOn($filterStore)
 								? included
 								: undefined}
-							disabled={!attributionAvailable}
-							on:click={() => onToggleUser(user.id)}
+							disabled={!attributionAvailable &&
+								!(locateUser && !isLocalUser(user.id))}
+							on:click={() => onUserRowClick(user.id)}
 							title={attributionAvailable
 								? included
 									? `Hide ${user.name}'s highlights`
 									: `Highlight ${user.name}'s writing`
-								: undefined}
+								: locateUser && !isLocalUser(user.id)
+									? `Go to ${user.name}`
+									: undefined}
 						>
 							{#if user.relayUser}
 								<div
@@ -399,6 +456,10 @@
 
 	.user-awareness.vertical .avatar-stack {
 		flex-direction: column;
+	}
+
+	.stacked-avatar.locatable {
+		cursor: pointer;
 	}
 
 	.stacked-avatar {
