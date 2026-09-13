@@ -18,6 +18,7 @@ export interface FeatureFlags {
 	enableFrontmatterDuplicateRecovery: boolean;
 	enableSingleUserHistory: boolean;
 	enableStreamerMode: boolean;
+	enableReaderRole: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -183,6 +184,13 @@ export const FeatureFlagSchema: {
 		description:
 			"Show only chosen display names and uploaded avatars; hide account names, profile pictures, and email addresses.",
 		requiresReload: false,
+	},
+	enableReaderRole: {
+		default: false,
+		category: "labs",
+		title: "Reader role",
+		description:
+			"Offer the Reader role when sharing folders and inviting users. Readers receive live updates without publishing changes.",
 	},
 };
 
