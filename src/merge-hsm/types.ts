@@ -243,6 +243,13 @@ export interface MergeState {
 }
 
 // =============================================================================
+// Access Mode
+// =============================================================================
+
+/** Content-write permission for a document session. */
+export type ActiveAccessMode = "write" | "read";
+
+// =============================================================================
 // State Path Types (Discriminated Union)
 // =============================================================================
 
@@ -265,6 +272,8 @@ export type StatePath =
 	| "active.entering.awaitingPersistence"
 	| "active.entering.reconciling"
 	| "active.tracking"
+	| "active.reading"
+	| "active.reading.repairing"
 	| "active.merging.twoWay"
 	| "active.merging.threeWay"
 	| "active.conflict.bannerShown"
@@ -299,6 +308,23 @@ export interface AcquireLockEvent {
 	 * when DISK_CHANGED fires and dirty === false (auto-save has flushed).
 	 */
 	editorViewRef?: EditorViewRef;
+	/** Omitted means the machine asks its getAccessMode callback. */
+	accessMode?: ActiveAccessMode;
+}
+
+/** Write access ended for an open document; enters active.reading. */
+export interface DemoteToReadEvent {
+	type: "DEMOTE_TO_READ";
+}
+
+/** Write access returned for an open document; a held fork is presented first. */
+export interface PromoteToWriteEvent {
+	type: "PROMOTE_TO_WRITE";
+}
+
+/** User action: discard the preserved fork and rebuild localDoc from the replica. */
+export interface DiscardLocalForkEvent {
+	type: "DISCARD_LOCAL_FORK";
 }
 
 export interface ReleaseLockEvent {
@@ -650,6 +676,10 @@ export type MergeEvent =
 	| DismissConflictEvent
 	| OpenDiffViewEvent
 	| CancelEvent
+	| DiscardLocalForkEvent
+	// Permission transitions
+	| DemoteToReadEvent
+	| PromoteToWriteEvent
 	// Internal
 	| PersistenceLoadedEvent
 	| PersistenceSyncedEvent
@@ -770,6 +800,17 @@ export interface DiagnosticEffect {
 	detail?: Record<string, unknown>;
 }
 
+/**
+ * A read-mode repair replaced a Reader's local edit with the shared version.
+ * `contentHash` identifies the replaced text in the log stream.
+ */
+export interface ReaderEditOverwrittenEffect {
+	type: "READER_EDIT_OVERWRITTEN";
+	guid: string;
+	path: string;
+	contentHash: string;
+}
+
 export type MergeEffect =
 	| DispatchCM6Effect
 	| SetCM6Effect
@@ -780,7 +821,8 @@ export type MergeEffect =
 	| StatusChangedEffect
 	| RequestProviderSyncEffect
 	| RequestHibernateEffect
-	| DiagnosticEffect;
+	| DiagnosticEffect
+	| ReaderEditOverwrittenEffect;
 
 // =============================================================================
 // Persistence Types
@@ -961,6 +1003,8 @@ export interface IYDocPersistence {
 	 * @returns true if initialization happened, false if already initialized
 	 */
 	initializeFromRemote?(update: Uint8Array, origin?: unknown): Promise<boolean>;
+	/** Delete every stored row for this document so a rebuild starts empty. */
+	clearDocumentData?(): Promise<void>;
 	/**
 	 * OpCapture instance managed by this persistence layer.
 	 * Initialized during the persistence sync lifecycle when captureOpts
@@ -1056,6 +1100,7 @@ export interface MergeHSMConfig {
 	 */
 	createPersistence: CreatePersistence;
 
+
 	/**
 	 * Metadata to store on the persistence for recovery/debugging.
 	 * Set after persistence syncs.
@@ -1082,6 +1127,9 @@ export interface MergeHSMConfig {
 	 * newly-created HSM that has not yet received its own CONNECTED event.
 	 */
 	isFolderConnected?: () => boolean;
+
+	/** Current content-write permission; absent means "write". */
+	getAccessMode?: () => ActiveAccessMode;
 
 	/**
 	 * When true, invoke sources return never-resolving promises instead of
@@ -1180,6 +1228,10 @@ export interface CapabilityContract {
 	canPersistFullLca?: boolean;
 	canUseRemoteDoc?: boolean;
 	canUsePendingDiskContents?: boolean;
+	/** Whether local editor/machine/disk content may enter localDoc. */
+	canAcceptLocalContent?: boolean;
+	/** Whether local CRDT state may flow to remoteDoc / SYNC_TO_REMOTE. */
+	canSyncOutbound?: boolean;
 }
 
 /** A single state node in the machine definition */

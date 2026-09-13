@@ -81,6 +81,9 @@ export type EvaluationVerdict =
 
 export interface EvaluationResult {
 	verdict: EvaluationVerdict;
+	/** A rejected disk edit must be repaired even if permission changes. */
+	readerRepair?: boolean;
+	readerEditOverwritten?: boolean;
 	/** Formatted localDoc export at evaluation time (flush payload). */
 	contents: string;
 	/** Hash of `contents`. */
@@ -149,7 +152,7 @@ export type CanvasEvent =
 // =============================================================================
 
 export type CanvasEffect =
-	| { type: "WRITE_DISK"; contents: string; hash: string }
+	| { type: "WRITE_DISK"; contents: string; hash: string; readerEditOverwritten?: boolean }
 	| {
 			/**
 			 * Apply the merged data into the localDoc, then write the
@@ -185,6 +188,10 @@ export interface CanvasHSMConfig {
 	getPath: () => string;
 	/** Whether the path currently holds folder membership. */
 	isMember: () => boolean;
+	/** Current content permission; omitted hosts retain writable behavior. */
+	canWriteContent?: () => boolean;
+	/** Whether an empty replica is confirmed shared content rather than first sync. */
+	hasSharedContent?: () => boolean;
 	/** Read the canvas file; null when it does not exist. */
 	readDisk: () => Promise<{ contents: string; mtime: number } | null>;
 	/** Export the localDoc's canvas data. */
