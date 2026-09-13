@@ -1,6 +1,7 @@
 import type { RequestUrlResponse } from "obsidian";
 import type { IObservable } from "./observable/Observable";
 import type { ObservableMap } from "./observable/ObservableMap";
+import { flags } from "./flagManager";
 
 export type Role = "Owner" | "Member" | "Reader";
 
@@ -189,4 +190,10 @@ export interface FileInfo
 
 export interface FileInfoSend extends FileInfo {
 	attachment: null | Blob | File;
+}
+
+/** The roles the client offers in role menus; Reader only when its flag is on. */
+export function offeredRoles<T extends { name: Role }>(roles: T[]): T[] {
+	if (flags().enableReaderRole) return roles;
+	return roles.filter((role) => role.name !== "Reader");
 }
