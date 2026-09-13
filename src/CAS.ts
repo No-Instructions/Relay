@@ -139,6 +139,11 @@ export class ContentAddressedStore extends HasLogging {
 	}
 
 	async writeFile(syncFile: SyncFile): Promise<void> {
+		if (!this.sharedFolder.canWriteContent) {
+			throw new Error(
+				`Cannot upload ${syncFile.path}: read-only access`,
+			);
+		}
 		const content = await syncFile.caf.read();
 		const hash = await syncFile.caf.hash();
 		this.log("writeFile", hash);

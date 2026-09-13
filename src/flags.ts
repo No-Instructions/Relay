@@ -19,6 +19,7 @@ export interface FeatureFlags {
 	enableSingleUserHistory: boolean;
 	enableStreamerMode: boolean;
 	enableCanvasPresence: boolean;
+	enableReaderRole: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -192,6 +193,13 @@ export const FeatureFlagSchema: {
 		description:
 			"Show collaborators' cursors, viewports, selections, and connections being drawn on shared canvases.",
 		requiresReload: false,
+	},
+	enableReaderRole: {
+		default: false,
+		category: "labs",
+		title: "Reader role",
+		description:
+			"Offer the Reader role when sharing folders and inviting users. Readers receive live updates without publishing changes.",
 	},
 };
 

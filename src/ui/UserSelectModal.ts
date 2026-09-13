@@ -1,6 +1,6 @@
 import { App, Modal } from "obsidian";
-import type { RemoteSharedFolder, Role } from "src/Relay";
-import type { RelayManager } from "src/RelayManager";
+import type { RemoteSharedFolder } from "src/Relay";
+import type { FolderRoleGrant, RelayManager } from "src/RelayManager";
 import UserSelectModalContent from "../components/UserSelectModalContent.svelte";
 import { mountComponent, type MountedComponent } from "./svelteHost.svelte";
 
@@ -11,7 +11,9 @@ export class UserSelectModal extends Modal {
 		app: App,
 		private relayManager: RelayManager,
 		private folder: RemoteSharedFolder,
-		private onAdd: (userIds: string[], role: Role) => Promise<void>,
+		private onAdd: (
+			grants: FolderRoleGrant[],
+		) => Promise<void>,
 		private preSelectedUserIds?: string[],
 	) {
 		super(app);
@@ -26,8 +28,8 @@ export class UserSelectModal extends Modal {
 				relayManager: this.relayManager,
 				folder: this.folder,
 				preSelectedUserIds: this.preSelectedUserIds,
-				onAdd: async (userIds: string[], role: Role) => {
-					await this.onAdd(userIds, role);
+				onAdd: async (grants: FolderRoleGrant[]) => {
+					await this.onAdd(grants);
 					this.close();
 				},
 			},
