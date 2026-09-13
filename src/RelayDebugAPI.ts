@@ -35,6 +35,7 @@ import type { CanvasData } from './CanvasView';
 import type { ConflictData } from './merge-hsm/conflict';
 import type Live from './main';
 import type { SharedFolder } from './SharedFolder';
+import type { Document } from './Document';
 import type { MergeHSM } from './merge-hsm/MergeHSM';
 import type { MergeManager, MergeManagerDocument } from './merge-hsm/MergeManager';
 import type { RemoteEntityFile } from './BackgroundSync';
@@ -225,6 +226,13 @@ export interface HsmStateSnapshot {
   guid: string;
   folder: string;
   statePath: string;
+  access: {
+    canWriteContent: boolean | null;
+    folderPolicy: boolean | null;
+    tokenAuthorization: string | null;
+    folderRoles: string[];
+    relayRoles: string[];
+  };
   syncGate: HsmSyncGate | null;
   hasLCA: boolean;
   lcaHash: string | null;
@@ -1648,11 +1656,23 @@ export class RelayDebugAPI {
       persistedLcaContent !== null &&
       idbContent === persistedLcaContent;
 
+    const accessDoc = doc as Partial<Pick<Document, 'canWriteContent' | 'clientToken'>>;
+    const manager = this.plugin?.relayManager;
+    const principal = manager?.user?.id;
+    const remote = folder.remote;
+
     return {
       path: this.toVaultPath(folder, filePath),
       guid,
       folder: folder.name,
       statePath,
+      access: {
+        canWriteContent: accessDoc.canWriteContent ?? null,
+        folderPolicy: folder.canWriteContentAnswer,
+        tokenAuthorization: accessDoc.clientToken?.authorization ?? null,
+        folderRoles: manager?.folderRoles.values().filter(r => r.userId === principal && r.sharedFolderId === remote?.id).map(r => r.role) ?? [],
+        relayRoles: manager?.relayRoles.values().filter(r => r.userId === principal && r.relayId === remote?.relayId).map(r => r.role) ?? [],
+      },
       syncGate,
       hasLCA: hasValidLCA,
       lcaHash: lca?.meta?.hash || null,
