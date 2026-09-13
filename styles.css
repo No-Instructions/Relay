@@ -182,6 +182,52 @@ button.system3-login-button {
 	text-shadow: var(--input-shadow);
 }
 
+.relay-read-only-banner-box,
+.relay-not-synced-banner-box {
+	background: color-mix(in srgb, var(--background-primary), var(--text-normal) 8%);
+	padding-inline-end: var(--scrollbar-width, 12px);
+}
+
+.relay-read-only-banner,
+.relay-not-synced-banner {
+	padding: var(--file-margins);
+	padding-block: 6px;
+	color: var(--text-muted);
+	background: transparent;
+	font-size: var(--font-ui-small);
+	line-height: 1.5;
+	cursor: default;
+}
+
+.workspace-leaf-content:has(> .view-content > .is-readable-line-width) :is(.relay-read-only-banner, .relay-not-synced-banner) > span {
+	display: block;
+	width: max-content;
+	min-width: min(100%, var(--file-line-width));
+	max-width: 100%;
+	margin-inline: auto;
+}
+
+.relay-banner-context {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.3em;
+	vertical-align: bottom;
+	color: var(--text-normal);
+	white-space: nowrap;
+}
+
+.relay-banner-context-icon {
+	display: inline-flex;
+	--icon-size: 1em;
+}
+
+.relay-read-only-header-label,
+.relay-not-synced-header-label {
+	padding: 2px 8px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
 .nav-file-title.system3-conflict::after {
 	content: "";
 	display: inline-block;
