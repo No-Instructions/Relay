@@ -28,6 +28,8 @@ export interface WorkTarget {
 	readonly path: string;
 	readonly destroyed: boolean;
 	readonly sharedFolder: SharedFolder;
+	/** Whether this target may publish local content to the server. */
+	readonly canPublishContent: boolean;
 }
 
 /**

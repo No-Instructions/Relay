@@ -37,6 +37,8 @@ export interface CanvasDocBridgeOptions {
 	skipOutboundOrigin?: (origin: unknown) => boolean;
 	/** remoteDoc transaction origins that must not replicate inbound. */
 	skipInboundOrigin?: (origin: unknown) => boolean;
+	/** Whether local ops may reach the remoteDoc; false holds them in the localDoc. */
+	canPublish?: () => boolean;
 }
 
 export class CanvasDocBridge {
@@ -57,6 +59,7 @@ export class CanvasDocBridge {
 			if (this.destroyed || this._localOnly) return;
 			if (origin === CANVAS_BRIDGE_IN_ORIGIN) return;
 			if (this.opts.skipOutboundOrigin?.(origin)) return;
+			if (this.opts.canPublish?.() === false) return;
 			Y.applyUpdate(this.remoteDoc, update, CANVAS_BRIDGE_OUT_ORIGIN);
 		};
 		this.inboundFn = (update, origin) => {
@@ -102,6 +105,7 @@ export class CanvasDocBridge {
 		if (toLocal.length > 2) {
 			Y.applyUpdate(this.localDoc, toLocal, CANVAS_BRIDGE_IN_ORIGIN);
 		}
+		if (this.opts.canPublish?.() === false) return;
 		const toRemote = Y.encodeStateAsUpdate(
 			this.localDoc,
 			Y.encodeStateVector(this.remoteDoc),
