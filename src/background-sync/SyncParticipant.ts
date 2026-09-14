@@ -59,6 +59,8 @@ export interface SyncOperationContext {
  */
 export interface SyncParticipant extends WorkTarget {
 	planSyncWork(context: PlanContext): WorkRequest<SyncParticipant>[];
+	/** Reject ineligible work before it claims a queue slot or counts as progress. */
+	checkSyncWork?(intent: WorkIntent): void;
 	/**
 	 * Whether a session can be taken now. A file that cannot (one parked in
 	 * a state only its own resolution surface may move) has the request
