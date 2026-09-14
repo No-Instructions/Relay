@@ -1619,6 +1619,10 @@ export class BackgroundSync extends HasLogging {
 		state.latestSnapshot = null;
 	}
 
+	get paused(): boolean {
+		return this.isPaused;
+	}
+
 	/**
 	 * Pauses all lane processing. The lanes can be resumed by calling
 	 * resume().
