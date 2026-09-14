@@ -2,6 +2,7 @@
 import type { AttachmentTransfers } from "./AttachmentTransfers";
 import type { AttachmentVersion } from "./AttachmentIO";
 import { uuidv4 } from "lib0/random";
+import { matchRemoteFolder } from "./remoteFolderMatch";
 import {
 	FileManager,
 	type MetadataCache,
@@ -117,7 +118,14 @@ export interface SharedFolderSettings {
 	 */
 	suspended?: boolean;
 	suspendedAt?: number;
+	/**
+	 * The folder's remote was forgotten on purpose. It binds to no Relay
+	 * Server copy, even one carrying its guid, until a command attaches it
+	 * again.
+	 */
+	detached?: boolean;
 }
+
 
 interface Operation {
 	op: "create" | "rename" | "delete" | "update" | "upgrade" | "noop";
@@ -258,6 +266,7 @@ export class SharedFolder extends HasProvider {
 	private _canManageFilesAnswerCache: boolean | null | undefined = undefined;
 	_shouldConnect: boolean;
 	private _localOnly: boolean;
+	private _detached = false;
 	destroyed: boolean = false;
 	public vault: Vault;
 	syncStore: SyncStore;
@@ -429,6 +438,7 @@ export class SharedFolder extends HasProvider {
 		this._server = remote?.relay.providerId;
 		this._shouldConnect = this.settings.connect ?? true;
 		this._localOnly = this.settings.localOnly ?? false;
+		this._detached = this.settings.detached ?? false;
 		if (remote) {
 			this.subscribeToRemoteRelay(remote);
 		}
@@ -513,7 +523,7 @@ export class SharedFolder extends HasProvider {
 
 		this.unsubscribes.push(
 			this.relayManager.remoteFolders.subscribe((folders) => {
-				this.remote = folders.find((folder) => folder.guid == this.guid);
+				this.remote = matchRemoteFolder(this, folders.values());
 			}),
 		);
 
@@ -2000,6 +2010,21 @@ export class SharedFolder extends HasProvider {
 		);
 	}
 
+	public get detached(): boolean {
+		return this._detached;
+	}
+
+	/**
+	 * Forget the remote on purpose. The server copy is untouched and the
+	 * folder stays off every Relay Server, even one holding a copy with its
+	 * guid, until a command attaches it again.
+	 */
+	public detachRemote(): void {
+		this._detached = true;
+		this.remote = undefined;
+		void this._settings.update((current) => ({ ...current, detached: true }));
+	}
+
 	public set remote(value: RemoteSharedFolder | undefined) {
 		if (this._remote === value) {
 			return;
@@ -2008,12 +2033,13 @@ export class SharedFolder extends HasProvider {
 		const answersBefore = this.answers;
 		this._remote = value;
 		this.relayId = value?.relay?.guid;
+		if (value) this._detached = false;
 		this.s3rn = this.relayId
 			? new S3RemoteFolder(this.relayId, this.guid)
 			: new S3Folder(this.guid);
 		void this._settings.update((current) => ({
 			...current,
-			...{ relay: this.relayId },
+			...{ relay: this.relayId, detached: this._detached || undefined },
 		}));
 
 		if (value) {
@@ -5279,7 +5305,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 				(remotes) => {
 					let updated = false;
 					this.items().forEach((folder) => {
-						const remote = remotes.find((remote) => remote.guid == folder.guid);
+						const remote = matchRemoteFolder(folder, remotes.values());
 						if (folder.remote != remote) {
 							updated = true;
 						}
