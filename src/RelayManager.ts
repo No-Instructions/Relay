@@ -2168,6 +2168,8 @@ export class RelayManager extends HasLogging {
 	async deleteRemote(remoteFolder: RemoteSharedFolder): Promise<boolean> {
 		if (!this.pb) throw new Error("Failed to delete folder");
 		await this.pb.collection("shared_folders").delete(remoteFolder.id);
+		// Reconcile before returning; the realtime deletion may arrive later.
+		this.store?.cascade("shared_folders", remoteFolder.id);
 		return true;
 	}
 
