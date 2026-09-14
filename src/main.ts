@@ -202,21 +202,21 @@ export default class Live extends Plugin {
 	private _hsmStore!: HSMStore;
 	promises = new PromiseTracker();
 
-	enableDebugging(save?: boolean) {
+	async enableDebugging(save?: boolean): Promise<void> {
 		setDebugging(true);
 		console.warn("RelayInstances", RelayInstances);
 		if (save) {
-			void this.debugSettings.update((settings) => ({
+			return this.debugSettings.update((settings) => ({
 				...settings,
 				debugging: true,
 			}));
 		}
 	}
 
-	disableDebugging(save?: boolean) {
+	async disableDebugging(save?: boolean): Promise<void> {
 		setDebugging(false);
 		if (save) {
-			void this.debugSettings.update((settings) => ({
+			return this.debugSettings.update((settings) => ({
 				...settings,
 				debugging: false,
 			}));
@@ -701,7 +701,9 @@ export default class Live extends Plugin {
 		this.register(
 			this.debugSettings.subscribe((settings) => {
 				if (settings.debugging) {
-					this.enableDebugging();
+					this.enableDebugging().catch((error: unknown) => {
+						this.warn("Unable to enable debugging", error);
+					});
 					this.removeCommand("enable-debugging");
 					this.addCommand({
 						id: "show-debug-info",
@@ -725,7 +727,9 @@ export default class Live extends Plugin {
 						id: "disable-debugging",
 						name: "Disable debugging",
 						callback: () => {
-							this.disableDebugging(true);
+							this.disableDebugging(true).catch((error: unknown) => {
+								this.warn("Unable to disable debugging", error);
+							});
 						},
 					});
 				} else {
@@ -735,7 +739,9 @@ export default class Live extends Plugin {
 						id: "enable-debugging",
 						name: "Enable debugging",
 						callback: () => {
-							this.enableDebugging(true);
+							this.enableDebugging(true).catch((error: unknown) => {
+								this.warn("Unable to enable debugging", error);
+							});
 						},
 					});
 				}

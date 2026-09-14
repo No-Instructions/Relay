@@ -96,6 +96,14 @@ export class SyncSettingsManager extends NamespacedSettings<
 		},
 	};
 
+	/** The toggleable categories in schema order, for surfaces built from the schema. */
+	static get categories(): { key: keyof SyncFlags; name: string; description: string }[] {
+		return (Object.keys(SyncSettingsManager.schema) as (keyof SyncFlags)[]).map((key) => {
+			const entry = SyncSettingsManager.schema[key];
+			return { key, name: entry.name, description: entry.description };
+		});
+	}
+
 	static readonly defaultFlags = Object.fromEntries(
 		Object.entries(SyncSettingsManager.schema).map(([key, schema]) => [
 			key,
