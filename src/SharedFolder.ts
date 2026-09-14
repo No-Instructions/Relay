@@ -1,4 +1,6 @@
 "use strict";
+import type { AttachmentTransfers } from "./AttachmentTransfers";
+import type { AttachmentVersion } from "./AttachmentIO";
 import { uuidv4 } from "lib0/random";
 import {
 	FileManager,
@@ -371,6 +373,7 @@ export class SharedFolder extends HasProvider {
 		relayId?: string,
 		authoritative: boolean = false,
 		remote?: RemoteSharedFolder,
+		public attachmentTransfers?: AttachmentTransfers,
 	) {
 		const folderRelayId = remote?.relay.guid ?? relayId;
 		const s3rn = folderRelayId
@@ -2712,6 +2715,7 @@ export class SharedFolder extends HasProvider {
 				);
 				return;
 			}
+			localFile.checkSyncWork("converge");
 			const localHash = await localFile.caf.hash();
 			const diverged = localHash !== remoteMeta.hash;
 			if (diverged) {
@@ -3796,6 +3800,7 @@ export class SharedFolder extends HasProvider {
 	async markUploaded(
 		file: IFile,
 		outcome: SyncCompletionOutcome = "completed",
+		uploaded?: AttachmentVersion,
 	) {
 		if (isSyncFolder(file) && !this.canManageFiles) {
 			if (this.pendingUpload.get(file.path) === file.guid) {
@@ -3917,7 +3922,11 @@ export class SharedFolder extends HasProvider {
 			if (!type) {
 				throw new Error("unexpected sync type");
 			}
-			const hash = await file.caf.hash();
+			if (uploaded) {
+				const current = await this.vault.adapter.stat(file.caf.path);
+				if (!current || current.size !== uploaded.size || current.mtime !== uploaded.mtime) throw new Error("Attachment changed during upload; metadata was not published");
+			}
+			const hash = uploaded?.hash ?? await file.caf.hash();
 			if (!hash) {
 				throw new Error("file hash not yet computed");
 			}
@@ -3926,7 +3935,8 @@ export class SharedFolder extends HasProvider {
 				file.guid,
 				file.mimetype,
 				hash,
-				file.stat.mtime,
+				uploaded?.mtime ?? file.stat.mtime,
+				uploaded?.size ?? file.stat.size,
 			);
 			mark(file, meta);
 			return;
