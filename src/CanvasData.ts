@@ -1,7 +1,7 @@
 import { diff_match_patch } from "diff-match-patch";
 import { areObjectsEqual } from "./areObjectsEqual";
 import { curryLog } from "./debug";
-import type { CanvasData } from "./CanvasView";
+import type { CanvasData, CanvasEdgeData, CanvasNodeData } from "./CanvasView";
 
 const warnMerge = curryLog("[CanvasData]", "warn");
 
@@ -316,4 +316,78 @@ function formatObsidianJsonLines(value: unknown): string[] {
 
 function isPrimitiveJsonValue(value: unknown): boolean {
 	return typeof value !== "object";
+}
+
+/**
+ * Rendered items that match neither the file's local CRDT nor its disk
+ * copy: an item counts as the file's own when the file holds an item with
+ * the same id and the same content on either side.
+ */
+function foreignItems<T extends CanvasItem>(
+	rendered: readonly T[],
+	local: readonly T[],
+	disk: readonly T[],
+): T[] {
+	const localById = new Map(local.map((item) => [item.id, item]));
+	const diskById = new Map(disk.map((item) => [item.id, item]));
+	return rendered.filter((item) => {
+		const own = localById.get(item.id);
+		const saved = diskById.get(item.id);
+		return !(
+			(!!own && areObjectsEqual(item, own)) ||
+			(!!saved && areObjectsEqual(item, saved))
+		);
+	});
+}
+
+/**
+ * The rendered nodes and edges that cannot be view.file's own, for
+ * diagnostics; empty on both when the view's data belongs to the file.
+ */
+export function foreignViewItems(
+	view: CanvasData | null | undefined,
+	local: CanvasData | null | undefined,
+	disk: CanvasData | null | undefined,
+): { nodes: CanvasNodeData[]; edges: CanvasEdgeData[] } {
+	return {
+		nodes: foreignItems(view?.nodes ?? [], local?.nodes ?? [], disk?.nodes ?? []),
+		edges: foreignItems(view?.edges ?? [], local?.edges ?? [], disk?.edges ?? []),
+	};
+}
+
+/**
+ * Whether a canvas view's rendered data can be taken as view.file's own.
+ *
+ * Obsidian reuses canvas views across file switches, so between the file
+ * pointer moving and setViewData landing a view still renders the previous
+ * file's content. A rendered node or edge counts as this file's when the
+ * file holds an item with the same id and the same content, in its local
+ * CRDT or on disk; a non-empty rendered set made entirely of such items
+ * cannot be another file's content unless that file is a byte-identical
+ * copy, which is harmless to merge. Matching by id alone would not do: a
+ * canvas copied from another keeps its ids, so a view still rendering the
+ * original would pass against a copy that has since diverged. Edges are
+ * held to the same rule as nodes; a copy that gained or changed an edge
+ * between the same nodes is another file's content too, and the reconcile
+ * keeps view-only edges. A view holding unsaved edits matches neither and
+ * waits for the native save. A view with no nodes is evidence only when
+ * the disk copy has none either; an empty view over a populated file is a
+ * load still in flight.
+ */
+export function viewDataBelongsToFile(
+	view: CanvasData | null | undefined,
+	local: CanvasData | null | undefined,
+	disk: CanvasData | null | undefined,
+): boolean {
+	if (!view) return false;
+	if ((view.nodes ?? []).length === 0) {
+		return (
+			!!disk &&
+			(disk.nodes ?? []).length === 0 &&
+			(disk.edges ?? []).length === 0 &&
+			(view.edges ?? []).length === 0
+		);
+	}
+	const foreign = foreignViewItems(view, local, disk);
+	return foreign.nodes.length === 0 && foreign.edges.length === 0;
 }
