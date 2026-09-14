@@ -3,6 +3,7 @@ import { curryLog } from "./debug";
 import type { TimeProvider } from "./TimeProvider";
 import { getRelayRequestHeaders, requestUrlWithMetrics } from "./customFetch";
 import { nodeRequestUrl, useNativeNetworking } from "./NodeHttp";
+import { readServiceMessages, type ServiceMessage } from "./ServiceMessages";
 
 interface ServiceStatus {
 	status: string;
@@ -18,6 +19,7 @@ export type NetworkTransportFailure = "obsidian" | "node" | null;
 interface ProbeResponse {
 	status: number;
 	serviceStatus?: ServiceStatus;
+	messages?: readonly ServiceMessage[];
 	invalidBody?: boolean;
 }
 type ProbeResult = { response: ProbeResponse } | { error: unknown };
@@ -50,6 +52,9 @@ class NetworkStatus {
 	private requestSequence = 0;
 	private latestVerdict = new Map<Transport, number>();
 	private failureListeners = new Set<(failure: NetworkTransportFailure) => void>();
+	private messageListeners = new Set<(messages: readonly ServiceMessage[]) => void>();
+	private messages: readonly ServiceMessage[] = [];
+	private monitorConnectivity = true;
 	private failingTransport: NetworkTransportFailure = null;
 	private failureCount = 0;
 	transportFailure: NetworkTransportFailure = null;
@@ -66,8 +71,9 @@ class NetworkStatus {
 		this._log(message, ...args);
 	}
 
-	public start(): void {
+	public start({ monitorConnectivity = true }: { monitorConnectivity?: boolean } = {}): void {
 		if (this.destroyed || this.timer !== undefined) return;
+		this.monitorConnectivity = monitorConnectivity;
 		this.timer = this.timeProvider.setInterval(() => { void this._checkStatus(); }, this.interval);
 	}
 
@@ -108,12 +114,18 @@ class NetworkStatus {
 				!String(result.error).includes("ERR_NETWORK_CHANGED")) break;
 		}
 		if ("response" in result) {
-			this.recordTransportFailure(null);
 			if (result.response.serviceStatus) this.status = result.response.serviceStatus;
+			if (result.response.messages !== undefined) {
+				this.messages = result.response.messages;
+				this.messageListeners.forEach(listener => listener(this.messages));
+			}
+			if (!this.monitorConnectivity) return;
+			this.recordTransportFailure(null);
 			this.setOnline(isHealthy(result.response));
 			return;
 		}
 
+		if (!this.monitorConnectivity) return;
 		this.setOnline(false);
 		if (!isCurrent()) return;
 		const alternatives: Transport[] = ["fetch"];
@@ -269,6 +281,13 @@ class NetworkStatus {
 		return () => { this.failureListeners.delete(listener); };
 	}
 
+	public subscribeServiceMessages(listener: (messages: readonly ServiceMessage[]) => void): () => void {
+		if (this.destroyed) return () => {};
+		this.messageListeners.add(listener);
+		listener(this.messages);
+		return () => { this.messageListeners.delete(listener); };
+	}
+
 	public onceOnline(callback: Callback): void { this._onceOnline.add(callback); }
 
 	public addEventListener(eventType: "online" | "offline", callback: Callback): void {
@@ -282,6 +301,8 @@ class NetworkStatus {
 		this.onOnline = [];
 		this.onOffline = [];
 		this.failureListeners.clear();
+		this.messageListeners.clear();
+		this.messages = [];
 		this.requests.clear();
 	}
 }
@@ -291,12 +312,13 @@ function isHealthy(response: ProbeResponse): boolean {
 }
 
 function readResponse(status: number, readBody: () => unknown): ProbeResponse {
-	if (status !== 200) return { status };
 	try {
 		const body = readBody();
 		const serviceStatus = body && typeof body === "object" && "status" in body && typeof body.status === "string"
 			? body as ServiceStatus : undefined;
-		return { status, serviceStatus };
+		const messages = body && typeof body === "object" && !Array.isArray(body)
+			? readServiceMessages("messages" in body ? body.messages : undefined) : undefined;
+		return { status, serviceStatus, messages };
 	} catch {
 		return { status, invalidBody: true };
 	}

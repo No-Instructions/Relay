@@ -35,6 +35,8 @@ import { MetadataHealthSidebarNoticeMount } from "./ui/MetadataHealthSidebarNoti
 import { SidebarNoticeMount } from "./ui/SidebarNoticeMount";
 import { mountComponent } from "./ui/svelteHost.svelte";
 import NetworkHealthNotice from "./components/NetworkHealthNotice.svelte";
+import ServiceMessagesNotice from "./components/ServiceMessagesNotice.svelte";
+import { ServiceMessages } from "./ServiceMessages";
 import { ResourceMeterMount } from "./ui/ResourceMeter";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager, type LoginSettings } from "./LoginManager";
@@ -176,6 +178,7 @@ export default class Live extends Plugin {
 	folderNavDecorations!: FolderNavigationDecorations;
 	private metadataHealthSidebarNotice: MetadataHealthSidebarNoticeMount | null = null;
 	private networkHealthSidebarNotice: SidebarNoticeMount | null = null;
+	private serviceMessagesSidebarNotice: SidebarNoticeMount | null = null;
 	private resourceMeter: ResourceMeterMount | null = null;
 	relayManager!: RelayManager;
 	deviceManager!: DeviceManager;
@@ -933,6 +936,14 @@ export default class Live extends Plugin {
 				(target, anchor) => mountComponent(NetworkHealthNotice, { target, anchor, props: { networkStatus: this.networkStatus } }),
 			);
 		}
+		const serviceMessages = new ServiceMessages(this.appId, this.manifest.id, HEALTH_URL);
+		this.serviceMessagesSidebarNotice = new SidebarNoticeMount(
+			this.app.workspace,
+			"system3-service-messages-slot",
+			(target, anchor) => mountComponent(ServiceMessagesNotice, {
+				target, anchor, props: { networkStatus: this.networkStatus, messages: serviceMessages },
+			}),
+		);
 
 		this.backgroundSync = new BackgroundSync(
 			this.loginManager,
@@ -994,7 +1005,7 @@ export default class Live extends Plugin {
 			this.tokenStore.start();
 
 			if (!Platform.isIosApp) {
-				// We can't run network status on iOS or it will always be offline.
+				// iOS health probes must not control sync connectivity.
 				this.networkStatus.addEventListener("offline", () => {
 					this.tokenStore.stop();
 					this.relayManager.offline();
@@ -1006,8 +1017,8 @@ export default class Live extends Plugin {
 					void this.relayManager.online();
 					this._liveViews.goOnline();
 				});
-				this.networkStatus.start();
 			}
+			this.networkStatus.start({ monitorConnectivity: !Platform.isIosApp });
 
 			this.registerView(
 				VIEW_TYPE_DIFFERENCES,
@@ -1968,6 +1979,10 @@ export default class Live extends Plugin {
 			this.networkHealthSidebarNotice?.destroy();
 		});
 		this.networkHealthSidebarNotice = null;
+		teardownStep("serviceMessagesSidebarNotice.destroy", () => {
+			this.serviceMessagesSidebarNotice?.destroy();
+		});
+		this.serviceMessagesSidebarNotice = null;
 
 		teardownStep("folderNavDecorations.destroy", () => {
 			this.folderNavDecorations?.destroy();
