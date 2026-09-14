@@ -1254,6 +1254,23 @@ export default class Live extends Plugin {
 		modal.open();
 	}
 
+	openPluginPage(): void {
+		const workspace = this.app.workspace as typeof this.app.workspace & {
+			protocolHandler?: {
+				dispatch?: (params: { action: string; id: string }) => void;
+			};
+		};
+		// Dispatch locally so the plugin page belongs to this vault.
+		if (typeof workspace.protocolHandler?.dispatch === "function") {
+			workspace.protocolHandler.dispatch({
+				action: "show-plugin",
+				id: this.manifest.id,
+			});
+			return;
+		}
+		window.open(`obsidian://show-plugin?id=${encodeURIComponent(this.manifest.id)}`);
+	}
+
 	openGithubRelease(release?: Release | string): void {
 		let target: Release | string | undefined = release;
 		if (typeof release === "string" && release.trim()) {
@@ -1811,7 +1828,6 @@ export default class Live extends Plugin {
 			action: string;
 			relay?: string;
 			id?: string;
-			version?: string;
 		}
 
 		this.registerObsidianProtocolHandler("relay/settings/relays", async (e) => {
@@ -1831,10 +1847,8 @@ export default class Live extends Plugin {
 			},
 		);
 
-		this.registerObsidianProtocolHandler("relay/upgrade", async (e) => {
-			const parameters = e as unknown as Parameters;
-			const version = parameters.version?.trim();
-			this.openReleaseManager(version);
+		this.registerObsidianProtocolHandler("relay/upgrade", () => {
+			this.openPluginPage();
 		});
 
 		this.backgroundSync.start();
