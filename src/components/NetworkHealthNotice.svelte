@@ -19,10 +19,9 @@
 	{slotClass}
 >
 	{#if failure === "node"}
-		Relay can reach its service, but native networking is failing.
+		Native network requests are failing.
 		Try turning off native networking in Relay settings.
 	{:else}
-		Relay can reach its service, but Obsidian's network requests are failing.
-		Restart Obsidian to try to restore the connection.
+		Obsidian's network requests are failing. Please restart Obsidian.
 	{/if}
 </ObsidianFailureNotice>
