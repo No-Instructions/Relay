@@ -159,6 +159,9 @@ const context = await esbuild.context({
 		...builtinModules,
 	],
 	format: "cjs",
+	// Obsidian's renderer resolves dynamic imports through the browser loader.
+	// Compile them to deferred CommonJS loads for desktop Node modules.
+	supported: { "dynamic-import": false },
 	plugins: [
 		SvelteTrustedTypesPlugin,
 		esbuildSvelte({
