@@ -37,6 +37,7 @@ debug-tools/
 .githooks/
 .memory/
 .claude/
+.agents/
 docs/
 infra/
 
