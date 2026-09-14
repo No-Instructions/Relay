@@ -100,6 +100,8 @@ import {
 	setPluginRequestConfig,
 } from "./customFetch";
 import { RelayDebugAPI } from "./RelayDebugAPI";
+import { buildCliContext } from "./cli/context";
+import { registerRelayCli } from "./cli/registerCli";
 import { isRetryableS3Error } from "./S3Error";
 import { MetadataHealth } from "./MetadataHealth";
 import { createPublicApi, publishPublicApi, type Api } from "./PublicAPI";
@@ -202,21 +204,21 @@ export default class Live extends Plugin {
 	private _hsmStore!: HSMStore;
 	promises = new PromiseTracker();
 
-	enableDebugging(save?: boolean) {
+	async enableDebugging(save?: boolean): Promise<void> {
 		setDebugging(true);
 		console.warn("RelayInstances", RelayInstances);
 		if (save) {
-			void this.debugSettings.update((settings) => ({
+			return this.debugSettings.update((settings) => ({
 				...settings,
 				debugging: true,
 			}));
 		}
 	}
 
-	disableDebugging(save?: boolean) {
+	async disableDebugging(save?: boolean): Promise<void> {
 		setDebugging(false);
 		if (save) {
-			void this.debugSettings.update((settings) => ({
+			return this.debugSettings.update((settings) => ({
 				...settings,
 				debugging: false,
 			}));
@@ -1833,6 +1835,29 @@ export default class Live extends Plugin {
 
 		this.backgroundSync.start();
 		this.updateManager.start();
+		this.registerRelayCli();
+	}
+
+	/**
+	 * Register the `relay` command family with the Obsidian CLI. Requires a
+	 * desktop app new enough to expose registerCliHandler; older apps and
+	 * mobile get no commands and no error.
+	 */
+	private registerRelayCli(): void {
+		if (!Platform.isDesktopApp || !requireApiVersion("1.12.2")) return;
+		const registrar = this as unknown as { registerCliHandler?: unknown };
+		if (typeof registrar.registerCliHandler !== "function") return;
+		const ctx = buildCliContext(this, {
+			flags: this.featureSettings,
+			debugging: {
+				get: () => this.debugSettings.get().debugging,
+				set: (on) => on ? this.enableDebugging(true) : this.disableDebugging(true),
+			},
+			metadataHealth: () => this.metadataHealth,
+			debugAPI: this.relayDebugAPI,
+		});
+		const ids = registerRelayCli(this, ctx);
+		this.debug(`[cli] registered ${ids.length} commands`);
 	}
 
 	removeCommand(command: string): void {
