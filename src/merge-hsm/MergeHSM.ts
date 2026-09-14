@@ -1630,10 +1630,17 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				meta: { hash, mtime },
 				snapshot,
 			});
-			this._disk = { hash, mtime };
+			// The write rides on the disk record the conflict was computed
+			// against: the executor refuses a write whose expectation the file
+			// does not meet and reports the file instead, which would replay
+			// the pre-resolution text. The landed write records the new
+			// identity through confirmDiskWrite, as every other write does.
 			this.emitWriteDisk(resolvedText, hash, mtime);
 			this.setStatePath("idle.synced");
 			this.emitPersistState();
+			// The upload requested while the note still counted as conflicted
+			// was refused by the session gate; ask again now that it is settled.
+			this.emitEffect({ type: "ENQUEUE_SYNC", guid: this._guid });
 		});
 	}
 
@@ -6706,9 +6713,16 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		conflict.markResolved(regionOffset);
 
 		const afterText = localDoc.getText("contents").toString();
-		const changes = computePositionedChanges(beforeText, afterText);
-		if (options.dispatchEditor && changes.length > 0) {
-			this.emitEffect({ type: "DISPATCH_CM6", changes });
+		if (options.dispatchEditor) {
+			// The editor may hold the file's text rather than the collaborative
+			// copy, as it does for a conflict that follows a lost merge base.
+			// Diff from what the editor shows, so the dispatched change lands
+			// on the characters it displays and leaves it mirroring localDoc.
+			const editorText = this.readCurrentEditorText() ?? beforeText;
+			const changes = computePositionedChanges(editorText, afterText);
+			if (changes.length > 0) {
+				this.emitEffect({ type: "DISPATCH_CM6", changes });
+			}
 		}
 
 		this.lastKnownEditorText = afterText;
