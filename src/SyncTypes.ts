@@ -47,6 +47,7 @@ export interface CanvasMeta extends MetaBase {
 }
 
 interface BaseFileMeta extends MetaBase {
+	size?: number;
 	version: 0;
 	type: SyncFileType;
 	mimetype: string;
@@ -202,6 +203,7 @@ export function makeFileMeta<T extends SyncFileType>(
 	mimetype: string,
 	hash: string,
 	synctime?: number,
+	size?: number,
 ): SyncTypeToMeta[T] {
 	if (!synctime) {
 		synctime = Date.now();
@@ -213,6 +215,7 @@ export function makeFileMeta<T extends SyncFileType>(
 		mimetype,
 		synctime,
 		hash,
+		...(size === undefined ? {} : { size }),
 	} as SyncTypeToMeta[T];
 }
 
