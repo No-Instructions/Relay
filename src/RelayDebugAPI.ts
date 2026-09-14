@@ -34,6 +34,7 @@ import type { CanvasHSM } from './canvas-hsm/CanvasHSM';
 import type { CanvasData } from './CanvasView';
 import type { ConflictData } from './merge-hsm/conflict';
 import type Live from './main';
+import type { RelayCanvasView } from './LiveViews';
 import type { SharedFolder } from './SharedFolder';
 import type { Document } from './Document';
 import type { MergeHSM } from './merge-hsm/MergeHSM';
@@ -89,7 +90,26 @@ export interface CanvasStateSnapshot {
   /** The provider-facing replica, held in memory alongside the local one. */
   remote: { data: unknown; snapshot: string } | null;
   disk: { data: unknown; mtime: number; parseError: boolean } | null;
-  view: { data: unknown } | null;
+  /**
+   * The open canvas view's rendered data, with the plugin's wiring state
+   * for it: `owned` once the rendered data is known to be this file's (the
+   * gate for CRDT-to-view imports and embedded-note sessions), `loadSeq`
+   * counting setViewData deliveries seen since attach, and `trackedEmbeds`
+   * counting embedded markdown editors wired to their documents, and
+   * `mismatched` listing rendered node and edge ids the last ownership
+   * check could match to neither the local CRDT nor the disk copy (empty
+   * once owned). `wiring` is null when no Relay view is attached to the
+   * leaf.
+   */
+  view: {
+    data: unknown;
+    wiring: {
+      owned: boolean;
+      loadSeq: number;
+      trackedEmbeds: number;
+      mismatched: string[];
+    } | null;
+  } | null;
   localRemoteContentEqual: boolean | null;
   diskMatchesLocal: boolean | null;
   viewMatchesLocal: boolean | null;
@@ -1417,10 +1437,27 @@ export class RelayDebugAPI {
           const data = view.canvas?.getData();
           result.view = {
             data: { nodes: data?.nodes ?? [], edges: data?.edges ?? [] },
+            wiring: null,
           };
         }
       });
     } catch { /* view not readable */ }
+
+    // The Relay view attached to that leaf, when there is one
+    try {
+      if (result.view) {
+        for (const candidate of this.requirePlugin().liveViews?.views ?? []) {
+          const relayView = candidate as Partial<RelayCanvasView>;
+          if (
+            relayView.view?.file?.path === path &&
+            typeof relayView.plugin?.wiringSnapshot === 'function'
+          ) {
+            result.view.wiring = relayView.plugin.wiringSnapshot();
+            break;
+          }
+        }
+      }
+    } catch { /* live views not readable */ }
 
     // Persisted machine record
     try {
