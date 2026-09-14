@@ -1,92 +1,12 @@
-import { Workspace } from "obsidian";
+import type { Workspace } from "obsidian";
 import MetadataHealthNotice from "../components/MetadataHealthNotice.svelte";
-import { mountComponent, type MountedComponent } from "./svelteHost.svelte";
+import { mountComponent } from "./svelteHost.svelte";
 import type { MetadataHealth } from "../MetadataHealth";
+import { SidebarNoticeMount } from "./SidebarNoticeMount";
 
-export class MetadataHealthSidebarNoticeMount {
-	private component: MountedComponent | null = null;
-	private containerEl: HTMLElement | null = null;
-	private offLayoutChange: (() => void) | null = null;
-	private refreshInterval: number | null = null;
-	private layoutReady = false;
-	private destroyed = false;
-
-	constructor(
-		private workspace: Workspace,
-		private metadataHealth: MetadataHealth,
-	) {
-		// onLayoutReady callbacks cannot be unregistered; Obsidian may invoke
-		// this after destroy() when the plugin unloads before layout settles.
-		this.workspace.onLayoutReady(() => {
-			if (this.destroyed) return;
-			this.layoutReady = true;
-			this.sync();
-		});
-
-		const ref = this.workspace.on("layout-change", () => this.sync());
-		this.offLayoutChange = () => {
-			this.workspace.offref(ref);
-		};
-
-		this.refreshInterval = window.setInterval(() => this.sync(), 10_000);
-	}
-
-	private sync(): void {
-		if (this.destroyed || !this.layoutReady) return;
-
-		if (this.component && !this.containerEl?.isConnected) {
-			this.unmount();
-		}
-		if (!this.component) {
-			this.mount();
-		}
-	}
-
-	private mount(): void {
-		const vaultProfile = this.findVaultProfile();
-		const target = vaultProfile?.parentElement;
-		if (!vaultProfile || !target) return;
-
-		Array.from(target.children)
-			.filter((el) => el.classList.contains("system3-metadata-health-slot"))
-			.forEach((el) => el.remove());
-
-		this.containerEl = target.createDiv({
-			cls: "system3-metadata-health-slot",
-		});
-		target.insertBefore(this.containerEl, vaultProfile);
-
-		this.component = mountComponent(MetadataHealthNotice, {
-			target: this.containerEl,
-			props: {
-				metadataHealth: this.metadataHealth,
-			},
-		});
-	}
-
-	private findVaultProfile(): HTMLElement | null {
-		return this.workspace.containerEl.querySelector<HTMLElement>(
-			".workspace-split.mod-left-split .workspace-sidedock-vault-profile",
-		);
-	}
-
-	private unmount(): void {
-		this.component?.destroy();
-		this.component = null;
-		this.containerEl?.remove();
-		this.containerEl = null;
-	}
-
-	destroy(): void {
-		this.destroyed = true;
-		if (this.refreshInterval !== null) {
-			window.clearInterval(this.refreshInterval);
-			this.refreshInterval = null;
-		}
-		this.offLayoutChange?.();
-		this.offLayoutChange = null;
-		this.unmount();
-		this.workspace = null as unknown as typeof this.workspace;
-		this.metadataHealth = null as unknown as typeof this.metadataHealth;
+export class MetadataHealthSidebarNoticeMount extends SidebarNoticeMount {
+	constructor(workspace: Workspace, metadataHealth: MetadataHealth) {
+		super(workspace, "system3-metadata-health-slot", (target, anchor) =>
+			mountComponent(MetadataHealthNotice, { target, anchor, props: { metadataHealth } }));
 	}
 }
