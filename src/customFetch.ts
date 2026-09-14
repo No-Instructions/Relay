@@ -3,6 +3,7 @@ import { apiVersion, requestUrl as obsidianRequestUrl } from "obsidian";
 import type { RequestUrlParam, RequestUrlResponse } from "obsidian";
 import { curryLog, metrics, type NetworkDomain, type NetworkResult } from "./debug";
 import { flags } from "./flagManager";
+import { nodeRequestUrl, useNativeNetworking } from "./NodeHttp";
 
 declare const GIT_TAG: string;
 declare const API_URL: string;
@@ -30,6 +31,9 @@ export interface RelayRequestInit extends RequestInit {
 }
 
 export interface RelayRequestUrlParam extends RequestUrlParam {
+	signal?: AbortSignal;
+	maxResponseBytes?: number;
+	redirect?: RequestRedirect;
 	relayNetworkDomain?: RelayRequestDomain;
 }
 
@@ -161,11 +165,16 @@ export async function requestUrlWithMetrics(
 ): Promise<RequestUrlResponse> {
 	const domain = classifyNetworkDomain(params.url, params.relayNetworkDomain);
 	const method = params.method ?? "GET";
-	const requestParams: RequestUrlParam = { ...params };
-	delete (requestParams as RelayRequestUrlParam).relayNetworkDomain;
+	const requestParams = { ...params };
+	delete requestParams.relayNetworkDomain;
+	delete requestParams.signal;
+	delete requestParams.maxResponseBytes;
+	delete requestParams.redirect;
 	const startMs = getNowMs();
 	try {
-		const response = await obsidianRequestUrl(requestParams);
+		const response = useNativeNetworking()
+			? await nodeRequestUrl(requestParams, { signal: params.signal, maxResponseBytes: params.maxResponseBytes, redirect: params.redirect })
+			: await obsidianRequestUrl(requestParams);
 		recordRequestMetrics({
 			domain,
 			method,
@@ -190,62 +199,39 @@ export const customFetch = async (
 	url: RequestInfo | URL,
 	config?: RelayRequestInit,
 ): Promise<Response> => {
-	// Convert URL object to string if necessary
-	const urlString = url instanceof URL ? url.toString() : (url as string);
-
-	const method = config?.method || "GET";
+	const input = typeof Request !== "undefined" && url instanceof Request ? url : undefined;
+	const urlString = input?.url ?? String(url);
+	const method = (config?.method ?? input?.method ?? "GET").toUpperCase();
 	const domain = classifyNetworkDomain(urlString, config?.relayNetworkDomain);
-
-	const headers = Object.assign(
-		{},
-		config?.headers,
-		getRelayRequestHeaders(),
-	) as Record<string, string>;
-
-	// Prepare the request parameters
-	const requestParams: RequestUrlParam = {
-		url: urlString,
-		method: method,
-		body: config?.body as string | ArrayBuffer,
-		headers: headers,
-		throw: false,
-	};
-
-	let response: RequestUrlResponse | undefined = undefined;
-	const startMs = getNowMs();
-	try {
-		response = await obsidianRequestUrl(requestParams);
-	} catch (error) {
-		recordRequestMetrics({
-			domain,
-			method,
-			durationMs: getNowMs() - startMs,
-			responseBytes: 0,
-			result: "error",
-		});
-		// Handle Electron networking errors gracefully to prevent complete networking failure
-		if (
-			(error as { message?: string } | undefined)?.message?.includes(
-				"net::ERR_FAILED",
-			)
-		) {
-			// Return a proper error response instead of throwing
-			return new Response(JSON.stringify({ error: "Network request failed" }), {
-				status: 503,
-				statusText: "Service Unavailable",
-				headers: new Headers({ "content-type": "application/json" }),
-			});
-		}
-		// Re-throw other errors
-		throw error;
+	const signal = config?.signal ?? input?.signal;
+	if (signal?.aborted) throw signal.reason ?? new DOMException("Request aborted", "AbortError");
+	const headers: Record<string, string> = {};
+	new Headers(config?.headers ?? input?.headers).forEach((value, key) => { headers[key] = value; });
+	let body = config?.body !== undefined ? config.body : input?.body ? await input.arrayBuffer() : undefined;
+	if (body != null && typeof body !== "string" && !(body instanceof ArrayBuffer)) {
+		// Use the platform's body encoder for FormData boundaries, blobs, typed
+		// arrays, and URLSearchParams; binary/string callers retain their buffers.
+		const encoded = new Response(body);
+		const contentType = encoded.headers.get("content-type");
+		if (contentType && !headers["content-type"]) headers["content-type"] = contentType;
+		body = await encoded.arrayBuffer();
 	}
-	recordRequestMetrics({
-		domain,
+	if (domain !== "external") {
+		for (const [key, value] of Object.entries(getRelayRequestHeaders())) headers[key.toLowerCase()] = value;
+	}
+	const response = await requestUrlWithMetrics({
+		url: urlString,
 		method,
-		status: response.status,
-		durationMs: getNowMs() - startMs,
-		responseBytes: response.arrayBuffer.byteLength,
+		body: body as string | ArrayBuffer | undefined,
+		headers,
+		throw: false,
+		relayNetworkDomain: domain,
+		signal: signal ?? undefined,
+		redirect: config?.redirect ?? input?.redirect,
 	});
+
+	// Login and configuration callers rely on server errors rejecting.
+	if (response.status >= 500) throw new Error(response.text);
 
 	if (!response.arrayBuffer.byteLength) {
 		return new Response(null, {
@@ -295,14 +281,6 @@ export const customFetch = async (
 			streamerMode
 				? "Response body hidden by Streamer mode"
 				: response_json || response_text,
-		);
-	}
-
-	if (response.status >= 500) {
-		throw new Error(
-			flags().enableStreamerMode
-				? `Request failed with status ${response.status}`
-				: response.text,
 		);
 	}
 
