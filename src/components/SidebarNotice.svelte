@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { AlertTriangle, Info, X } from "lucide-svelte";
+	import { AlertTriangle, X } from "lucide-svelte";
+	import RelayMark from "./RelayMark.svelte";
 
 	export let title: string;
 	export let dismissLabel: string;
@@ -10,12 +11,12 @@
 </script>
 
 <div class="system3-sidebar-notice-slot {slotClass}">
-	<div class="{className} sidebar-notice callout" data-callout={warning ? "warning" : "info"} role="status">
-		<div class="callout-title sidebar-notice-title-row">
-			<div class="callout-icon">
-				{#if warning}<AlertTriangle size={14} />{:else}<Info size={14} />{/if}
+	<div class="{className} sidebar-notice" class:callout={warning} data-callout={warning ? "warning" : undefined} role="status">
+		<div class="sidebar-notice-title-row" class:callout-title={warning}>
+			<div class="sidebar-notice-icon" class:callout-icon={warning}>
+				{#if warning}<AlertTriangle size={14} />{:else}<RelayMark />{/if}
 			</div>
-			<div class="callout-title-inner">{title}</div>
+			<div class="sidebar-notice-title" class:callout-title-inner={warning}>{title}</div>
 			<button
 				class="clickable-icon sidebar-notice-close"
 				type="button"
@@ -25,7 +26,7 @@
 				<X size={14} />
 			</button>
 		</div>
-		<div class="callout-content sidebar-notice-detail">
+		<div class="sidebar-notice-detail" class:callout-content={warning}>
 			<p><slot /></p>
 		</div>
 	</div>
@@ -48,6 +49,24 @@
 		overflow-wrap: anywhere;
 	}
 
+	.sidebar-notice:not(.callout) {
+		margin: 0;
+		padding: var(--size-4-3);
+		border-top: 1px solid var(--background-modifier-border);
+		background-color: color-mix(in srgb, var(--interactive-accent) 8%, transparent);
+		font-size: var(--font-ui-medium);
+		line-height: var(--line-height-normal);
+		color: var(--text-normal);
+	}
+
+	.sidebar-notice:not(.callout) .sidebar-notice-title {
+		font-weight: var(--font-semibold);
+	}
+
+	.sidebar-notice:not(.callout) .sidebar-notice-icon {
+		color: var(--text-accent);
+	}
+
 	.sidebar-notice-title-row {
 		display: flex;
 		align-items: flex-start;
@@ -55,11 +74,13 @@
 		padding: 0;
 	}
 
-	.sidebar-notice-title-row .callout-icon {
+	.sidebar-notice-icon {
 		margin-top: 1px;
+		display: flex;
+		flex: 0 0 auto;
 	}
 
-	.sidebar-notice-title-row .callout-title-inner {
+	.sidebar-notice-title {
 		flex: 1 1 auto;
 		min-width: 0;
 	}
@@ -67,6 +88,10 @@
 	.sidebar-notice-detail {
 		margin: 3px 0 0 22px;
 		padding: 0;
+	}
+
+	.sidebar-notice:not(.callout) .sidebar-notice-detail {
+		margin: var(--size-4-2) 0 0;
 	}
 
 	.sidebar-notice-detail :global(p) {
