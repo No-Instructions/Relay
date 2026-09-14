@@ -42,6 +42,7 @@
 	"dependencies": {
 		"@codemirror/state": "6.5.0",
 		"@codemirror/view": "6.38.6",
+		"@noble/hashes": "1.8.0",
 		"cbor-x": "^1.6.0",
 		"diff": "^5.2.0",
 		"diff-match-patch": "^1.0.5",

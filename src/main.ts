@@ -1,3 +1,4 @@
+import { AttachmentTransfers } from "./AttachmentTransfers";
 "use strict";
 
 import type { MergeEvent } from "./merge-hsm/types";
@@ -147,6 +148,7 @@ declare const GIT_TAG: string;
 declare const REPOSITORY: string;
 
 export default class Live extends Plugin {
+	public attachmentTransfers!: AttachmentTransfers;
 	api!: Api;
 	appId!: string;
 	private _instanceId!: string;
@@ -815,6 +817,8 @@ export default class Live extends Plugin {
 		}));
 
 		this.vault = this.app.vault;
+		this.attachmentTransfers = new AttachmentTransfers(this.vault, this.manifest.id, this.appId);
+		await this.attachmentTransfers.initialize();
 		const vaultName = this.vault.getName();
 		this.fileManager = this.app.fileManager;
 
@@ -1203,6 +1207,7 @@ export default class Live extends Plugin {
 			relayId,
 			authoritative,
 			remote,
+			this.attachmentTransfers,
 		);
 		return folder;
 	}
@@ -1880,6 +1885,7 @@ export default class Live extends Plugin {
 		setActiveTracker(null);
 		this.promises.destroy();
 		this.promises = null as unknown as typeof this.promises;
+		teardownStep("attachmentTransfers.destroy", () => this.attachmentTransfers?.destroy());
 		teardownStep("pendingVaultDeleteFlush", () => {
 			if (this.pendingVaultDeleteFlush !== null) {
 				window.clearTimeout(this.pendingVaultDeleteFlush);
