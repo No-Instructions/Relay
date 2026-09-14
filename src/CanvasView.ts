@@ -36,6 +36,13 @@ export interface ObsidianCanvas extends TextFileView {
 	markDirty(item: CanvasNode | CanvasEdge): void;
 	addEdge(edge: CanvasEdge): void;
 	removeEdge(edge: CanvasEdge): void;
+	/**
+	 * The single paths a node enters and leaves the canvas by: a load, an
+	 * import, and a person adding one all reach addNode; a file switch in a
+	 * reused view, an undo, and clear() all reach removeNode.
+	 */
+	addNode(node: CanvasNode): void;
+	removeNode(node: CanvasNode): void;
 	/** Every edge with either end on the node. */
 	getEdgesForNode(node: CanvasNode): CanvasEdge[];
 	nodes: Map<string, CanvasNode>;
