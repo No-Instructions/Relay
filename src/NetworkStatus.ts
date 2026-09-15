@@ -3,14 +3,16 @@ import { curryLog } from "./debug";
 import type { TimeProvider } from "./TimeProvider";
 import { getRelayRequestHeaders, requestUrlWithMetrics } from "./customFetch";
 import { nodeRequestUrl, useNativeNetworking } from "./NodeHttp";
-import { readServiceMessages, type ServiceMessage } from "./ServiceMessages";
+import { readServiceMessage, readMessageValidity, readMessageActions, messageIsCurrent, type MessageValidity, type ServiceMessage, type ServiceMessageAction } from "./ServiceMessages";
 
-interface ServiceStatus {
+export interface ServiceStatus extends MessageValidity {
+	id?: string;
 	status: string;
 	versions?: { stable: string; beta: string };
 	backgroundColor?: string;
 	color?: string;
 	link?: string;
+	actions?: readonly ServiceMessageAction[];
 }
 
 type Callback = (status?: ServiceStatus) => void;
@@ -18,8 +20,9 @@ type Transport = "obsidian" | "fetch" | "node";
 export type NetworkTransportFailure = "obsidian" | "node" | null;
 interface ProbeResponse {
 	status: number;
-	serviceStatus?: ServiceStatus;
-	messages?: readonly ServiceMessage[];
+	serviceStatus?: ServiceStatus | null;
+	sidebar?: ServiceMessage | null;
+	note?: ServiceMessage | null;
 	invalidBody?: boolean;
 }
 type ProbeResult = { response: ProbeResponse } | { error: unknown };
@@ -43,8 +46,17 @@ class NetworkStatus {
 	// deadlines so a stuck Obsidian request cannot accumulate on every poll.
 	private requests = new Map<Transport, Promise<ProbeResponse>>();
 	private failureListeners = new Set<(failure: NetworkTransportFailure) => void>();
-	private messageListeners = new Set<(messages: readonly ServiceMessage[]) => void>();
-	private messages: readonly ServiceMessage[] = [];
+	private messageListeners = new Set<(message: ServiceMessage | null) => void>();
+	private statusListeners = new Set<(status: ServiceStatus | undefined) => void>();
+	private noteListeners = new Set<(message: ServiceMessage | null) => void>();
+	private selectedNote: ServiceMessage | null = null;
+	private note: ServiceMessage | null = null;
+	private selectedStatus: ServiceStatus | null = null;
+	private selectedSidebar: ServiceMessage | null = null;
+	private sidebar: ServiceMessage | null = null;
+	private validityTimer?: number;
+	private observingValidity = false;
+	private refreshOnResume = () => this.refreshMessages();
 	private monitorConnectivity = true;
 	private failingTransport: NetworkTransportFailure = null;
 	private failureCount = 0;
@@ -65,10 +77,19 @@ class NetworkStatus {
 	public start({ monitorConnectivity = true }: { monitorConnectivity?: boolean } = {}): void {
 		if (this.destroyed || this.timer !== undefined) return;
 		this.monitorConnectivity = monitorConnectivity;
+		this.observingValidity = true;
+		if (typeof window !== "undefined" && typeof window.addEventListener === "function") window.addEventListener("focus", this.refreshOnResume);
+		if (typeof document !== "undefined") document.addEventListener("visibilitychange", this.refreshOnResume);
+		this.refreshMessages();
 		this.timer = this.timeProvider.setInterval(() => { void this._checkStatus(); }, this.interval);
 	}
 
 	public stop(): void {
+		this.observingValidity = false;
+		if (this.validityTimer !== undefined) this.timeProvider.clearTimeout(this.validityTimer);
+		this.validityTimer = undefined;
+		if (typeof window !== "undefined" && typeof window.removeEventListener === "function") window.removeEventListener("focus", this.refreshOnResume);
+		if (typeof document !== "undefined") document.removeEventListener("visibilitychange", this.refreshOnResume);
 		if (this.timer !== undefined) this.timeProvider.clearInterval(this.timer);
 		this.timer = undefined;
 		this.generation++;
@@ -104,11 +125,10 @@ class NetworkStatus {
 				!String(result.error).includes("ERR_NETWORK_CHANGED")) break;
 		}
 		if ("response" in result) {
-			if (result.response.serviceStatus) this.status = result.response.serviceStatus;
-			if (result.response.messages !== undefined) {
-				this.messages = result.response.messages;
-				this.messageListeners.forEach(listener => listener(this.messages));
-			}
+			if (result.response.serviceStatus !== undefined) this.selectedStatus = result.response.serviceStatus;
+			if (result.response.sidebar !== undefined) this.selectedSidebar = result.response.sidebar;
+			if (result.response.note !== undefined) this.selectedNote = result.response.note;
+			this.refreshMessages();
 			if (!this.monitorConnectivity) return;
 			this.recordTransportFailure(null);
 			this.setOnline(isHealthy(result.response));
@@ -217,14 +237,66 @@ class NetworkStatus {
 		return () => { this.failureListeners.delete(listener); };
 	}
 
-	public subscribeServiceMessages(listener: (messages: readonly ServiceMessage[]) => void): () => void {
+	private refreshMessages(): void {
+		if (this.destroyed) return;
+		if (this.validityTimer !== undefined) this.timeProvider.clearTimeout(this.validityTimer);
+		this.validityTimer = undefined;
+		const now = this.timeProvider.now();
+		const status = this.selectedStatus && messageIsCurrent(this.selectedStatus, now) ? this.selectedStatus : undefined;
+		const sidebar = this.selectedSidebar && messageIsCurrent(this.selectedSidebar, now) ? this.selectedSidebar : null;
+		if (this.status !== status) {
+			this.status = status;
+			this.statusListeners.forEach(listener => listener(status));
+		}
+		if (this.sidebar !== sidebar) {
+			this.sidebar = sidebar;
+			this.messageListeners.forEach(listener => listener(sidebar));
+		}
+		const note = this.selectedNote && messageIsCurrent(this.selectedNote, now) ? this.selectedNote : null;
+		if (this.note !== note) {
+			this.note = note;
+			this.noteListeners.forEach(listener => listener(note));
+		}
+		if (!this.observingValidity) return;
+		const boundaries = [this.selectedStatus, this.selectedSidebar, this.selectedNote].flatMap(message =>
+			message ? [message.validFrom, message.validUntil].filter((bound): bound is string => !!bound).map(Date.parse) : []);
+		const next = Math.min(...boundaries.filter(bound => bound > now));
+		if (Number.isFinite(next)) {
+			this.validityTimer = this.timeProvider.setTimeout(() => {
+				this.validityTimer = undefined;
+				this.refreshMessages();
+			}, Math.min(next - now, 2_147_483_647));
+		}
+	}
+
+	public subscribeServiceStatus(listener: (status: ServiceStatus | undefined) => void): () => void {
 		if (this.destroyed) return () => {};
+		this.refreshMessages();
+		this.statusListeners.add(listener);
+		listener(this.status);
+		return () => { this.statusListeners.delete(listener); };
+	}
+
+	public subscribeServiceMessage(listener: (message: ServiceMessage | null) => void): () => void {
+		if (this.destroyed) return () => {};
+		this.refreshMessages();
 		this.messageListeners.add(listener);
-		listener(this.messages);
+		listener(this.sidebar);
 		return () => { this.messageListeners.delete(listener); };
 	}
 
-	public onceOnline(callback: Callback): void { this._onceOnline.add(callback); }
+	public subscribeNoteMessage(listener: (message: ServiceMessage | null) => void): () => void {
+		if (this.destroyed) return () => {};
+		this.refreshMessages();
+		this.noteListeners.add(listener);
+		listener(this.note);
+		return () => { this.noteListeners.delete(listener); };
+	}
+
+	public onceOnline(callback: Callback): () => void {
+		this._onceOnline.add(callback);
+		return () => { this._onceOnline.delete(callback); };
+	}
 
 	public addEventListener(eventType: "online" | "offline", callback: Callback): void {
 		(eventType === "online" ? this.onOnline : this.onOffline).push(callback);
@@ -238,7 +310,14 @@ class NetworkStatus {
 		this.onOffline = [];
 		this.failureListeners.clear();
 		this.messageListeners.clear();
-		this.messages = [];
+		this.statusListeners.clear();
+		this.noteListeners.clear();
+		this.selectedNote = null;
+		this.note = null;
+		this.selectedStatus = null;
+		this.selectedSidebar = null;
+		this.sidebar = null;
+		this.status = undefined;
 		this.requests.clear();
 	}
 }
@@ -250,11 +329,27 @@ function isHealthy(response: ProbeResponse): boolean {
 function readResponse(status: number, readBody: () => unknown): ProbeResponse {
 	try {
 		const body = readBody();
-		const serviceStatus = body && typeof body === "object" && "status" in body && typeof body.status === "string"
-			? body as ServiceStatus : undefined;
-		const messages = body && typeof body === "object" && !Array.isArray(body)
-			? readServiceMessages("messages" in body ? body.messages : undefined) : undefined;
-		return { status, serviceStatus, messages };
+		if (!body || typeof body !== "object" || Array.isArray(body)) return { status };
+		const entry = body as Record<string, unknown>;
+		const validity = readMessageValidity(entry);
+		const cleared = entry.status === undefined || entry.status === null ||
+			(typeof entry.status === "string" && !entry.status.trim()) ||
+			(entry.status === "ok" && entry.backgroundColor === "transparent" && entry.color === "transparent");
+		let serviceStatus: ServiceStatus | null | undefined = cleared ? null : undefined;
+		if (!cleared && typeof entry.status === "string" && validity) {
+			serviceStatus = { status: entry.status, ...validity };
+			const actions = readMessageActions(entry.actions);
+			if (actions.length) serviceStatus.actions = actions;
+			for (const key of ["id", "link", "backgroundColor", "color"] as const) {
+				const value = entry[key];
+				if (typeof value === "string") serviceStatus[key] = value;
+			}
+			const versions = entry.versions as Record<string, unknown> | undefined;
+			if (versions && typeof versions.stable === "string" && typeof versions.beta === "string") {
+				serviceStatus.versions = { stable: versions.stable, beta: versions.beta };
+			}
+		}
+		return { status, serviceStatus, sidebar: readServiceMessage(entry.sidebar), note: readServiceMessage(entry.note) };
 	} catch {
 		return { status, invalidBody: true };
 	}

@@ -262,6 +262,8 @@ export class RelayCanvasView implements S3View {
 	private offConnectionStatusSubscription?: () => void;
 	private _parent: LiveViewManager;
 	private _banner?: Banner;
+	private _offlineBanner?: Banner;
+	private _offOfflineOnline?: () => void;
 	private _awarenessPlugin?: AwarenessViewPlugin;
 	private _presencePlugin?: CanvasPresencePlugin;
 	private _lockViewer?: DocumentViewer;
@@ -306,8 +308,9 @@ export class RelayCanvasView implements S3View {
 	}
 
 	offlineBanner(): () => void {
-		if (this.shouldConnect) {
-			const banner = new Banner(
+		if (!this.shouldConnect) return () => {};
+		if (!this._offlineBanner) {
+			this._offlineBanner = new Banner(
 				this.view,
 				{ short: "Offline", long: "You're offline -- click to reconnect" },
 				async () => {
@@ -315,13 +318,21 @@ export class RelayCanvasView implements S3View {
 					this.connect();
 					return this._parent.networkStatus.online;
 				},
+				{ priority: 0 },
 			);
-			this._parent.networkStatus.onceOnline(() => {
+			this._offOfflineOnline = this._parent.networkStatus.onceOnline(() => {
+				this.clearOfflineBanner();
 				this.connect();
-				banner.destroy();
 			});
 		}
-		return () => {};
+		return () => this.clearOfflineBanner();
+	}
+
+	private clearOfflineBanner(): void {
+		this._offOfflineOnline?.();
+		this._offOfflineOnline = undefined;
+		this._offlineBanner?.destroy();
+		this._offlineBanner = undefined;
 	}
 
 	setConnectionDot(): void {
@@ -492,6 +503,7 @@ export class RelayCanvasView implements S3View {
 		this._awarenessPlugin = undefined;
 		this._viewActions?.destroy();
 		this._viewActions = undefined;
+		this.clearOfflineBanner();
 		this._banner?.destroy();
 		this._banner = undefined;
 		if (this.offConnectionStatusSubscription) {
@@ -542,6 +554,8 @@ export class LiveView<ViewType extends TextFileView>
 	private offConnectionStatusSubscription?: () => void;
 	private _parent: LiveViewManager;
 	private _banner?: Banner;
+	private _offlineBanner?: Banner;
+	private _offOfflineOnline?: () => void;
 	private _forkNotice?: Banner;
 	private _forcedPreviewForReadOnly = false;
 	/** Last access mode observed by the editor UX edge detector. */
@@ -827,8 +841,9 @@ export class LiveView<ViewType extends TextFileView>
 	}
 
 	offlineBanner(): () => void {
-		if (this.shouldConnect) {
-			const banner = new Banner(
+		if (!this.shouldConnect) return () => {};
+		if (!this._offlineBanner) {
+			this._offlineBanner = new Banner(
 				this.view,
 				{ short: "Offline", long: "You're offline -- click to reconnect" },
 				async () => {
@@ -836,13 +851,21 @@ export class LiveView<ViewType extends TextFileView>
 					this.connect();
 					return this._parent.networkStatus.online;
 				},
+				{ priority: 0 },
 			);
-			this._parent.networkStatus.onceOnline(() => {
+			this._offOfflineOnline = this._parent.networkStatus.onceOnline(() => {
+				this.clearOfflineBanner();
 				this.connect();
-				banner.destroy();
 			});
 		}
-		return () => {};
+		return () => this.clearOfflineBanner();
+	}
+
+	private clearOfflineBanner(): void {
+		this._offOfflineOnline?.();
+		this._offOfflineOnline = undefined;
+		this._offlineBanner?.destroy();
+		this._offlineBanner = undefined;
 	}
 
 	setConnectionDot(): void {
@@ -1148,6 +1171,7 @@ export class LiveView<ViewType extends TextFileView>
 
 		this._viewActions?.destroy();
 		this._viewActions = undefined;
+		this.clearOfflineBanner();
 		this._banner?.destroy();
 		this._banner = undefined;
 		this._forkNotice?.destroy();
