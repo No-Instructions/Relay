@@ -7,13 +7,15 @@
 	export let className = "";
 	export let slotClass: string;
 	export let warning = false;
+	export let backgroundColor: string | undefined = undefined;
+	export let color: string | undefined = undefined;
 	export let onDismiss: () => void;
 </script>
 
 <div class="system3-sidebar-notice-slot {slotClass}">
-	<div class="{className} sidebar-notice" class:callout={warning} data-callout={warning ? "warning" : undefined} role="status">
+	<div class="{className} sidebar-notice" class:callout={warning} data-callout={warning ? "warning" : undefined} role="status" style:background-color={backgroundColor} style:color={color}>
 		<div class="sidebar-notice-title-row" class:callout-title={warning}>
-			<div class="sidebar-notice-icon" class:callout-icon={warning}>
+			<div class="sidebar-notice-icon" class:callout-icon={warning} style:color={color}>
 				{#if warning}<AlertTriangle size={14} />{:else}<RelayMark />{/if}
 			</div>
 			<div class="sidebar-notice-title" class:callout-title-inner={warning}>{title}</div>

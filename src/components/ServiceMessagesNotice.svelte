@@ -1,32 +1,38 @@
 <script lang="ts">
 	import { onDestroy } from "svelte";
 	import type NetworkStatus from "src/NetworkStatus";
-	import type { ServiceMessage, ServiceMessages } from "src/ServiceMessages";
+	import type { ServiceMessage, ServiceMessages, ServiceMessageAction } from "src/ServiceMessages";
 	import SidebarNotice from "./SidebarNotice.svelte";
+	import ServiceMessageActions from "./ServiceMessageActions.svelte";
+	import { minimark } from "../minimark";
 
 	export let networkStatus: NetworkStatus;
 	export let messages: ServiceMessages;
+	export let onAction: (action: ServiceMessageAction) => void;
 	export let slotClass = "system3-service-messages-slot";
-	let visible: readonly ServiceMessage[] = [];
-	const unsubscribeMessages = messages.subscribe(next => { visible = next; });
-	const unsubscribeNetwork = networkStatus.subscribeServiceMessages(next => messages.update(next));
+	let message: ServiceMessage | null = null;
+	const unsubscribeMessages = messages.subscribe(next => { message = next; });
+	const unsubscribeNetwork = networkStatus.subscribeServiceMessage(next => messages.update(next));
 	onDestroy(() => {
 		unsubscribeNetwork();
 		unsubscribeMessages();
 	});
 </script>
 
-{#each visible as message (message.id)}
+{#if message}
 	<SidebarNotice
 		title={message.title}
 		dismissLabel={`Dismiss ${message.title}`}
 		className="service-message-notice"
+		backgroundColor={message.backgroundColor}
+		color={message.color}
 		{slotClass}
 		onDismiss={() => messages.dismiss(message.id)}
 	>
-		{message.message}
+		{@html minimark(message.message)}
 		{#if message.link}
 			<a href={message.link} target="_blank" rel="noopener noreferrer">More information</a>
 		{/if}
+		<ServiceMessageActions actions={message.actions ?? []} {onAction} />
 	</SidebarNotice>
-{/each}
+{/if}
