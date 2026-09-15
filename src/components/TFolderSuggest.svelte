@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy, createEventDispatcher, tick } from "svelte";
 	import { App, TFolder } from "obsidian";
-	import { folderSuggestHeight } from "./folderSuggestLayout";
+	import { folderSuggestHeight, placeFolderSuggest } from "./folderSuggestLayout";
 
 	// The dropdown portals out to body level so it escapes the modal's
 	// overflow. That makes its target document a real choice rather than a
@@ -172,14 +172,25 @@
 				suggestEl.style.transform = "translateY(-100%)"; // Position above the bottom point
 			}
 		} else {
-			// Desktop: positioned relative to input using simple left/top
+			// Desktop: anchored to the input's left edge, below it when the
+			// window has room there and above it otherwise, so an input near
+			// the window's bottom edge never opens a list off screen.
 			const desktopWidth = Math.max(rect.width, 350); // Minimum 350px width for better folder path display
 			const maxWidth = Math.min(desktopWidth, viewportWidth - rect.left - 20); // Don't go off screen
+			const placement = placeFolderSuggest(
+				{ top: rect.top, bottom: rect.bottom },
+				viewportHeight,
+				actualHeight,
+			);
 
 			suggestEl.style.left = `${rect.left}px`;
-			suggestEl.style.top = `${rect.bottom + 2}px`;
+			if (placement.side === "above") {
+				suggestEl.style.bottom = `${placement.bottom}px`;
+			} else {
+				suggestEl.style.top = `${placement.top}px`;
+			}
 			suggestEl.style.width = `${maxWidth}px`;
-			suggestEl.style.maxHeight = `${actualHeight}px`;
+			suggestEl.style.maxHeight = `${placement.maxHeight}px`;
 			suggestEl.style.height = ""; // Let content determine height
 		}
 	}
