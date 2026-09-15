@@ -36,7 +36,9 @@ import { SidebarNoticeMount } from "./ui/SidebarNoticeMount";
 import { mountComponent } from "./ui/svelteHost.svelte";
 import NetworkHealthNotice from "./components/NetworkHealthNotice.svelte";
 import ServiceMessagesNotice from "./components/ServiceMessagesNotice.svelte";
-import { ServiceMessages } from "./ServiceMessages";
+import { ServiceMessages, type ServiceMessageAction } from "./ServiceMessages";
+import { SERVICE_MESSAGE_VIEW, ServiceMessageView, openServiceMessageView } from "./ui/ServiceMessageView";
+import { NoteMessageBanners } from "./ui/NoteMessageBanners";
 import { ResourceMeterMount } from "./ui/ResourceMeter";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager, type LoginSettings } from "./LoginManager";
@@ -936,12 +938,13 @@ export default class Live extends Plugin {
 				(target, anchor) => mountComponent(NetworkHealthNotice, { target, anchor, props: { networkStatus: this.networkStatus } }),
 			);
 		}
+		this.registerView(SERVICE_MESSAGE_VIEW, leaf => new ServiceMessageView(leaf));
 		const serviceMessages = new ServiceMessages(this.appId, this.manifest.id, HEALTH_URL);
 		this.serviceMessagesSidebarNotice = new SidebarNoticeMount(
 			this.app.workspace,
 			"system3-service-messages-slot",
 			(target, anchor) => mountComponent(ServiceMessagesNotice, {
-				target, anchor, props: { networkStatus: this.networkStatus, messages: serviceMessages },
+				target, anchor, props: { networkStatus: this.networkStatus, messages: serviceMessages, onAction: (action: ServiceMessageAction) => { void this.openServiceMessageAction(action); } },
 			}),
 		);
 
@@ -980,6 +983,10 @@ export default class Live extends Plugin {
 			this.textViewRegistry.load();
 
 			this.sharedFolders.load();
+			this.addChild(new NoteMessageBanners(
+				this.app, this.networkStatus, this.sharedFolders, this.textViewRegistry,
+				action => { void this.openServiceMessageAction(action); },
+			));
 			this._liveViews = new LiveViewManager(
 				this.app,
 				this.sharedFolders,
@@ -1269,6 +1276,18 @@ export default class Live extends Plugin {
 		await setting.open();
 		await setting.openTabById("system3-relay");
 		this.settingsTab.navigateTo(path);
+	}
+
+	async openServiceMessageAction(action: ServiceMessageAction): Promise<void> {
+		if (action.type === "settings") {
+			await this.openSettings(action.path);
+		} else if (action.type === "link") {
+			window.open(action.url, "_blank", "noopener,noreferrer");
+		} else {
+			const setting = (this.app as typeof this.app & { setting: SettingsController & { close(): void } }).setting;
+			setting.close();
+			await openServiceMessageView(this.app.workspace, action);
+		}
 	}
 
 	openReleaseManager(version?: string) {
