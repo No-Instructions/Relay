@@ -152,7 +152,7 @@ export const FeatureFlagSchema: {
 			"Assert MergeHSM resource expectations declared on the machine states.",
 	},
 	enableDraftMode: {
-		default: false,
+		default: true,
 		category: "labs",
 		title: "Draft mode",
 		description:
