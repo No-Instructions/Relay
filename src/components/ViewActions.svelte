@@ -3,7 +3,7 @@
 	import type { ConnectionState, ConnectionStatus } from "../HasProvider";
 	import type { Document } from "src/Document";
 	import type { RemoteSharedFolder } from "src/Relay";
-	import { Activity, CloudOff, Layers, Satellite, Unplug, UserRoundX } from "lucide-svelte";
+	import { CloudOff, Layers, Satellite, Unplug, UserRoundX } from "lucide-svelte";
 
 	export let view: LiveView;
 	export let state: ConnectionState;
@@ -33,7 +33,7 @@
 			? `${remote?.relay?.name || "Relay"} (connected)`
 			: `${remote?.relay?.name || "Relay"} (disconnected)`;
 
-	// Legacy mode (flag off): satellite icon with connection status
+	// Draft mode off: the satellite reflects the doc's own connection status
 	$: satelliteClass = opsFlowing
 		? "system3-connected"
 		: localOnly ? "system3-paused" : `system3-${state.status}`;
@@ -108,7 +108,7 @@
 			{#if localOnly}
 				<Unplug class="svg-icon inline-icon" />
 			{:else if draftActive}
-				<Activity class="svg-icon inline-icon" />
+				<Satellite class="svg-icon inline-icon" />
 			{:else}
 				<CloudOff class="svg-icon inline-icon" />
 			{/if}
