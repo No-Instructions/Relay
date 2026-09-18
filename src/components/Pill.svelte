@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Activity, Satellite, Layers, Unplug } from "lucide-svelte";
+	import { Satellite, Layers, Unplug } from "lucide-svelte";
 	import type { ConnectionStatus } from "src/HasProvider";
 	import type { RemoteSharedFolder } from "src/Relay";
 	export let status: ConnectionStatus = "disconnected";
@@ -36,11 +36,7 @@
 			class="satellite system3-icon {satelliteClass}"
 			aria-label={satelliteLabel}
 		>
-			{#if enableDraftMode}
-				<Activity class="inline-icon" style="width: 0.8em" />
-			{:else}
-				<Satellite class="inline-icon" />
-			{/if}
+			<Satellite class="inline-icon" />
 		</span>
 	{:else}
 		<span class="notebook system3-icon" aria-label="Tracking Changes">
