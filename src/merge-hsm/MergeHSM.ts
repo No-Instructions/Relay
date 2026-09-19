@@ -3509,11 +3509,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				this.applyContentToLocalDoc(data.merged!);
 				this._bridge.flushOutbound();
 
-				// Dispatch editor patches only when the editor's current text
-				// (diskText, since reconciling started from disk) differs from
-				// the merged result. If disk already matched merged, the editor
-				// is already showing the correct content.
-				if (data.patches && data.patches.length > 0 && data.diskText !== data.merged) {
+				// Reconciliation starts the editor from disk. A refused idle write
+				// can leave that text stale even when localDoc already equals the
+				// merge result, so CRDT-relative patches cannot gate editor repair.
+				if (data.diskText !== data.merged) {
 					const editorPatches = computeEditorDiffChanges(data.diskText!, data.merged!);
 					if (editorPatches.length > 0) {
 						this.emitEffect({ type: "DISPATCH_CM6", changes: editorPatches });
