@@ -1,4 +1,5 @@
 import type { Vault } from "obsidian";
+import { curryLog } from "./debug";
 
 /** Obsidian's preference for repairing internal links on every rename. */
 const LINK_UPDATE_PREFERENCE = "alwaysUpdateLinks";
@@ -48,14 +49,22 @@ export function linkUpdatePreference(vault: Vault): LinkUpdatePreference {
  * vault that turned it off keeps that choice; peer renames there move
  * files without touching links and never prompt.
  *
- * Returns whether the preference is on afterwards.
+ * Preference failures are logged so they cannot prevent the plugin loading.
+ * Returns whether the preference was confirmed on without an error.
  */
 export async function ensureLinkUpdatesOn(vault: Vault): Promise<boolean> {
-	const preference = linkUpdatePreference(vault);
-	if (preference !== "unset") return preference === "on";
-	const configurable = vault as ConfigurableVault;
-	if (!configurable.setConfig) return false;
-	configurable.setConfig(LINK_UPDATE_PREFERENCE, true);
-	await configurable.saveConfig?.();
-	return linkUpdatesAreOn(vault);
+	try {
+		const preference = linkUpdatePreference(vault);
+		if (preference !== "unset") return preference === "on";
+		const configurable = vault as ConfigurableVault;
+		if (!configurable.setConfig) return false;
+		configurable.setConfig(LINK_UPDATE_PREFERENCE, true);
+		await configurable.saveConfig?.();
+		return linkUpdatesAreOn(vault);
+	} catch (error) {
+		curryLog("[LinkUpdates]", "warn")(
+			"Unable to enable automatic link updates", error,
+		);
+		return false;
+	}
 }
