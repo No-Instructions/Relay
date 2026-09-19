@@ -2224,12 +2224,34 @@ export class SharedFolder extends HasProvider {
 				diffLog?.push(`creating directory ${dir}`);
 			}
 		}
-		await this.fileManager.renameFile(file, normalizePath(this.getPath(path)));
+		await this.renameForServerMove(file, normalizePath(this.getPath(path)));
 		this.serverOps.completeMove(oldVPath, path);
 		this.bootSnapshot?.discard(oldVPath);
 		if (!this.destroyed && doc.path !== path) {
 			doc.move(path, this);
 		}
+	}
+
+	/**
+	 * Move a file for a rename that arrived from the server. Obsidian's file
+	 * manager asks the user whether to update internal links unless the vault
+	 * has chosen to always update them, and its promise waits on that answer.
+	 * A server move is not this user's action, so it must never prompt: with
+	 * the preference on, the file manager repairs links silently; otherwise
+	 * the plain vault rename moves the file and leaves link repair to the
+	 * peer that renamed, whose edits arrive through the CRDT.
+	 */
+	private renameForServerMove(
+		file: TAbstractFile,
+		newPath: string,
+	): Promise<void> {
+		const vault = this.vault as Vault & {
+			getConfig?: (key: string) => unknown;
+		};
+		if (vault.getConfig?.("alwaysUpdateLinks") === true) {
+			return this.fileManager.renameFile(file, newPath);
+		}
+		return this.vault.rename(file, newPath);
 	}
 
 	trashFile(file: TAbstractFile): Promise<void> {
