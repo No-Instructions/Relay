@@ -919,11 +919,13 @@ export default class Live extends Plugin {
 		);
 
 		this.networkStatus = new NetworkStatus(this.timeProvider, HEALTH_URL);
-		this.networkHealthSidebarNotice = new SidebarNoticeMount(
-			this.app.workspace,
-			"system3-network-health-slot",
-			(target, anchor) => mountComponent(NetworkHealthNotice, { target, anchor, props: { networkStatus: this.networkStatus } }),
-		);
+		if (!Platform.isIosApp) {
+			this.networkHealthSidebarNotice = new SidebarNoticeMount(
+				this.app.workspace,
+				"system3-network-health-slot",
+				(target, anchor) => mountComponent(NetworkHealthNotice, { target, anchor, props: { networkStatus: this.networkStatus } }),
+			);
+		}
 
 		this.backgroundSync = new BackgroundSync(
 			this.loginManager,
