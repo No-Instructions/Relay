@@ -3640,10 +3640,15 @@ export class SharedFolder extends HasProvider {
 				}
 				// A removal's trash must land before this sync resolves: a queued
 				// follow-up that starts while the file is still indexed would try
-				// to move a path that is about to vanish.
+				// to move a path that is about to vanish. A failed trash must not
+				// stop the other removals or strand that follow-up.
 				await Promise.all(
 					deletes.map((op) =>
-						withTimeoutWarning<void>(op.promise, this.timeProvider, op),
+						withTimeoutWarning<void>(op.promise, this.timeProvider, op).catch(
+							(error) => {
+								this.warn("Failed to trash remotely deleted file", op.path, error);
+							},
+						),
 					),
 				);
 				// An op with nothing left on disk to adopt has no echo to wait
