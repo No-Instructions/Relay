@@ -555,14 +555,16 @@ export class OpCapture {
 						releaseEntry(transaction, this.scope, entry);
 					}
 
-					// Clear search markers on changed types
-					transaction.changed.forEach(
-						(subProps: Set<string | null>, type: YType) => {
-							if (subProps.has(null) && type._searchMarker) {
-								type._searchMarker.length = 0;
-							}
-						},
-					);
+					// Un-tombstoning bypasses Yjs's own bookkeeping, so every cached
+					// search marker positioned after a revived item now reports an
+					// index that is short by the revived length. transaction.changed
+					// only covers types touched by real Yjs ops (the insertion
+					// deletes above), so clear the caches of all scope types.
+					for (const type of this.scope) {
+						if (type._searchMarker) {
+							type._searchMarker.length = 0;
+						}
+					}
 				},
 				this,
 			);
