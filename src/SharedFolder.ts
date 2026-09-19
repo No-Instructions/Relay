@@ -49,6 +49,7 @@ import { SyncStore } from "./SyncStore";
 import { FolderHSM } from "./folder-hsm/FolderHSM";
 import { MembershipSnapshot } from "./folder-hsm/MembershipSnapshot";
 import { ServerOps } from "./folder-hsm/ServerOps";
+import { linkUpdatesAreOn } from "./linkUpdates";
 import {
 	SyncType,
 	makeCanvasMeta,
@@ -2236,19 +2237,17 @@ export class SharedFolder extends HasProvider {
 	 * Move a file for a rename that arrived from the server. Obsidian's file
 	 * manager asks the user whether to update internal links unless the vault
 	 * has chosen to always update them, and its promise waits on that answer.
-	 * A server move is not this user's action, so it must never prompt: with
-	 * the preference on, the file manager repairs links silently; otherwise
-	 * the plain vault rename moves the file and leaves link repair to the
-	 * peer that renamed, whose edits arrive through the CRDT.
+	 * A server move is not this user's action, so it must never prompt. Relay
+	 * keeps the preference on unless the vault opts out, so the file manager
+	 * normally repairs links silently; for a vault that opted out, the plain
+	 * vault rename moves the file and leaves link repair to the peer that
+	 * renamed, whose edits arrive through the CRDT.
 	 */
 	private renameForServerMove(
 		file: TAbstractFile,
 		newPath: string,
 	): Promise<void> {
-		const vault = this.vault as Vault & {
-			getConfig?: (key: string) => unknown;
-		};
-		if (vault.getConfig?.("alwaysUpdateLinks") === true) {
+		if (linkUpdatesAreOn(this.vault)) {
 			return this.fileManager.renameFile(file, newPath);
 		}
 		return this.vault.rename(file, newPath);
