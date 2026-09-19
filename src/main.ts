@@ -130,12 +130,9 @@ interface RelaySettings extends FeatureFlags, DebugSettings {
 	release: ReleaseSettings;
 	endpoints: EndpointSettings;
 	plugins?: PluginRegistrationSettings;
-	/** Keep Obsidian repairing internal links on every rename; false opts out. */
-	alwaysUpdateLinks?: boolean;
 }
 
 const DEFAULT_SETTINGS: RelaySettings = {
-	alwaysUpdateLinks: true,
 	release: {
 		channel: "stable",
 	},
@@ -608,10 +605,9 @@ export default class Live extends Plugin {
 
 		// A rename from a peer repairs links inside shared folders through sync;
 		// links from this vault's other notes are repaired only by Obsidian, and
-		// only with its preference on. Keep it on unless the vault opts out.
-		if (this.settings.get().alwaysUpdateLinks !== false) {
-			await ensureLinkUpdatesOn(this.app.vault);
-		}
+		// only with its preference on. A vault that never chose gets it turned
+		// on; a vault that turned it off keeps its choice.
+		await ensureLinkUpdatesOn(this.app.vault);
 
 		const settingsTree = this.settings as unknown as SettingsTree;
 		this.featureSettings = new NamespacedSettings(settingsTree, "(enable*)");
