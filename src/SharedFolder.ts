@@ -2922,8 +2922,18 @@ export class SharedFolder extends HasProvider {
 			) return;
 			const filePending =
 				this.pendingUpload.has(vpath) || this.pendingCreates.has(vpath);
+			// Membership already lists a moved identity at its new path, so its
+			// source path reads as absent from the map while the disk rename is
+			// still outstanding. That path belongs to the move, not to a removal.
+			const moveSource = this.serverOps.moveFrom(vpath) !== undefined;
 			const synced = this._provider?.synced && this._persistence?.synced;
-			if (fileInFolder && isSyncableFile && !fileInMap && !filePending) {
+			if (
+				fileInFolder &&
+				isSyncableFile &&
+				!fileInMap &&
+				!filePending &&
+				!moveSource
+			) {
 				if (synced) {
 					diffLog.push(`deleted local file ${vpath} for remotely deleted doc`);
 					this.markPendingDelete(vpath);
@@ -3683,6 +3693,14 @@ export class SharedFolder extends HasProvider {
 				if (diffLog.length > 0) {
 					this.log("syncFileTree diff:\n" + diffLog.join("\n"));
 				}
+				// A removal's trash must land before this sync resolves: a queued
+				// follow-up that starts while the file is still indexed would try
+				// to move a path that is about to vanish.
+				await Promise.all(
+					deletes.map((op) =>
+						withTimeoutWarning<void>(op.promise, this.timeProvider, op),
+					),
+				);
 				// An op with nothing left on disk to adopt has no echo to wait
 				// for; confirm its absence so a later recreation is not refused
 				// as a re-mint.
