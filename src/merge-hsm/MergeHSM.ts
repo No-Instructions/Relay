@@ -2433,6 +2433,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		}
 
 		const hash = await this.hashFn(content);
+		// A remote merge in flight when this enrollment started may have
+		// settled the ancestor while the hash was computing. That ancestor
+		// stands; this enrollment has nothing left to record.
+		if (this._lca) return true;
 		// Re-asked after the await: a disk change that arrived while the hash
 		// was computing must not be settled by an enrollment that started
 		// before it. Completing here would take the ancestor from the server,
@@ -4779,6 +4783,16 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 		// Snapshot and clear — new REMOTE_UPDATEs accumulate into fresh buffer
 		this.pendingIdleUpdates = null;
+		// A re-entry that aborts this invoke discards its result. The update it
+		// consumed must return to the buffer, or the restarted merge reads the
+		// replica alone — which, right after a reconnect, may hold nothing.
+		const consumed = updates;
+		const restoreOnAbort = () => {
+			this.pendingIdleUpdates = this.pendingIdleUpdates
+				? Y.mergeUpdates([consumed, this.pendingIdleUpdates])
+				: consumed;
+		};
+		signal.addEventListener("abort", restoreOnAbort, { once: true });
 
 		this.idleMergeLog(`[idle-merge-debug] ${this._guid} updatesLen=${updates.byteLength}`);
 
@@ -4838,6 +4852,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				newLCA: { contents: mergedContent, meta: { hash, mtime: diskWrite.mtime }, snapshot: null },
 			};
 		} finally {
+			signal.removeEventListener("abort", restoreOnAbort);
 			tempDoc.destroy();
 		}
 	}
@@ -4859,6 +4874,14 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		localDoc: Y.Doc,
 	): Promise<unknown> {
 		if (!this.remoteDoc || !yjsDocsEqual(localDoc, this.remoteDoc)) {
+			return { success: false, awaitingProvider: true };
+		}
+		// Two empty documents settle nothing: an unenrolled note has no
+		// ancestor to record, and a replica that holds no operations is not
+		// evidence that the note is empty. Recording the empty string here
+		// would make the note's later enrollment a no-op against a baseline
+		// that never existed.
+		if (!this._lca && isEmptyDoc(localDoc)) {
 			return { success: false, awaitingProvider: true };
 		}
 
@@ -5012,6 +5035,21 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			return { success: false, awaitingProvider: true };
 		}
 
+		// A replica that lacks history the LCA already holds and brings
+		// nothing of its own is behind the server, not evidence of a remote
+		// deletion: a provider can report synced before delivering the
+		// document, and a replica attached by a reconnect starts empty.
+		// Merging its text would author a deletion of everything the LCA
+		// knew and publish it. Wait for the replica to catch up instead.
+		if (this.replicaIsBehindLCA(remoteDoc)) {
+			this.hsmWarn(
+				`idle three-way merge: remote replica is behind the LCA — ` +
+					`awaiting provider | guid=${this._guid} ` +
+					`replicaLen=${crdtContent.length} lcaLen=${lcaContent.length}`,
+			);
+			return { success: false, awaitingProvider: true };
+		}
+
 		const diskContent = this.pendingDiskContents ?? lcaContent;
 
 		// Snapshot and clear — new events accumulate fresh during await
@@ -5144,6 +5182,17 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		const remoteDroppedForkState =
 			snapshotHasOpsMissingFrom(forkRemoteSnapshot, currentRemoteSnapshot) &&
 			!snapshotHasOpsMissingFrom(currentRemoteSnapshot, forkRemoteSnapshot);
+		// A replica that lacks history the ancestor holds and brings nothing
+		// of its own has not caught up with the server; its text is not the
+		// remote side of anything. Wait for the provider rather than reconcile
+		// the local side against it.
+		if (!remoteDroppedForkState && this.replicaIsBehindLCA(remoteDoc)) {
+			this.hsmWarn(
+				`fork reconcile: remote replica is behind the LCA — awaiting provider | ` +
+					`guid=${this._guid} replicaLen=${remoteContent.length} baseLen=${fork.base.length}`,
+			);
+			return { success: false, awaitingProvider: true };
+		}
 		const mergeResult = remoteDroppedForkState
 			? { success: true as const, merged: localContent }
 			: performThreeWayMerge(fork.base, localContent, remoteContent);
@@ -5545,6 +5594,27 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	private isTransportError(error: Error): boolean {
 		const text = `${error.name} ${error.message}`.toLowerCase();
 		return MergeHSM.TRANSPORT_ERROR_SIGNATURES.some((sig) => text.includes(sig));
+	}
+
+	/**
+	 * Whether the attached replica holds strictly less history than the LCA:
+	 * the LCA has operations the replica lacks, and the replica has none the
+	 * LCA lacks. A replica that deleted everything still carries the LCA's
+	 * inserts as tombstones plus a larger delete set, so it never reads as
+	 * behind.
+	 */
+	private replicaIsBehindLCA(remoteDoc: Y.Doc): boolean {
+		if (!this._lca?.snapshot) return false;
+		try {
+			const replica = snapshotFromDoc(remoteDoc);
+			const lca = { snapshot: this._lca.snapshot };
+			return (
+				snapshotHasOpsMissingFrom(lca, replica) &&
+				!snapshotHasOpsMissingFrom(replica, lca)
+			);
+		} catch {
+			return false;
+		}
 	}
 
 	private hasRemoteChangedSinceLCA(): boolean {

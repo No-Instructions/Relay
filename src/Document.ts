@@ -171,7 +171,7 @@ export class Document
 			guid: this.guid,
 			getPath: () => this.path,
 			remoteDoc: this.isRemoteDocLoaded ? this.ydoc : null,
-			getDiskContent: () => this.readDiskContent(),
+			getDiskContent: () => this.readDiskContentAfterQueuedWrites(),
 			getCurrentDiskMetadata: () =>
 				this.sharedFolder.getCurrentDiskMetadata(this),
 			isFolderConnected: () => this.sharedFolder.connected,
@@ -1412,8 +1412,23 @@ export class Document
 	// ===========================================================================
 
 	/**
-	 * Read current disk content for the HSM.
-	 * Used as diskLoader callback when creating HSM.
+	 * Disk loader for the merge machine. A load that lands between a queued
+	 * write's truncate and its bytes sees an empty file, which the engine
+	 * would then take for a user wiping the note; let this document's own
+	 * writes settle first. The write path reads the file itself from inside
+	 * that queue and must not wait on it.
+	 */
+	private async readDiskContentAfterQueuedWrites(): Promise<{
+		content: string;
+		hash: string;
+		mtime: number;
+	}> {
+		await this._diskWriteTail;
+		return this.readDiskContent();
+	}
+
+	/**
+	 * Read current disk content.
 	 */
 	async readDiskContent(): Promise<{
 		content: string;

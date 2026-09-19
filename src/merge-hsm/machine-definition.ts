@@ -34,7 +34,11 @@ const IDLE_LIFECYCLE: Record<string, EventHandler> = {
 	// (e.g. startup/reload races). Re-enter idle.loading so always-transitions
 	// re-evaluate with the loaded LCA/fork data.
 	PERSISTENCE_LOADED: { target: 'idle.loading', actions: ['storePersistenceData'], reenter: true },
-	ENROLLMENT_COMPLETE: { target: 'idle.loading', actions: ['storeEnrollmentComplete'], reenter: true },
+	// An enrollment that completes after a merge already settled the ancestor
+	// carries a stale head and would re-run load classification against a
+	// file that may not be written yet; only a document without an ancestor
+	// takes it.
+	ENROLLMENT_COMPLETE: { target: 'idle.loading', guard: 'hasNoLCA', actions: ['storeEnrollmentComplete'], reenter: true },
 	PERSISTENCE_SYNCED: { target: 'idle.loading', guard: 'shouldWakeLCARecoveryAfterPersistenceSynced', reenter: true },
 	ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
 	UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
