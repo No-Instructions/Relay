@@ -22,6 +22,12 @@ interface ProbeResponse {
 }
 type ProbeResult = { response: ProbeResponse } | { error: unknown };
 
+interface PendingProbe {
+	result?: ProbeResult;
+	timedOut: boolean;
+	listeners: Set<(result: ProbeResult) => void>;
+}
+
 const NETWORK_CHANGED_RETRY_LIMIT = 3;
 const PROBE_TIMEOUT_MS = 5000;
 const PRIMARY_PROBE_TIMEOUT_MS = 30000;
@@ -37,9 +43,9 @@ class NetworkStatus {
 	private generation = 0;
 	private destroyed = false;
 	private controllers = new Set<AbortController>();
-	// requestUrl cannot be cancelled. Retain its pending request across probe
-	// deadlines so a stuck Obsidian request cannot accumulate on every poll.
-	private requests = new Map<Transport, Promise<ProbeResponse>>();
+	// Keep at most two uncancellable Obsidian requests, leaving room to
+	// recover through a fresh connection after the first request stalls.
+	private requests = new Map<Transport, PendingProbe[]>();
 	private failureListeners = new Set<(failure: NetworkTransportFailure) => void>();
 	private failingTransport: NetworkTransportFailure = null;
 	private failureCount = 0;
@@ -115,44 +121,67 @@ class NetworkStatus {
 			const alternate = results[index];
 			return "response" in alternate && isHealthy(alternate.response);
 		});
-		this.recordTransportFailure(working.length ? primary : null);
+		const confirmed = primary === "obsidian" ? working.includes("fetch") : working.length > 0;
+		this.recordTransportFailure(confirmed ? primary : null);
 		if (working.length) this.log("Health probes disagree", { failed: primary, working });
 	}
 
 	private async probe(transport: Transport, primary = false): Promise<ProbeResult> {
 		const controller = new AbortController();
 		this.controllers.add(controller);
-		const timeProvider = this.timeProvider;
-		let timer: number | undefined;
-		let request: Promise<ProbeResponse> | undefined;
+		let pool = this.requests.get(transport);
+		if (!pool) {
+			pool = [];
+			this.requests.set(transport, pool);
+		}
+		// Consume a late result before opening another connection. Once all
+		// pending requests have timed out, allow one fresh request up to the cap.
+		if (!pool.some(probe => probe.result || !probe.timedOut) &&
+			pool.length < (transport === "obsidian" ? 2 : 1)) {
+			const probe: PendingProbe = { timedOut: false, listeners: new Set() };
+			pool.push(probe);
+			const settle = (result: ProbeResult) => {
+				probe.result = result;
+				probe.listeners.forEach(listener => listener(result));
+				probe.listeners.clear();
+			};
+			void this.request(transport, primary, controller.signal).then(
+				response => settle({ response }), error => settle({ error }),
+			);
+		}
 		let timedOut = false;
-		let onAbort: () => void;
+		let onAbort!: () => void;
 		const cancelled = new Promise<never>((_, reject) => {
 			onAbort = () => reject(new Error("Health probe cancelled or timed out"));
 			controller.signal.addEventListener("abort", onAbort, { once: true });
-			// Give primary requests several poll intervals before diagnosing a stall.
-			timer = timeProvider.setTimeout(() => {
-				timedOut = true;
-				controller.abort();
-			}, primary ? PRIMARY_PROBE_TIMEOUT_MS : PROBE_TIMEOUT_MS);
 		});
+		const timer = this.timeProvider.setTimeout(() => {
+			timedOut = true;
+			controller.abort();
+		}, primary ? PRIMARY_PROBE_TIMEOUT_MS : PROBE_TIMEOUT_MS);
+		const unsubscribe: (() => void)[] = [];
 		try {
-			request = this.requests.get(transport);
-			if (!request) {
-				request = this.request(transport, primary, controller.signal);
-				this.requests.set(transport, request);
-			}
-			return { response: await Promise.race([request, cancelled]) };
+			const observations = pool.map(probe => new Promise<{ probe: PendingProbe; result: ProbeResult }>(resolve => {
+				const receive = (result: ProbeResult) => resolve({ probe, result });
+				if (probe.result) receive(probe.result);
+				else {
+					probe.listeners.add(receive);
+					unsubscribe.push(() => probe.listeners.delete(receive));
+				}
+			}));
+			const { probe, result } = await Promise.race([...observations, cancelled]);
+			pool.splice(pool.indexOf(probe), 1);
+			return result;
 		} catch (error) {
 			return { error };
 		} finally {
-			// Obsidian cannot cancel its request. Retain it after a deadline,
-			// including a response arriving between polls, until a probe consumes it.
-			if ((!timedOut || transport !== "obsidian") && this.requests.get(transport) === request) {
-				this.requests.delete(transport);
+			unsubscribe.forEach(remove => remove());
+			if (timedOut) pool.forEach(probe => { probe.timedOut = true; });
+			if (transport !== "obsidian" || !pool.length) {
+				if (this.requests.get(transport) === pool) this.requests.delete(transport);
 			}
-			if (timer !== undefined) timeProvider.clearTimeout(timer);
-			controller.signal.removeEventListener("abort", onAbort!);
+			this.timeProvider.clearTimeout(timer);
+			controller.signal.removeEventListener("abort", onAbort);
 			this.controllers.delete(controller);
 		}
 	}
@@ -161,7 +190,7 @@ class NetworkStatus {
 		const params = { url: this.url, method: "GET", headers: getRelayRequestHeaders(), throw: false };
 		if (transport === "fetch") {
 			const response = await window.fetch(this.url, {
-				method: "GET", headers: params.headers, signal, cache: "no-store", credentials: "omit",
+				method: "GET", signal, cache: "no-store", credentials: "omit",
 			});
 			if (response.status !== 200) {
 				await response.body?.cancel();
@@ -183,10 +212,19 @@ class NetworkStatus {
 		this.online = online;
 		if (online) {
 			this.log("back online");
-			this.onOnline.forEach(callback => callback(this.status));
-			this._onceOnline.forEach(callback => callback(this.status));
+			const once = [...this._onceOnline];
 			this._onceOnline.clear();
-		} else this.onOffline.forEach(callback => callback(this.status));
+			this.onOnline.forEach(callback => this.notify(callback, this.status));
+			once.forEach(callback => this.notify(callback, this.status));
+		} else this.onOffline.forEach(callback => this.notify(callback, this.status));
+	}
+
+	private notify<T>(callback: (value: T) => void, value: T): void {
+		try {
+			callback(value);
+		} catch (error) {
+			this.log("Network status listener failed", error);
+		}
 	}
 
 	private recordTransportFailure(transport: NetworkTransportFailure): void {
@@ -195,13 +233,13 @@ class NetworkStatus {
 		const failure = this.failureCount >= TRANSPORT_FAILURE_CONFIRMATIONS ? transport : null;
 		if (failure === this.transportFailure) return;
 		this.transportFailure = failure;
-		this.failureListeners.forEach(listener => listener(failure));
+		this.failureListeners.forEach(listener => this.notify(listener, failure));
 	}
 
 	public subscribeTransportFailure(listener: (failure: NetworkTransportFailure) => void): () => void {
 		if (this.destroyed) return () => {};
 		this.failureListeners.add(listener);
-		listener(this.transportFailure);
+		this.notify(listener, this.transportFailure);
 		return () => { this.failureListeners.delete(listener); };
 	}
 
