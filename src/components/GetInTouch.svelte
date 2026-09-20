@@ -1,12 +1,13 @@
 <script>
 	import { MessageSquareHeart } from "lucide-svelte";
 	import Discord from "./Discord.svelte";
+	import { ownerDoc, ownerWin } from "./ownerWindow";
 	let isOpen = false;
 
 	function clickOutside(node) {
 		const handleClick = (event) => {
 			// Check if the click target is NOT the button and NOT inside the dropdown
-			const menuButton = document.querySelector(".menu-button");
+			const menuButton = ownerDoc(node).querySelector(".menu-button");
 			if (
 				!node.contains(event.target) &&
 				event.target !== menuButton &&
@@ -17,13 +18,13 @@
 		};
 
 		// Use setTimeout to add the listener on the next tick
-		setTimeout(() => {
-			document.addEventListener("click", handleClick);
+		ownerWin(node).setTimeout(() => {
+			ownerDoc(node).addEventListener("click", handleClick);
 		}, 0);
 
 		return {
 			destroy() {
-				document.removeEventListener("click", handleClick);
+				ownerDoc(node).removeEventListener("click", handleClick);
 			},
 		};
 	}
