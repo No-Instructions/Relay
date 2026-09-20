@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ownerWin } from "./ownerWindow";
 	/**
 	 * A compact resource usage indicator with hover popover.
 	 *
@@ -55,7 +56,7 @@
 	$: if (isVisible && containerEl && popoverEl) {
 		const rect = containerEl.getBoundingClientRect();
 		const popRect = popoverEl.getBoundingClientRect();
-		const fitsBelow = rect.bottom + popRect.height + 8 <= window.innerHeight;
+		const fitsBelow = rect.bottom + popRect.height + 8 <= ownerWin(containerEl).innerHeight;
 		position = fitsBelow ? "below" : "above";
 		const left = Math.max(8, rect.left + rect.width / 2 - popRect.width / 2);
 		const top = fitsBelow
