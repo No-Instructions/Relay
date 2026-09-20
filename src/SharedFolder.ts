@@ -44,7 +44,7 @@ import { LocalStorage } from "./LocalStorage";
 import type { MergeHSM } from "./merge-hsm/MergeHSM";
 import { SyncFolder, isSyncFolder } from "./SyncFolder";
 import { isDocument } from "./Document";
-import { SyncStore } from "./SyncStore";
+import { SyncStore, type FolderMapDelta } from "./SyncStore";
 import { FolderHSM } from "./folder-hsm/FolderHSM";
 import { MembershipSnapshot } from "./folder-hsm/MembershipSnapshot";
 import { ServerOps } from "./folder-hsm/ServerOps";
@@ -474,38 +474,7 @@ export class SharedFolder extends HasProvider {
 		// intent.
 		this.unsubscribes.push(
 			this.syncStore.subscribeMapDelta((delta, origin) => {
-				if (origin === this || origin === this._persistence) return;
-				for (const removal of delta.deletes) {
-					if (this.existsSync(removal.path)) {
-						this.serverOps.recordDelete(removal.path);
-					} else {
-						// Nothing on disk to adopt: the removal is already
-						// decided for this device.
-						this.bootSnapshot?.discard(removal.path);
-					}
-				}
-				for (const entry of delta.adds) {
-					this.serverOps.clearDelete(entry.path);
-				}
-				for (const entry of delta.updates) {
-					this.serverOps.clearDelete(entry.path);
-				}
-				for (const move of delta.moves) {
-					this.serverOps.clearDelete(move.to);
-					const moved = this.files.get(move.guid);
-					if (
-						this.existsSync(move.from) ||
-						moved?.path === move.from
-					) {
-						this.serverOps.recordMove(move);
-					} else {
-						// Disk already agrees with the moved membership (or no
-						// source exists to reconcile on this device). A prior
-						// edge for this identity is no longer in flight either.
-						this.serverOps.discardMove(move.guid);
-						this.bootSnapshot?.discard(move.from);
-					}
-				}
+				this.handleRemoteMembershipDelta(delta, origin);
 			}),
 		);
 
@@ -806,6 +775,53 @@ export class SharedFolder extends HasProvider {
 		})().catch((e) => this.warn("folder provider sync failed", e));
 
 		RelayInstances.set(this, this.path);
+	}
+
+	private handleRemoteMembershipDelta(delta: FolderMapDelta, origin: unknown): void {
+		if (origin === this || origin === this._persistence) return;
+		for (const removal of delta.deletes) {
+			const move = removal.oldValue?.id
+				? this.serverOps.moveFor(removal.oldValue.id)
+				: undefined;
+			if (move) {
+				// A failed move may still occupy its source when the peer deletes
+				// the destination. Carry that witnessed removal to the disk path
+				// for Readers too, unless another local file has claimed it.
+				const removeSource = this.serverOps.coversPath(move.from) &&
+					!this.syncStore.has(move.from) && this.existsSync(move.from);
+				this.serverOps.discardMove(move.guid);
+				if (removeSource) this.serverOps.recordDelete(move.from);
+			}
+			if (this.existsSync(removal.path)) {
+				this.serverOps.recordDelete(removal.path);
+			} else {
+				// Nothing on disk to adopt: the removal is already
+				// decided for this device.
+				this.bootSnapshot?.discard(removal.path);
+			}
+		}
+		for (const entry of delta.adds) {
+			this.serverOps.clearDelete(entry.path);
+		}
+		for (const entry of delta.updates) {
+			this.serverOps.clearDelete(entry.path);
+		}
+		for (const move of delta.moves) {
+			this.serverOps.clearDelete(move.to);
+			const moved = this.files.get(move.guid);
+			if (
+				this.existsSync(move.from) ||
+				moved?.path === move.from
+			) {
+				this.serverOps.recordMove(move);
+			} else {
+				// Disk already agrees with the moved membership (or no
+				// source exists to reconcile on this device). A prior
+				// edge for this identity is no longer in flight either.
+				this.serverOps.discardMove(move.guid);
+				this.bootSnapshot?.discard(move.from);
+			}
+		}
 	}
 
 	private setupEventSubscriptions() {

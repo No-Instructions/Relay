@@ -11,6 +11,15 @@ type ConfigurableVault = Vault & {
 	saveConfig?: () => Promise<void> | void;
 };
 
+interface LinkUpdateOverride {
+	original: (key: string) => unknown;
+	hadOwnReader: boolean;
+	depth: number;
+	reads: number;
+}
+
+const linkUpdateOverrides = new WeakMap<Vault, LinkUpdateOverride>();
+
 export type LinkUpdatePreference = "on" | "off" | "unset" | "unknown";
 
 /** Whether Obsidian repairs internal links on every rename without asking. */
@@ -46,8 +55,9 @@ export function linkUpdatePreference(vault: Vault): LinkUpdatePreference {
  * Obsidian asks at every rename that has referrers, and a prompt raised by
  * a rename this user did not make is one nobody expects. Turning the
  * preference on is what the prompt's own "Always update" answer does. A
- * vault that turned it off keeps that choice; peer renames there move
- * files without touching links and never prompt.
+ * vault that turned it off keeps its stored choice for its own renames;
+ * peer renames still repair links through a temporary in-memory override,
+ * including links from notes outside shared folders.
  *
  * Preference failures are logged so they cannot prevent the plugin loading.
  * Returns whether the preference was confirmed on without an error.
@@ -72,31 +82,57 @@ export async function ensureLinkUpdatesOn(vault: Vault): Promise<boolean> {
 /**
  * Run a rename with automatic link repair answered as on.
  *
- * The file manager's rename is the vault rename plus a link-update step
- * that reads the preference once, after the move, and asks the user when
- * it is off. A rename that arrived from a peer should repair links and
- * never ask: the preference governs this user's own renames. Answer that
- * one read with "on" for the duration of the call, in memory only, so
- * nothing is written to the vault's configuration and nothing is left
- * behind if the process ends mid-rename.
+ * The file manager repairs links after moving the file and asks when the
+ * preference is off. Answer its reads as on until all overlapping server
+ * renames settle, without writing the vault's configuration. The stored
+ * preference still governs this user's own renames outside that window.
+ *
+ * Prompt-free repair with this override was observed on Obsidian 1.13.4
+ * desktop in an end-to-end check. The private API is assumed to read the
+ * preference before renameFile settles; other host versions are unverified.
+ * Warn if no preference read occurs during a call. With overlapping calls,
+ * reads are counted for the vault; they cannot be attributed to one rename.
  */
 export async function withLinkUpdatesOn<T>(
 	vault: Vault,
 	run: () => Promise<T>,
 ): Promise<T> {
-	if (linkUpdatesAreOn(vault)) return run();
 	const configurable = vault as ConfigurableVault;
-	const original = configurable.getConfig;
-	if (typeof original !== "function") return run();
-	const hadOwnReader = Object.prototype.hasOwnProperty.call(vault, "getConfig");
-	configurable.getConfig = function (this: unknown, key: string) {
-		if (key === LINK_UPDATE_PREFERENCE) return true;
-		return original.call(this, key);
-	};
+	let state = linkUpdateOverrides.get(vault);
+	if (!state) {
+		const original = configurable.getConfig;
+		if (typeof original !== "function") return run();
+		if (original.call(vault, LINK_UPDATE_PREFERENCE) === true) return run();
+		const installed: LinkUpdateOverride = {
+			original,
+			hadOwnReader: Object.prototype.hasOwnProperty.call(vault, "getConfig"),
+			depth: 0,
+			reads: 0,
+		};
+		configurable.getConfig = function (this: unknown, key: string) {
+			if (key === LINK_UPDATE_PREFERENCE) {
+				installed.reads++;
+				return true;
+			}
+			return original.call(this, key);
+		};
+		linkUpdateOverrides.set(vault, installed);
+		state = installed;
+	}
+	state.depth++;
+	const readsAtStart = state.reads;
 	try {
 		return await run();
 	} finally {
-		if (hadOwnReader) configurable.getConfig = original;
-		else delete configurable.getConfig;
+		if (--state.depth === 0) {
+			if (state.hadOwnReader) configurable.getConfig = state.original;
+			else delete configurable.getConfig;
+			linkUpdateOverrides.delete(vault);
+		}
+		if (state.reads === readsAtStart) {
+			curryLog("[LinkUpdates]", "warn")(
+				"Link-update override was not consulted during a rename; Obsidian may read the preference outside the rename promise",
+			);
+		}
 	}
 }

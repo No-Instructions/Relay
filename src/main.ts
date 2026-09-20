@@ -603,10 +603,9 @@ export default class Live extends Plugin {
 		this.settings = new Settings<RelaySettings>(this, DEFAULT_SETTINGS);
 		await this.settings.load();
 
-		// A rename from a peer repairs links inside shared folders through sync;
-		// links from this vault's other notes are repaired only by Obsidian, and
-		// only with its preference on. A vault that never chose gets it turned
-		// on; a vault that turned it off keeps its choice.
+		// Enable the stored link-update preference only when the vault never
+		// chose. An explicit opt-out still governs this user's own renames;
+		// peer renames temporarily answer the preference as on to repair links.
 		await ensureLinkUpdatesOn(this.app.vault);
 
 		const settingsTree = this.settings as unknown as SettingsTree;
