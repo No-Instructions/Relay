@@ -1272,14 +1272,18 @@ export default class Live extends Plugin {
 	}
 
 	async openServiceMessageAction(action: ServiceMessageAction): Promise<void> {
-		if (action.type === "settings") {
-			await this.openSettings(action.path);
-		} else if (action.type === "link") {
-			window.open(action.url, "_blank", "noopener,noreferrer");
-		} else {
-			const setting = (this.app as typeof this.app & { setting: SettingsController & { close(): void } }).setting;
-			setting.close();
-			await openServiceMessageView(this.app.workspace, action);
+		try {
+			if (action.type === "settings") {
+				await this.openSettings(action.path);
+			} else if (action.type === "link") {
+				window.open(action.url, "_blank", "noopener,noreferrer");
+			} else {
+				const setting = (this.app as typeof this.app & { setting: SettingsController & { close(): void } }).setting;
+				setting.close();
+				await openServiceMessageView(this.app.workspace, action);
+			}
+		} catch (error) {
+			this.warn("Unable to open service message action", error);
 		}
 	}
 
