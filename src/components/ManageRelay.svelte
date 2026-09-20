@@ -96,6 +96,7 @@
 	import { minimark } from "src/minimark";
 	import { handleServerError } from "../utils/toastStore";
 
+	import { ownerWin } from "./ownerWindow";
 	plugin.relayManager.refreshRelay(relay);
 
 	async function checkRelayHost(relay: Relay) {
@@ -494,7 +495,7 @@
 			pendingRemoteFolders.delete(normalizedPath);
 
 			if (grants && grants.length > 0) {
-				setTimeout(() => {
+				ownerWin(rootEl).setTimeout(() => {
 					dispatch("manageRemoteFolder", {
 						remoteFolder: remote,
 					});
@@ -553,6 +554,7 @@
 	onDestroy(() => {
 		shareFolderModal?.destroy();
 	});
+	let rootEl: HTMLElement;
 </script>
 
 <Breadcrumbs
@@ -683,7 +685,7 @@
 	</SettingItem>
 </SettingGroup>
 
-<div class="spacer"></div>
+<div class="spacer" bind:this={rootEl}></div>
 
 <div class="users-header">
 	<SettingItemHeading name="Users">
