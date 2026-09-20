@@ -10,6 +10,7 @@
 	import { RemoteFolderSuggestModal } from "src/ui/RemoteFolderSuggestModal";
 	import { onDestroy, onMount } from "svelte";
 
+	import { ownerWin } from "./ownerWindow";
 	export let app: App;
 	export let remoteFolder: RemoteSharedFolder | undefined;
 	export let availableFolders: RemoteSharedFolder[] = [];
@@ -46,7 +47,7 @@
 	onMount(() => {
 		// Auto-open folder selection prompt if no folder is selected
 		if (!remoteFolder && availableFolders.length > 0) {
-			setTimeout(() => {
+			ownerWin(rootEl).setTimeout(() => {
 				suggestModal.open();
 			}, 100);
 		}
@@ -56,11 +57,12 @@
 		suggestModal.close();
 		suggestModal.destroy();
 	});
+	let rootEl: HTMLElement;
 </script>
 
 <div class="modal-title">Add to vault</div>
 
-<div class="modal-content">
+<div class="modal-content" bind:this={rootEl}>
 	{#if !remoteFolder}
 		<div class="section">
 			<SettingItemHeading name="Remote folder" />

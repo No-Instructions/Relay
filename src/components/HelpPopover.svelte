@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { HelpCircle } from "lucide-svelte";
+	import { ownerWin } from "./ownerWindow";
 	export let helpText: string;
 
 	let isVisible = false;
@@ -10,7 +11,7 @@
 	$: if (isVisible && buttonEl && popoverEl) {
 		const buttonRect = buttonEl.getBoundingClientRect();
 		const popoverRect = popoverEl.getBoundingClientRect();
-		const windowWidth = window.innerWidth;
+		const windowWidth = ownerWin(buttonEl).innerWidth;
 
 		position =
 			buttonRect.right + popoverRect.width > windowWidth - 20
