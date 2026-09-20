@@ -37,7 +37,7 @@ export function readMessageActions(value: unknown): ServiceMessageAction[] {
 				actions.push({ type: "markdown", label, markdown: action.markdown });
 			} else if (action.markdown === undefined) {
 				const url = httpUrl(action.url);
-				if (url) actions.push({ type: "markdown", label, url });
+				if (url?.startsWith("https:")) actions.push({ type: "markdown", label, url });
 			}
 		}
 	}

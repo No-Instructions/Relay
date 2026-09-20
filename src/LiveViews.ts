@@ -246,11 +246,13 @@ export class LoggedOutView implements S3View {
 	}
 
 	attach(): Promise<S3View> {
-		this.banner = new Banner(
+		this.banner ??= new Banner(
 			this.view,
 			{ short: "Login to Relay", long: "Login to enable Live edits" },
 			async () => {
-				return await this.login();
+				const loggedIn = await this.login();
+				if (loggedIn) this.release();
+				return loggedIn;
 			},
 		);
 		return Promise.resolve(this);
@@ -258,11 +260,11 @@ export class LoggedOutView implements S3View {
 
 	release() {
 		this.banner?.destroy();
+		this.banner = undefined;
 	}
 
 	destroy() {
-		this.banner?.destroy();
-		this.banner = undefined;
+		this.release();
 		this.view = null as unknown as typeof this.view;
 	}
 }

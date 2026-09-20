@@ -41,12 +41,18 @@ export class ServiceMessageView extends ItemView {
 	async setState(state: { action?: unknown }, result: ViewStateResult): Promise<void> {
 		const action = readMessageActions([state?.action])[0];
 		this.action = action?.type === "markdown" ? action : undefined;
-		await this.renderNote();
+		this.renderInBackground();
 		await super.setState(state, result);
 	}
 
-	async onOpen(): Promise<void> { await this.renderNote(); }
+	async onOpen(): Promise<void> { this.renderInBackground(); }
 	async onClose(): Promise<void> { this.clearRender(); }
+
+	private renderInBackground(): void {
+		void this.renderNote().catch((error: unknown) => {
+			console.error("Service message render failed", error);
+		});
+	}
 
 	private clearRender(): void {
 		this.generation++;
@@ -81,7 +87,7 @@ export class ServiceMessageView extends ItemView {
 			body.empty();
 			body.createEl("p", { text: error instanceof Error ? error.message : "The note could not be loaded." });
 			const retry = body.createEl("button", { text: "Retry" });
-			retry.addEventListener("click", () => { void this.renderNote(); }, { once: true });
+			retry.addEventListener("click", () => this.renderInBackground(), { once: true });
 		} finally {
 			window.clearTimeout(timer);
 			if (this.controller === controller) this.controller = undefined;
