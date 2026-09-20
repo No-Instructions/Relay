@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, createEventDispatcher } from "svelte";
 
+	import { ownerWin } from "./ownerWindow";
 	export let placeholder: string = "Search...";
 	export let autofocus: boolean = false;
 	export let onSelect: (item: any) => void = () => {};
@@ -71,7 +72,7 @@
 
 	onMount(() => {
 		if (autofocus && inputEl) {
-			setTimeout(() => {
+			ownerWin(inputEl).setTimeout(() => {
 				inputEl.focus();
 			}, 10);
 		}
