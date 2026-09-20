@@ -2222,11 +2222,10 @@ export class SharedFolder extends HasProvider {
 
 	/**
 	 * Move a file for a rename that arrived from the server. Obsidian's file
-	 * manager keeps open views attached across the move, which the plain vault
-	 * rename does not, and it repairs links as it goes, asking first unless the
-	 * vault always updates them. A server move is not this user's action, so
-	 * it must never ask: the preference is held on for the call when the vault
-	 * turned it off.
+	 * manager moves the file and then repairs links to it, asking first unless
+	 * the vault always updates them. A server move is not this user's action,
+	 * so it must never ask: for a vault that turned the preference off, the
+	 * link-update step reads it as on for this call only.
 	 */
 	private renameForServerMove(
 		file: TAbstractFile,

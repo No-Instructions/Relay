@@ -70,32 +70,33 @@ export async function ensureLinkUpdatesOn(vault: Vault): Promise<boolean> {
 }
 
 /**
- * Run a rename with automatic link repair held on.
+ * Run a rename with automatic link repair answered as on.
  *
- * Obsidian's file manager keeps open views attached across a move, which
- * the plain vault rename does not, so every rename goes through it. It
- * repairs links as it goes and asks first unless the vault always updates
- * them. A rename that arrived from a peer should repair links everywhere
- * and never ask: the preference governs this user's own renames. For a
- * vault that turned the preference off, hold it on for the duration of the
- * call and put it back afterwards.
+ * The file manager's rename is the vault rename plus a link-update step
+ * that reads the preference once, after the move, and asks the user when
+ * it is off. A rename that arrived from a peer should repair links and
+ * never ask: the preference governs this user's own renames. Answer that
+ * one read with "on" for the duration of the call, in memory only, so
+ * nothing is written to the vault's configuration and nothing is left
+ * behind if the process ends mid-rename.
  */
 export async function withLinkUpdatesOn<T>(
 	vault: Vault,
 	run: () => Promise<T>,
 ): Promise<T> {
+	if (linkUpdatesAreOn(vault)) return run();
 	const configurable = vault as ConfigurableVault;
-	if (linkUpdatesAreOn(vault) || !configurable.setConfig) {
-		return run();
-	}
-	const previous =
-		linkUpdatePreference(vault) === "unset"
-			? undefined
-			: configurable.getConfig?.(LINK_UPDATE_PREFERENCE);
-	configurable.setConfig(LINK_UPDATE_PREFERENCE, true);
+	const original = configurable.getConfig;
+	if (typeof original !== "function") return run();
+	const hadOwnReader = Object.prototype.hasOwnProperty.call(vault, "getConfig");
+	configurable.getConfig = function (this: unknown, key: string) {
+		if (key === LINK_UPDATE_PREFERENCE) return true;
+		return original.call(this, key);
+	};
 	try {
 		return await run();
 	} finally {
-		configurable.setConfig(LINK_UPDATE_PREFERENCE, previous);
+		if (hadOwnReader) configurable.getConfig = original;
+		else delete configurable.getConfig;
 	}
 }
