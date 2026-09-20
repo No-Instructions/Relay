@@ -14,6 +14,7 @@
 	import { Platform } from "obsidian";
 	import Announcement from "./Announcement.svelte";
 
+	import { ownerDoc, ownerWin } from "./ownerWindow";
 	interface RelayEventDetail {
 		relay: Relay;
 	}
@@ -65,6 +66,9 @@
 	const history: View[] = [{ component: Relays }];
 
 	export let close: () => void;
+	// The element the settings tab mounted this into; its document is the
+	// one the settings UI lives in, which is its own window when popped out.
+	export let containerEl: HTMLElement | undefined = undefined;
 
 	// function getPath(): string {
 	// 	if (sharedFolder) {
@@ -258,8 +262,10 @@
 	}
 
 	$: if (currentComponent || currentRelay || sharedFolder || remoteFolder) {
-		setTimeout(() => {
-			const content = document.querySelector(".vertical-tab-content");
+		ownerWin(containerEl).setTimeout(() => {
+			const content = ownerDoc(containerEl).querySelector(
+				".vertical-tab-content",
+			);
 			if (content) {
 				content.scrollTop = 0;
 			}
