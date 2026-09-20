@@ -48,6 +48,12 @@ interface CursorCacheEntry {
 	shape: string;
 }
 
+function eventTargetElement(target: EventTarget | null): Element | null {
+	return target && "nodeType" in target && target.nodeType === 1
+		? (target as Element)
+		: null;
+}
+
 /**
  * Reads the local viewer off Obsidian's canvas and feeds the publisher.
  * Obsidian expresses every active state as a class on a node or edge
@@ -102,7 +108,7 @@ export class CanvasPresenceInput {
 			if (this.frame && !(evt.target instanceof HTMLIFrameElement)) this.exitFrame();
 			this.pointerInside = true;
 			this.lastClient = { x: evt.clientX, y: evt.clientY };
-			this.lastTarget = evt.target instanceof Element ? evt.target : null;
+			this.lastTarget = eventTargetElement(evt.target);
 			this.lastButtons = evt.buttons;
 			this.lastShape = this.shapeUnderPointer();
 			if (this.isDragging()) {
@@ -301,7 +307,7 @@ export class CanvasPresenceInput {
 			if (this.destroyed || evt.pointerType === "touch") return;
 			this.pointerInside = true;
 			this.lastClient = toParent(evt);
-			this.lastTarget = evt.target instanceof Element ? evt.target : null;
+			this.lastTarget = eventTargetElement(evt.target);
 			this.lastButtons = evt.buttons;
 			this.lastShape = this.shapeUnderPointer();
 			this.publishPointer();
