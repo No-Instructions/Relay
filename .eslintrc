@@ -1,56 +1,164 @@
 {
-    "root": true,
-    "parser": "@typescript-eslint/parser",
-    "env": { "node": true },
-    "plugins": [
-      "@typescript-eslint"
-    ],
-    "extends": [
-      "eslint:recommended",
-      "plugin:@typescript-eslint/eslint-recommended",
-      "plugin:@typescript-eslint/recommended"
-    ], 
-    "parserOptions": {
-        "sourceType": "module"
-    },
-    "rules": {
-      "no-unused-vars": "off",
-      "@typescript-eslint/no-unused-vars": ["error", { "args": "none" }],
-      "@typescript-eslint/ban-ts-comment": "off",
-      "no-prototype-builtins": "off",
-      "@typescript-eslint/no-empty-function": "off",
-      "@typescript-eslint/no-explicit-any": "off",
-      "no-restricted-imports": [
-         "error",
-         {
-           "paths": [
-             {
-               "name": "fs",
-               "message": "Do not use Node's fs module."
-             },
-             {
-               "name": "path",
-               "message": "Do not use Node's path module."
-             },
-             {
-               "name": "http",
-               "message": "Do not use Node's http module."
-             },
-             {
-               "name": "crypto",
-               "message": "Do not use Node's crypto module."
-             }
-           ]
-         }
-       ]
-    },
-    "overrides": [
+  "root": true,
+  "parser": "@typescript-eslint/parser",
+  "env": {
+    "node": true
+  },
+  "plugins": [
+    "@typescript-eslint"
+  ],
+  "extends": [
+    "eslint:recommended",
+    "plugin:@typescript-eslint/eslint-recommended",
+    "plugin:@typescript-eslint/recommended"
+  ],
+  "parserOptions": {
+    "sourceType": "module"
+  },
+  "rules": {
+    "no-unused-vars": "off",
+    "@typescript-eslint/no-unused-vars": [
+      "error",
       {
-        "files": ["__tests__/**/*.ts", "unit/**/*.ts"],
-        "rules": {
-          "no-restricted-imports": "off",
-          "@typescript-eslint/no-var-requires": "off"
-        }
+        "args": "none"
+      }
+    ],
+    "@typescript-eslint/ban-ts-comment": "off",
+    "no-prototype-builtins": "off",
+    "@typescript-eslint/no-empty-function": "off",
+    "@typescript-eslint/no-explicit-any": "off",
+    "no-restricted-imports": [
+      "error",
+      {
+        "paths": [
+          {
+            "name": "fs",
+            "message": "Do not use Node's fs module."
+          },
+          {
+            "name": "path",
+            "message": "Do not use Node's path module."
+          },
+          {
+            "name": "http",
+            "message": "Do not use Node's http module."
+          },
+          {
+            "name": "crypto",
+            "message": "Do not use Node's crypto module."
+          }
+        ]
+      }
+    ],
+    "no-restricted-syntax": [
+      "error",
+      {
+        "selector": "MemberExpression[object.name='window'][property.name=/^(innerWidth|innerHeight|outerWidth|outerHeight|scrollX|scrollY|pageXOffset|pageYOffset|visualViewport|devicePixelRatio)$/]",
+        "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+      },
+      {
+        "selector": "BinaryExpression[operator='instanceof'][right.name=/^(MouseEvent|KeyboardEvent|PointerEvent|FocusEvent|DragEvent|TouchEvent|InputEvent|Event|Node|Element|HTMLElement|HTMLInputElement|HTMLTextAreaElement|HTMLAnchorElement|HTMLDivElement|HTMLButtonElement)$/]",
+        "message": "Each window has its own DOM constructors, so instanceof rejects everything built in another one. Discriminate on event.type, a property, or nodeType."
+      },
+      {
+        "selector": "CallExpression[callee.name=/^(setTimeout|setInterval|requestAnimationFrame|clearTimeout|clearInterval|cancelAnimationFrame)$/]",
+        "message": "Reach timers through the window that owns the work: an element's ownerDocument.defaultView, or the plugin window."
       }
     ]
-  }
+  },
+  "overrides": [
+    {
+      "files": [
+        "__tests__/**/*.ts",
+        "unit/**/*.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": "off",
+        "@typescript-eslint/no-var-requires": "off",
+        "no-restricted-syntax": "off"
+      }
+    },
+    {
+      "files": [
+        "**/*.svelte"
+      ],
+      "parser": "svelte-eslint-parser",
+      "parserOptions": {
+        "parser": "@typescript-eslint/parser"
+      },
+      "env": {
+        "browser": true,
+        "es2021": true
+      },
+      "rules": {
+        "no-inner-declarations": "off",
+        "no-self-assign": "off",
+        "no-mixed-spaces-and-tabs": "off",
+        "@typescript-eslint/no-unused-vars": "warn",
+        "no-case-declarations": "warn",
+        "no-restricted-globals": [
+          "error",
+          {
+            "name": "document",
+            "message": "Reach the document through an element you own: el.ownerDocument."
+          },
+          {
+            "name": "innerWidth",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          },
+          {
+            "name": "innerHeight",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          },
+          {
+            "name": "outerWidth",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          },
+          {
+            "name": "outerHeight",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          },
+          {
+            "name": "scrollX",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          },
+          {
+            "name": "scrollY",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          },
+          {
+            "name": "pageXOffset",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          },
+          {
+            "name": "pageYOffset",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          },
+          {
+            "name": "visualViewport",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          },
+          {
+            "name": "devicePixelRatio",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          }
+        ],
+        "no-restricted-syntax": [
+          "error",
+          {
+            "selector": "MemberExpression[object.name='window'][property.name=/^(innerWidth|innerHeight|outerWidth|outerHeight|scrollX|scrollY|pageXOffset|pageYOffset|visualViewport|devicePixelRatio)$/]",
+            "message": "Viewport geometry differs per window. Measure the window the element is in: el.ownerDocument.defaultView."
+          },
+          {
+            "selector": "BinaryExpression[operator='instanceof'][right.name=/^(MouseEvent|KeyboardEvent|PointerEvent|FocusEvent|DragEvent|TouchEvent|InputEvent|Event|Node|Element|HTMLElement|HTMLInputElement|HTMLTextAreaElement|HTMLAnchorElement|HTMLDivElement|HTMLButtonElement)$/]",
+            "message": "Each window has its own DOM constructors, so instanceof rejects everything built in another one. Discriminate on event.type, a property, or nodeType."
+          },
+          {
+            "selector": "CallExpression[callee.name=/^(setTimeout|setInterval|requestAnimationFrame|clearTimeout|clearInterval|cancelAnimationFrame)$/]",
+            "message": "Reach timers through the window that owns the work: an element's ownerDocument.defaultView, or the plugin window."
+          }
+        ]
+      }
+    }
+  ]
+}

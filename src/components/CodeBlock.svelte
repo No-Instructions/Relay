@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { createEventDispatcher } from "svelte";
 
+	import { ownerWin } from "./ownerWindow";
 	export let value: string = "";
 	export let readonly: boolean = false;
 	export let copyOnClick: boolean = false;
@@ -17,7 +18,7 @@
 		try {
 			await navigator.clipboard.writeText(value);
 			copied = true;
-			setTimeout(() => {
+			ownerWin(rootEl).setTimeout(() => {
 				copied = false;
 			}, 2000);
 			dispatch("copy", { value });
@@ -32,9 +33,10 @@
 			copyToClipboard();
 		}
 	}
+	let rootEl: HTMLElement;
 </script>
 
-<div class="code-block-container">
+<div class="code-block-container" bind:this={rootEl}>
 	<div class="code-block-wrapper">
 		<div
 			class="HyperMD-codeblock HyperMD-codeblock-begin HyperMD-codeblock-begin-bg HyperMD-codeblock-bg cm-line"

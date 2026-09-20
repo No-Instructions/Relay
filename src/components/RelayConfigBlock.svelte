@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ownerWin } from "./ownerWindow";
 	export let toml: string = "";
 
 	let copied = false;
@@ -131,7 +132,7 @@
 		try {
 			await navigator.clipboard.writeText(toml);
 			copied = true;
-			setTimeout(() => {
+			ownerWin(rootEl).setTimeout(() => {
 				copied = false;
 			}, 2000);
 		} catch (err) {
@@ -145,10 +146,11 @@
 			copyToClipboard();
 		}
 	}
+	let rootEl: HTMLElement;
 </script>
 
 {#if toml}
-	<div class="el-pre">
+	<div class="el-pre" bind:this={rootEl}>
 		<pre class="language-toml"><code class="language-toml is-loaded"
 				>{@html highlightedHtml}</code
 			><button
