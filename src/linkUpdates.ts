@@ -68,3 +68,34 @@ export async function ensureLinkUpdatesOn(vault: Vault): Promise<boolean> {
 		return false;
 	}
 }
+
+/**
+ * Run a rename with automatic link repair held on.
+ *
+ * Obsidian's file manager keeps open views attached across a move, which
+ * the plain vault rename does not, so every rename goes through it. It
+ * repairs links as it goes and asks first unless the vault always updates
+ * them. A rename that arrived from a peer should repair links everywhere
+ * and never ask: the preference governs this user's own renames. For a
+ * vault that turned the preference off, hold it on for the duration of the
+ * call and put it back afterwards.
+ */
+export async function withLinkUpdatesOn<T>(
+	vault: Vault,
+	run: () => Promise<T>,
+): Promise<T> {
+	const configurable = vault as ConfigurableVault;
+	if (linkUpdatesAreOn(vault) || !configurable.setConfig) {
+		return run();
+	}
+	const previous =
+		linkUpdatePreference(vault) === "unset"
+			? undefined
+			: configurable.getConfig?.(LINK_UPDATE_PREFERENCE);
+	configurable.setConfig(LINK_UPDATE_PREFERENCE, true);
+	try {
+		return await run();
+	} finally {
+		configurable.setConfig(LINK_UPDATE_PREFERENCE, previous);
+	}
+}
