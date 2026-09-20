@@ -208,21 +208,21 @@ export default class Live extends Plugin {
 	private _hsmStore!: HSMStore;
 	promises = new PromiseTracker();
 
-	enableDebugging(save?: boolean) {
+	async enableDebugging(save?: boolean): Promise<void> {
 		setDebugging(true);
 		console.warn("RelayInstances", RelayInstances);
 		if (save) {
-			void this.debugSettings.update((settings) => ({
+			return this.debugSettings.update((settings) => ({
 				...settings,
 				debugging: true,
 			}));
 		}
 	}
 
-	disableDebugging(save?: boolean) {
+	async disableDebugging(save?: boolean): Promise<void> {
 		setDebugging(false);
 		if (save) {
-			void this.debugSettings.update((settings) => ({
+			return this.debugSettings.update((settings) => ({
 				...settings,
 				debugging: false,
 			}));
@@ -1855,10 +1855,7 @@ export default class Live extends Plugin {
 			flags: this.featureSettings,
 			debugging: {
 				get: () => this.debugSettings.get().debugging,
-				set: (on) => {
-					if (on) this.enableDebugging(true);
-					else this.disableDebugging(true);
-				},
+				set: (on) => on ? this.enableDebugging(true) : this.disableDebugging(true),
 			},
 			metadataHealth: () => this.metadataHealth,
 			debugAPI: this.relayDebugAPI,

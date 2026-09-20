@@ -884,9 +884,9 @@ const debugging: CliCommand = {
 		on: { description: "Enable debugging" },
 		off: { description: "Disable debugging" },
 	},
-	run(params, ctx) {
-		if (flag(params, "on")) ctx.debugging.set(true);
-		else if (flag(params, "off")) ctx.debugging.set(false);
+	async run(params, ctx) {
+		if (flag(params, "on")) await ctx.debugging.set(true);
+		else if (flag(params, "off")) await ctx.debugging.set(false);
 		const enabled = ctx.debugging.enabled();
 		return { data: { debugging: enabled }, text: `Debugging ${enabled ? "on" : "off"}` };
 	},

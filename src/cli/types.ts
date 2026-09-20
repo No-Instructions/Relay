@@ -138,6 +138,6 @@ export interface CliContext {
 		get(): FeatureFlags;
 		set(name: keyof FeatureFlags, value: boolean): Promise<void>;
 	};
-	debugging: { enabled(): boolean; set(on: boolean): void };
+	debugging: { enabled(): boolean; set(on: boolean): Promise<void> };
 	metadataHealth(): { status: string; message: string | null } | null;
 }

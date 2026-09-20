@@ -8,7 +8,7 @@ import type { CliContext, CliRelayManager } from "./types";
 
 export interface CliContextDeps {
 	flags: NamespacedSettings<FeatureFlags>;
-	debugging: { get(): boolean; set(on: boolean): void };
+	debugging: { get(): boolean; set(on: boolean): Promise<void> };
 	metadataHealth: () => { state: MetadataHealthState } | null;
 	debugAPI: RelayDebugAPI;
 }
