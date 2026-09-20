@@ -1,5 +1,6 @@
 import type { Vault } from "obsidian";
 import { curryLog } from "./debug";
+import { getPatcher } from "./Patcher";
 
 /** Obsidian's preference for repairing internal links on every rename. */
 const LINK_UPDATE_PREFERENCE = "alwaysUpdateLinks";
@@ -12,8 +13,7 @@ type ConfigurableVault = Vault & {
 };
 
 interface LinkUpdateOverride {
-	original: (key: string) => unknown;
-	hadOwnReader: boolean;
+	unpatch: () => void;
 	depth: number;
 	reads: number;
 }
@@ -49,15 +49,12 @@ export function linkUpdatePreference(vault: Vault): LinkUpdatePreference {
 /**
  * Turn automatic link repair on for a vault that never chose.
  *
- * A rename that arrives from a peer repairs links inside the shared folder
- * through sync, but links from this vault's other notes are repaired only
- * by Obsidian, and only when the vault always updates links. Left unset,
- * Obsidian asks at every rename that has referrers, and a prompt raised by
- * a rename this user did not make is one nobody expects. Turning the
- * preference on is what the prompt's own "Always update" answer does. A
- * vault that turned it off keeps its stored choice for its own renames;
- * peer renames still repair links through a temporary in-memory override,
- * including links from notes outside shared folders.
+ * This chooses automatic repair as the default for the user's own renames,
+ * including in vaults with no shared folder. It changes Obsidian's stored
+ * preference and survives plugin removal. An explicit choice is preserved.
+ * The stored on value also avoids depending on the temporary reader override
+ * on unverified hosts. On the verified desktop host, peer renames already
+ * repair links through that override, including links outside shared folders.
  *
  * Preference failures are logged so they cannot prevent the plugin loading.
  * Returns whether the preference was confirmed on without an error.
@@ -104,18 +101,19 @@ export async function withLinkUpdatesOn<T>(
 		if (typeof original !== "function") return run();
 		if (original.call(vault, LINK_UPDATE_PREFERENCE) === true) return run();
 		const installed: LinkUpdateOverride = {
-			original,
-			hadOwnReader: Object.prototype.hasOwnProperty.call(vault, "getConfig"),
+			unpatch: () => {},
 			depth: 0,
 			reads: 0,
 		};
-		configurable.getConfig = function (this: unknown, key: string) {
-			if (key === LINK_UPDATE_PREFERENCE) {
-				installed.reads++;
-				return true;
-			}
-			return original.call(this, key);
-		};
+		installed.unpatch = getPatcher().patch(configurable, {
+			getConfig: (next: (key: string) => unknown) => function (this: unknown, key: string) {
+				if (key === LINK_UPDATE_PREFERENCE) {
+					installed.reads++;
+					return true;
+				}
+				return next.call(this, key);
+			},
+		});
 		linkUpdateOverrides.set(vault, installed);
 		state = installed;
 	}
@@ -125,13 +123,12 @@ export async function withLinkUpdatesOn<T>(
 		return await run();
 	} finally {
 		if (--state.depth === 0) {
-			if (state.hadOwnReader) configurable.getConfig = state.original;
-			else delete configurable.getConfig;
+			state.unpatch();
 			linkUpdateOverrides.delete(vault);
 		}
 		if (state.reads === readsAtStart) {
 			curryLog("[LinkUpdates]", "warn")(
-				"Link-update override was not consulted during a rename; Obsidian may read the preference outside the rename promise",
+				"No link-update preference read observed during rename; the file may have no referrers or the host may read outside the rename promise",
 			);
 		}
 	}

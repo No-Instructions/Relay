@@ -351,6 +351,8 @@ export class SharedFolder extends HasProvider {
 	private bootSnapshot: MembershipSnapshot | null = null;
 	/** Server-decided operations whose disk effect is still in flight. */
 	private serverOps = new ServerOps();
+	/** Dispatched renames retain their echo until the disk operation settles. */
+	private serverRenamesInFlight = new Map<string, { deleted: boolean }>();
 	/** One parked publication re-entry per held path. */
 	private _parkedPublications: Map<string, Promise<void>> = new Map();
 	/** One publication decision executor per held path. */
@@ -784,6 +786,14 @@ export class SharedFolder extends HasProvider {
 				? this.serverOps.moveFor(removal.oldValue.id)
 				: undefined;
 			if (move) {
+				const rename = this.serverRenamesInFlight?.get(move.guid);
+				if (rename) {
+					// Keep the move so its vault echo cannot become a local create.
+					// The dispatched operation will record its final disk location.
+					rename.deleted = true;
+					this.serverOps.recordDelete(move.to);
+					continue;
+				}
 				// A failed move may still occupy its source when the peer deletes
 				// the destination. Carry that witnessed removal to the disk path
 				// for Readers too, unless another local file has claimed it.
@@ -2220,19 +2230,40 @@ export class SharedFolder extends HasProvider {
 		// take a doc and it's new path.
 		const oldVPath = this.getVirtualPath(file.path);
 		this.serverOps.recordMove({ guid: doc.guid, from: oldVPath, to: path });
-		diffLog?.push(`${file.path} was renamed to ${this.getPath(path)}`);
-		if (file instanceof TFile) {
-			const dir = dirname(path);
-			if (!this.existsSync(dir)) {
-				await this.mkdir(dir);
-				diffLog?.push(`creating directory ${dir}`);
+		const inFlight = this.serverRenamesInFlight ??= new Map();
+		const rename = { deleted: false };
+		inFlight.set(doc.guid, rename);
+		try {
+			diffLog?.push(`${file.path} was renamed to ${this.getPath(path)}`);
+			if (file instanceof TFile) {
+				const dir = dirname(path);
+				if (!this.existsSync(dir)) {
+					await this.mkdir(dir);
+					diffLog?.push(`creating directory ${dir}`);
+				}
 			}
-		}
-		await this.renameForServerMove(file, normalizePath(this.getPath(path)));
-		this.serverOps.completeMove(oldVPath, path);
-		this.bootSnapshot?.discard(oldVPath);
-		if (!this.destroyed && doc.path !== path) {
-			doc.move(path, this);
+			await this.renameForServerMove(file, normalizePath(this.getPath(path)));
+			this.serverOps.completeMove(oldVPath, path);
+			this.bootSnapshot?.discard(oldVPath);
+			if (!this.destroyed && doc.path !== path) {
+				doc.move(path, this);
+			}
+		} finally {
+			if (inFlight.get(doc.guid) === rename) inFlight.delete(doc.guid);
+			if (rename.deleted) {
+				const diskPath = this.getVirtualPath(file.path);
+				const move = this.serverOps.moveFor(doc.guid);
+				const recreatedSource = diskPath === oldVPath && move !== undefined &&
+					!this.serverOps.coversPath(oldVPath);
+				if (move?.from === oldVPath && move.to === path) {
+					this.serverOps.discardMove(doc.guid);
+				}
+				// Success leaves the file at the destination; a failed rename may
+				// leave it at the source. Preserve a separately recreated source.
+				if (!recreatedSource && !this.syncStore.has(diskPath)) {
+					this.serverOps.recordDelete(diskPath);
+				}
+			}
 		}
 	}
 
