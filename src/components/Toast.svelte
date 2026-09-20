@@ -7,6 +7,7 @@
 		AlertCircle,
 	} from "lucide-svelte";
 	import { createEventDispatcher, onMount } from "svelte";
+	import { ownerWin } from "./ownerWindow";
 
 	export let message: string;
 	export let details: string = "";
@@ -14,25 +15,27 @@
 	export let autoDismiss: number = 5000;
 
 	const dispatch = createEventDispatcher();
+	let toastEl: HTMLDivElement;
 	let timeoutId: number;
 
 	onMount(() => {
+		const win = ownerWin(toastEl);
 		if (autoDismiss > 0) {
-			timeoutId = window.setTimeout(() => {
+			timeoutId = win.setTimeout(() => {
 				dispatch("dismiss");
 			}, autoDismiss);
 		}
 
 		return () => {
 			if (timeoutId) {
-				clearTimeout(timeoutId);
+				win.clearTimeout(timeoutId);
 			}
 		};
 	});
 
 	function handleDismiss() {
 		if (timeoutId) {
-			clearTimeout(timeoutId);
+			ownerWin(toastEl).clearTimeout(timeoutId);
 		}
 		dispatch("dismiss");
 	}
@@ -49,7 +52,7 @@
 	$: toastClass = `toast toast-${type}`;
 </script>
 
-<div class={toastClass} role="alert" aria-live="polite">
+<div bind:this={toastEl} class={toastClass} role="alert" aria-live="polite">
 	<div class="toast-icon">
 		<svelte:component this={iconComponent} class="svg-icon" />
 	</div>
