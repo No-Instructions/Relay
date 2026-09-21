@@ -93,12 +93,17 @@ export function readServiceMessage(value: unknown): ServiceMessage | null | unde
 	return { id, title, message, ...validity, ...colors, ...(safeLink ? { link: safeLink } : {}), ...(actions.length ? { actions } : {}) };
 }
 
-/** Vault-local dismissals, scoped to the service rather than its version query. */
+type ServiceMessageSurface = "sidebar" | "note";
+
+/** Vault-local dismissals, shared by message ID across surfaces and plugin versions. */
 export class ServiceMessages {
 	private dismissed: LocalStorage<boolean>;
 	private sessionDismissals = new Set<string>();
-	private message: ServiceMessage | null = null;
-	private listeners = new Set<(message: ServiceMessage | null) => void>();
+	private messages: Record<ServiceMessageSurface, ServiceMessage | null> = { sidebar: null, note: null };
+	private listeners = {
+		sidebar: new Set<(message: ServiceMessage | null) => void>(),
+		note: new Set<(message: ServiceMessage | null) => void>(),
+	};
 	private log = curryLog("[ServiceMessages]");
 
 	constructor(appId: string, pluginId: string, serviceUrl: string) {
@@ -107,35 +112,36 @@ export class ServiceMessages {
 		this.dismissed = new LocalStorage<boolean>(`${appId}-${pluginId}/serviceMessages/${service}`);
 	}
 
-	update(message: ServiceMessage | null): void {
-		this.message = message;
-		this.notify();
+	update(message: ServiceMessage | null, surface: ServiceMessageSurface = "sidebar"): void {
+		this.messages[surface] = message;
+		this.notify(surface);
 	}
 
 	dismiss(id: string): void {
-		if (this.message?.id !== id) return;
+		if (!Object.values(this.messages).some(message => message?.id === id)) return;
 		this.sessionDismissals.add(id);
 		try {
 			this.dismissed.set(id, true);
 		} catch (error) {
 			this.log("Unable to persist announcement dismissal", error);
 		}
-		this.notify();
+		this.notify("sidebar");
+		this.notify("note");
 	}
 
-	subscribe(listener: (message: ServiceMessage | null) => void): () => void {
-		this.listeners.add(listener);
-		listener(this.visible());
-		return () => { this.listeners.delete(listener); };
+	subscribe(listener: (message: ServiceMessage | null) => void, surface: ServiceMessageSurface = "sidebar"): () => void {
+		this.listeners[surface].add(listener);
+		listener(this.visible(surface));
+		return () => { this.listeners[surface].delete(listener); };
 	}
 
-	private visible(): ServiceMessage | null {
-		const message = this.message;
+	private visible(surface: ServiceMessageSurface): ServiceMessage | null {
+		const message = this.messages[surface];
 		return message && !this.sessionDismissals.has(message.id) && !this.dismissed.has(message.id) ? message : null;
 	}
 
-	private notify(): void {
-		const visible = this.visible();
-		this.listeners.forEach(listener => listener(visible));
+	private notify(surface: ServiceMessageSurface): void {
+		const visible = this.visible(surface);
+		this.listeners[surface].forEach(listener => listener(visible));
 	}
 }
