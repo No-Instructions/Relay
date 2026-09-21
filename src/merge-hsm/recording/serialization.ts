@@ -139,7 +139,7 @@ export function serializeEvent(event: MergeEvent): SerializableEvent {
     case 'CONNECTED':
     case 'DISCONNECTED':
     case 'RESOLVE':
-    case 'RESOLVE_HUNK':
+    case 'DECIDE_BLOCK':
     case 'DISMISS_CONFLICT':
     case 'OPEN_DIFF_VIEW':
     case 'CANCEL':
