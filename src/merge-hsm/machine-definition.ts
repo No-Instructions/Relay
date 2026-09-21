@@ -38,7 +38,7 @@ const IDLE_LIFECYCLE: Record<string, EventHandler> = {
 	// carries a stale head and would re-run load classification against a
 	// file that may not be written yet; only a document without an ancestor
 	// takes it.
-	ENROLLMENT_COMPLETE: { target: 'idle.loading', guard: 'hasNoLCA', actions: ['storeEnrollmentComplete'], reenter: true },
+	ENROLLMENT_COMPLETE: { target: 'idle.loading', guard: 'canCompleteEnrollment', actions: ['storeEnrollmentComplete'], reenter: true },
 	PERSISTENCE_SYNCED: { target: 'idle.loading', guard: 'shouldWakeLCARecoveryAfterPersistenceSynced', reenter: true },
 	ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
 	UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
@@ -97,7 +97,7 @@ export const MACHINE: MachineDefinition = {
 			REMOTE_UPDATE: { target: 'loading', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
 			DISK_CHANGED: { target: 'loading', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
 			DISK_METADATA_CHANGED: { target: 'loading', actions: ['storeDiskMetadataForLoad'] },
-			ENROLLMENT_COMPLETE: { target: 'loading', actions: ['storeEnrollmentComplete'] },
+			ENROLLMENT_COMPLETE: { target: 'loading', guard: 'canCompleteEnrollment', actions: ['storeEnrollmentComplete'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 			SERVER_AHEAD: POCKET_SERVER_AHEAD('loading'),
 		},
@@ -454,7 +454,10 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.synced', guard: 'diskMatchesConvergedDocs', actions: ['storeDiskMetadataOnly'] },
 				{ target: 'idle.diverged', actions: ['storeDiskMetadata'] },
 			],
-			REMOTE_UPDATE: { target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+			REMOTE_UPDATE: [
+				{ target: 'idle.diverged', guard: 'idleThreeWayAwaitingProvider', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'], reenter: true },
+				{ target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+			],
 			CM6_CHANGE: { target: 'idle.diverged', actions: ['accumulateCM6Change'] },
 			// Divergence cannot be resolved from head equality: the parked
 			// merge needs the remote replica's content, so the signal always
@@ -717,6 +720,7 @@ export const MACHINE: MachineDefinition = {
 			},
 			ENROLLMENT_COMPLETE: {
 				target: 'active.entering.awaitingPersistence',
+				guard: 'canCompleteEnrollment',
 				actions: ['storeEnrollmentComplete', 'maybeSignalPersistenceSyncedForRecovery'],
 			},
 			PERSISTENCE_SYNCED: [

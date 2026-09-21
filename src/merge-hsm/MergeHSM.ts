@@ -398,6 +398,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 	// Pending updates for idle mode auto-merge (received via REMOTE_UPDATE)
 	private pendingIdleUpdates: Uint8Array | null = null;
+	private idleThreeWayAwaitingProvider = false;
 
 	// Consecutive idle retry count — used for backoff when drain rate < queue rate
 	private idleRetryCount = 0;
@@ -2325,7 +2326,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			this.seedFrontmatterMapFromCurrentText(true);
 		}
 
-		if (didEnroll && cachedDiskContent) {
+		if (didEnroll && cachedDiskContent && !this._lca) {
 			// Enrollment happened - set LCA to match initial content
 			const { content, hash, mtime } = cachedDiskContent;
 			this.sendEnrollmentComplete({
@@ -2660,6 +2661,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	 */
 	setStatePath(target: StatePath): void {
 		const oldStatus = this.lastSyncStatus;
+		this.idleThreeWayAwaitingProvider = false;
 		// Converging to idle.synced means the note is reconciled: drop any
 		// materialized conflict/error so a stale conflict cannot surface a phantom
 		// "Open to resolve" row (which resolveConflict no-ops in idle.synced) or
@@ -2897,6 +2899,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				return this.localDoc.getText("contents").toString() === e.contents;
 			},
 			providerSyncedRemoteAhead: () => this.providerSyncedRemoteAhead(),
+			idleThreeWayAwaitingProvider: () => this.idleThreeWayAwaitingProvider,
 			providerSyncNeedsForkReconcileRestart: () =>
 				!this._providerSynced || this._activeInvoke?.id !== "fork-reconcile",
 			remoteOrLocalAhead: () =>
@@ -2957,6 +2960,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			persistenceHasContent: (_hsm, event) => payload(event).hasContent === true,
 			hasPreexistingConflict: () => this._conflict !== null,
 			hasNoLCA: () => this._lca === null,
+			canCompleteEnrollment: () => {
+				if (!this._lca) return true;
+				this.hsmWarn(`Ignoring stale enrollment: ancestor already settled | guid=${this._guid} state=${this._statePath}`);
+				return false;
+			},
 			activeReconcileBaseReady: () => !this.needsFullStateForActiveEntry(),
 			persistenceHasContentAndActiveBaseReady: (_hsm, event) =>
 				payload(event).hasContent === true && !this.needsFullStateForActiveEntry(),
@@ -4973,6 +4981,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	}
 
 	private async invokeIdleThreeWayAutoMerge(signal: AbortSignal): Promise<unknown> {
+		this.idleThreeWayAwaitingProvider = false;
 		// Reclassification after a disk event must retain the user's held fork.
 		if (this._fork?.origin === "demotion") this.presentReadFork();
 		// If fork-reconcile already detected a conflict, don't re-attempt the
@@ -4993,7 +5002,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			this.pendingIdleUpdates = null;
 			if (!this.remoteDoc) {
 				this.emitEffect({ type: "REQUEST_PROVIDER_SYNC", guid: this._guid });
-				return { success: false, awaitingProvider: true };
+				return this.parkIdleThreeWayForProvider();
 			}
 			if (!this.hasEnrolledLocalCRDT()) {
 				return { success: false, awaitingLocalEnrollment: true };
@@ -5003,7 +5012,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			}
 			if (!this._isProviderSynced()) {
 				this.emitEffect({ type: "REQUEST_PROVIDER_SYNC", guid: this._guid });
-				return { success: false, awaitingProvider: true };
+				return this.parkIdleThreeWayForProvider();
 			}
 			return { success: false };
 		}
@@ -5021,10 +5030,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		// runs before storePendingRemoteUpdate), so reading its text gives the
 		// correct remote content without the corruption path.
 		// If remoteDoc isn't available yet (e.g. waking from hibernation), bail
-		// out — REMOTE_UPDATE will reenter idle.diverged once the provider syncs.
+		// out. While parked, REMOTE_UPDATE restarts this invoke; a running
+		// merge only buffers updates for its completion path to drain.
 		const remoteDoc = this.requireRemoteDoc("idle three-way merge");
 		if (!remoteDoc) {
-			return { success: false, awaitingProvider: true };
+			return this.parkIdleThreeWayForProvider();
 		}
 		const crdtContent = remoteDoc.getText("contents").toString();
 
@@ -5032,7 +5042,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		// server's CRDT state.  Defer the merge until PROVIDER_SYNCED
 		// delivers the real remote content.
 		if (!this._isProviderSynced()) {
-			return { success: false, awaitingProvider: true };
+			return this.parkIdleThreeWayForProvider();
 		}
 
 		// A replica that lacks history the LCA already holds and brings
@@ -5047,7 +5057,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 					`awaiting provider | guid=${this._guid} ` +
 					`replicaLen=${crdtContent.length} lcaLen=${lcaContent.length}`,
 			);
-			return { success: false, awaitingProvider: true };
+			return this.parkIdleThreeWayForProvider();
 		}
 
 		const diskContent = this.pendingDiskContents ?? lcaContent;
@@ -5186,7 +5196,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		// of its own has not caught up with the server; its text is not the
 		// remote side of anything. Wait for the provider rather than reconcile
 		// the local side against it.
-		if (!remoteDroppedForkState && this.replicaIsBehindLCA(remoteDoc)) {
+		if (!remoteDroppedForkState && this.replicaIsBehindLCA(remoteDoc, currentRemoteSnapshot)) {
 			this.hsmWarn(
 				`fork reconcile: remote replica is behind the LCA — awaiting provider | ` +
 					`guid=${this._guid} replicaLen=${remoteContent.length} baseLen=${fork.base.length}`,
@@ -5603,18 +5613,28 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	 * inserts as tombstones plus a larger delete set, so it never reads as
 	 * behind.
 	 */
-	private replicaIsBehindLCA(remoteDoc: Y.Doc): boolean {
-		if (!this._lca?.snapshot) return false;
+	private replicaIsBehindLCA(remoteDoc: Y.Doc, replicaSnapshot?: { snapshot: Uint8Array }): boolean {
+		if (!this._lca) return false;
 		try {
-			const replica = snapshotFromDoc(remoteDoc);
+			if (!this._lca.snapshot) throw new Error("ancestor snapshot is missing");
+			const replica = replicaSnapshot ?? snapshotFromDoc(remoteDoc);
 			const lca = { snapshot: this._lca.snapshot };
 			return (
 				snapshotHasOpsMissingFrom(lca, replica) &&
 				!snapshotHasOpsMissingFrom(replica, lca)
 			);
-		} catch {
-			return false;
+		} catch (error) {
+			// Unknown history cannot authorize a merge that may delete text.
+			this.hsmWarn(`Cannot compare replica with ancestor; holding merge | guid=${this._guid}`, error);
+			return true;
 		}
+	}
+
+	private parkIdleThreeWayForProvider(): { success: false; awaitingProvider: true } {
+		// Mark before returning, so an update between this return and onDone
+		// can wake the invoke too. Only a new provider event retries the park.
+		this.idleThreeWayAwaitingProvider = true;
+		return { success: false, awaitingProvider: true };
 	}
 
 	private hasRemoteChangedSinceLCA(): boolean {
