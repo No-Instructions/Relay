@@ -931,7 +931,7 @@ export default class Live extends Plugin {
 		this.networkStatus = new NetworkStatus(this.timeProvider, HEALTH_URL);
 
 		this.registerView(SERVICE_MESSAGE_VIEW, leaf => new ServiceMessageView(leaf));
-		const serviceMessages = new ServiceMessages(this.appId, this.manifest.id, HEALTH_URL);
+		const serviceMessages = new ServiceMessages(this.appId, this.manifest.id);
 		this.serviceMessagesSidebarNotice = new SidebarNoticeMount(
 			this.app.workspace,
 			"system3-service-messages-slot",
