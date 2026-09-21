@@ -1,4 +1,4 @@
-import { Platform, requestUrl } from "obsidian";
+import { requestUrl } from "obsidian";
 import { curryLog } from "./debug";
 import type { TimeProvider } from "./TimeProvider";
 import { getRelayRequestHeaders, requestUrlWithMetrics } from "./customFetch";
@@ -23,6 +23,7 @@ interface ProbeResponse {
 type ProbeResult = { response: ProbeResponse } | { error: unknown };
 
 interface PendingProbe {
+	sequence: number;
 	result?: ProbeResult;
 	timedOut: boolean;
 	listeners: Set<(result: ProbeResult) => void>;
@@ -46,6 +47,8 @@ class NetworkStatus {
 	// Keep at most two uncancellable Obsidian requests, leaving room to
 	// recover through a fresh connection after the first request stalls.
 	private requests = new Map<Transport, PendingProbe[]>();
+	private requestSequence = 0;
+	private latestVerdict = new Map<Transport, number>();
 	private failureListeners = new Set<(failure: NetworkTransportFailure) => void>();
 	private failingTransport: NetworkTransportFailure = null;
 	private failureCount = 0;
@@ -75,6 +78,7 @@ class NetworkStatus {
 		for (const controller of this.controllers) controller.abort();
 		this.checking = undefined;
 		this.requests.clear();
+		this.latestVerdict.clear();
 	}
 
 	public async checkStatus(): Promise<boolean> {
@@ -114,7 +118,6 @@ class NetworkStatus {
 		if (!isCurrent()) return;
 		const alternatives: Transport[] = ["fetch"];
 		if (primary === "node") alternatives.push("obsidian");
-		else if (Platform.isDesktopApp) alternatives.push("node");
 		const results = await Promise.all(alternatives.map(transport => this.probe(transport)));
 		if (!isCurrent()) return;
 		const working = alternatives.filter((_, index) => {
@@ -138,9 +141,18 @@ class NetworkStatus {
 		// pending requests have timed out, allow one fresh request up to the cap.
 		if (!pool.some(probe => probe.result || !probe.timedOut) &&
 			pool.length < (transport === "obsidian" ? 2 : 1)) {
-			const probe: PendingProbe = { timedOut: false, listeners: new Set() };
+			const probe: PendingProbe = { sequence: ++this.requestSequence, timedOut: false, listeners: new Set() };
 			pool.push(probe);
 			const settle = (result: ProbeResult) => {
+				// A deadline already counted this failure. A later rejection
+				// must not replay it, and no old result may undo a newer verdict.
+				if ((probe.timedOut && "error" in result) ||
+					probe.sequence < (this.latestVerdict.get(transport) ?? 0)) {
+					const index = pool.indexOf(probe);
+					if (index >= 0) pool.splice(index, 1);
+					probe.listeners.clear();
+					return;
+				}
 				probe.result = result;
 				probe.listeners.forEach(listener => listener(result));
 				probe.listeners.clear();
@@ -161,7 +173,7 @@ class NetworkStatus {
 		}, primary ? PRIMARY_PROBE_TIMEOUT_MS : PROBE_TIMEOUT_MS);
 		const unsubscribe: (() => void)[] = [];
 		try {
-			const observations = pool.map(probe => new Promise<{ probe: PendingProbe; result: ProbeResult }>(resolve => {
+			const observations = [...pool].reverse().map(probe => new Promise<{ probe: PendingProbe; result: ProbeResult }>(resolve => {
 				const receive = (result: ProbeResult) => resolve({ probe, result });
 				if (probe.result) receive(probe.result);
 				else {
@@ -169,8 +181,22 @@ class NetworkStatus {
 					unsubscribe.push(() => probe.listeners.delete(receive));
 				}
 			}));
-			const { probe, result } = await Promise.race([...observations, cancelled]);
+			let { probe, result } = await Promise.race([...observations, cancelled]);
+			// More than one request can settle before this continuation runs.
+			for (const candidate of pool) {
+				if (candidate.result && candidate.sequence > probe.sequence) {
+					probe = candidate;
+					result = candidate.result;
+				}
+			}
 			pool.splice(pool.indexOf(probe), 1);
+			if (this.requests.get(transport) === pool) {
+				this.latestVerdict.set(transport, probe.sequence);
+				// Pending old requests still occupy a slot until they settle.
+				for (let index = pool.length - 1; index >= 0; index--) {
+					if (pool[index].result && pool[index].sequence < probe.sequence) pool.splice(index, 1);
+				}
+			}
 			return result;
 		} catch (error) {
 			return { error };
