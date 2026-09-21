@@ -5,7 +5,11 @@
 
 	function openAnnouncement() {
 		if (plugin.networkStatus.status?.versions) {
-			plugin.openPluginPage();
+			if (plugin.releaseSettings.get().channel === "beta") {
+				plugin.openReleaseManager(plugin.networkStatus.status.versions.beta);
+			} else {
+				plugin.openPluginPage();
+			}
 			return;
 		}
 		if (plugin.networkStatus.status?.link) {

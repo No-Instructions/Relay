@@ -84,6 +84,7 @@ import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
 import { UpdateManager } from "./UpdateManager";
 import type { Release } from "./UpdateManager";
 import { ReleaseManager } from "./ui/ReleaseManager";
+import { openPluginPage } from "./PluginPage";
 import type { ReleaseSettings } from "./UpdateManager";
 import { SyncSettingsManager } from "./SyncSettings";
 import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
@@ -1255,15 +1256,7 @@ export default class Live extends Plugin {
 	}
 
 	openPluginPage(): void {
-		const workspace = this.app.workspace as typeof this.app.workspace & {
-			protocolHandler: {
-				dispatch(params: { action: string; id: string }): void;
-			};
-		};
-		workspace.protocolHandler.dispatch({
-			action: "show-plugin",
-			id: this.manifest.id,
-		});
+		openPluginPage(this.app, this.manifest.id);
 	}
 
 	openGithubRelease(release?: Release | string): void {
@@ -1842,8 +1835,12 @@ export default class Live extends Plugin {
 			},
 		);
 
-		this.registerObsidianProtocolHandler("relay/upgrade", () => {
-			this.openPluginPage();
+		this.registerObsidianProtocolHandler("relay/upgrade", (parameters) => {
+			if (this.releaseSettings.get().channel === "beta") {
+				this.openReleaseManager(parameters.version?.trim());
+			} else {
+				this.openPluginPage();
+			}
 		});
 
 		this.backgroundSync.start();
