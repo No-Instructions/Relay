@@ -170,7 +170,7 @@ export function buildFolderSyncStatusModel(
 			statePath,
 			syncStatus,
 			hasConflictData:
-				typeof hsm?.getConflictData === "function" && !!hsm.getConflictData(),
+				typeof hsm?.getConflict === "function" && !!hsm.getConflict(),
 			errorMessage: getHsmErrorMessage(hsm),
 			queueItem:
 				queue.itemsByGuid.get(guid) ??
