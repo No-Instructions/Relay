@@ -34,7 +34,6 @@ import { FolderNavigationDecorations } from "./ui/FolderNav";
 import { MetadataHealthSidebarNoticeMount } from "./ui/MetadataHealthSidebarNotice";
 import { SidebarNoticeMount } from "./ui/SidebarNoticeMount";
 import { mountComponent } from "./ui/svelteHost.svelte";
-import NetworkHealthNotice from "./components/NetworkHealthNotice.svelte";
 import ServiceMessagesNotice from "./components/ServiceMessagesNotice.svelte";
 import { ServiceMessages, type ServiceMessageAction } from "./ServiceMessages";
 import { SERVICE_MESSAGE_VIEW, ServiceMessageView, openServiceMessageView } from "./ui/ServiceMessageView";
@@ -179,7 +178,6 @@ export default class Live extends Plugin {
 	backgroundSync!: BackgroundSync;
 	folderNavDecorations!: FolderNavigationDecorations;
 	private metadataHealthSidebarNotice: MetadataHealthSidebarNoticeMount | null = null;
-	private networkHealthSidebarNotice: SidebarNoticeMount | null = null;
 	private serviceMessagesSidebarNotice: SidebarNoticeMount | null = null;
 	private resourceMeter: ResourceMeterMount | null = null;
 	relayManager!: RelayManager;
@@ -931,13 +929,7 @@ export default class Live extends Plugin {
 		);
 
 		this.networkStatus = new NetworkStatus(this.timeProvider, HEALTH_URL);
-		if (!Platform.isIosApp) {
-			this.networkHealthSidebarNotice = new SidebarNoticeMount(
-				this.app.workspace,
-				"system3-network-health-slot",
-				(target, anchor) => mountComponent(NetworkHealthNotice, { target, anchor, props: { networkStatus: this.networkStatus } }),
-			);
-		}
+
 		this.registerView(SERVICE_MESSAGE_VIEW, leaf => new ServiceMessageView(leaf));
 		const serviceMessages = new ServiceMessages(this.appId, this.manifest.id, HEALTH_URL);
 		this.serviceMessagesSidebarNotice = new SidebarNoticeMount(
@@ -1998,10 +1990,6 @@ export default class Live extends Plugin {
 		teardownStep("metadataHealthFeature.destroy", () => {
 			this.destroyMetadataHealthFeature();
 		});
-		teardownStep("networkHealthSidebarNotice.destroy", () => {
-			this.networkHealthSidebarNotice?.destroy();
-		});
-		this.networkHealthSidebarNotice = null;
 		teardownStep("serviceMessagesSidebarNotice.destroy", () => {
 			this.serviceMessagesSidebarNotice?.destroy();
 		});
