@@ -171,7 +171,7 @@ function fileHasConflict(sharedFolder: SharedFolder, guid: string): boolean {
 	if (hsm) {
 		const status = hsm.getSyncStatus() as SyncStatus | undefined;
 		if (syncStatusHasConflict(status)) return true;
-		if (typeof hsm.getConflictData === "function" && hsm.getConflictData()) return true;
+		if (typeof hsm.getConflict === "function" && hsm.getConflict()) return true;
 		return false;
 	}
 	const status = mergeManager.syncStatus.get<SyncStatus>(guid);
