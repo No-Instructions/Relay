@@ -977,7 +977,7 @@ export default class Live extends Plugin {
 
 			this.sharedFolders.load();
 			this.addChild(new NoteMessageBanners(
-				this.app, this.networkStatus, this.sharedFolders, this.textViewRegistry,
+				this.app, this.networkStatus, serviceMessages, this.sharedFolders, this.textViewRegistry,
 				action => { void this.openServiceMessageAction(action); },
 			));
 			this._liveViews = new LiveViewManager(

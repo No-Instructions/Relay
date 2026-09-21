@@ -2,7 +2,7 @@ import { Component, Modal, type App, type TextFileView } from "obsidian";
 import type NetworkStatus from "../NetworkStatus";
 import type { SharedFolders } from "../SharedFolder";
 import { iterateTextFileViews, type TextViewRegistry } from "../TextViewRegistry";
-import type { ServiceMessage, ServiceMessageAction } from "../ServiceMessages";
+import type { ServiceMessage, ServiceMessageAction, ServiceMessages } from "../ServiceMessages";
 import ServiceMessageNote from "../components/ServiceMessageNote.svelte";
 import { Banner } from "./Banner";
 import { mountComponent } from "./svelteHost.svelte";
@@ -16,16 +16,19 @@ export class NoteMessageBanners extends Component {
 	constructor(
 		private app: App,
 		private network: NetworkStatus,
+		private messages: ServiceMessages,
 		private folders: SharedFolders,
 		private registry: TextViewRegistry,
 		private onAction: (action: ServiceMessageAction) => void,
 	) { super(); }
 
 	onload(): void {
-		this.register(this.network.subscribeNoteMessage(message => {
+		this.register(this.messages.subscribe(message => {
+			if (this.message?.id !== message?.id) this.modals.forEach(modal => modal.close());
 			this.message = message;
 			this.refresh();
-		}));
+		}, "note"));
+		this.register(this.network.subscribeNoteMessage(message => this.messages.update(message, "note")));
 		this.register(this.folders.subscribe(() => this.refresh()));
 		this.registerEvent(this.app.workspace.on("layout-change", () => this.refresh()));
 		this.registerEvent(this.app.workspace.on("file-open", () => this.refresh()));
@@ -62,7 +65,11 @@ export class NoteMessageBanners extends Component {
 				this.modals.add(modal);
 				const component = mountComponent(ServiceMessageNote, {
 					target: modal.contentEl,
-					props: { message, onAction: (action: ServiceMessageAction) => { modal.close(); this.onAction(action); } },
+					props: {
+						message,
+						onAction: (action: ServiceMessageAction) => { modal.close(); this.onAction(action); },
+						onDismiss: () => this.messages.dismiss(message.id),
+					},
 				});
 				modal.onClose = () => { component.destroy(); this.modals.delete(modal); };
 				modal.open();
@@ -72,7 +79,9 @@ export class NoteMessageBanners extends Component {
 				backgroundColor: message.backgroundColor ?? "var(--background-secondary)",
 				color: message.color ?? "var(--text-normal)",
 				render: target => {
-					const component = mountComponent(ServiceMessageNote, { target, props: { message, onAction: this.onAction } });
+					const component = mountComponent(ServiceMessageNote, {
+						target, props: { message, onAction: this.onAction, onDismiss: () => this.messages.dismiss(message.id) },
+					});
 					return () => component.destroy();
 				},
 			});
