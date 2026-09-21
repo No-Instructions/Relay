@@ -76,7 +76,7 @@ export class NoteMessageBanners extends Component {
 				return false;
 			}, {
 				priority: 1,
-				backgroundColor: message.backgroundColor ?? "var(--background-secondary)",
+				backgroundColor: message.backgroundColor ?? "color-mix(in srgb, var(--interactive-accent) 12%, var(--background-primary))",
 				color: message.color ?? "var(--text-normal)",
 				render: target => {
 					const component = mountComponent(ServiceMessageNote, {
