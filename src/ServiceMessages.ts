@@ -106,10 +106,8 @@ export class ServiceMessages {
 	};
 	private log = curryLog("[ServiceMessages]");
 
-	constructor(appId: string, pluginId: string, serviceUrl: string) {
-		const url = new URL(serviceUrl);
-		const service = encodeURIComponent(url.origin + url.pathname);
-		this.dismissed = new LocalStorage<boolean>(`${appId}-${pluginId}/serviceMessages/${service}`);
+	constructor(appId: string, pluginId: string) {
+		this.dismissed = new LocalStorage<boolean>(`${appId}-${pluginId}/serviceMessages`);
 	}
 
 	update(message: ServiceMessage | null, surface: ServiceMessageSurface = "sidebar"): void {
