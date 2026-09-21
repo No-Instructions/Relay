@@ -344,6 +344,157 @@ function tokensEqual(a: string[], b: string[]): boolean {
 }
 
 /**
+ * A three-way merge as blocks that cover the merged note in order: stretches
+ * nobody changed, stretches one side changed, and stretches both changed
+ * differently. `adaptiveDiff3Merge` folds the first two kinds into its `ok`
+ * regions; keeping them apart lets a caller show, or take back, a change
+ * that merged on its own.
+ */
+export type Diff3Block =
+	| { kind: "same"; tokens: string[] }
+	| { kind: "a" | "b"; o: string[]; tokens: string[] }
+	| { kind: "conflict"; a: string[]; o: string[]; b: string[] };
+
+/**
+ * The blocks of a three-way merge, from the same hunks and the same
+ * combining rules as `adaptiveDiff3Merge`: folding `a` and `b` blocks into
+ * their neighbours yields that function's regions exactly, conflicts
+ * included. A stretch both sides changed identically is a `same` block.
+ */
+export function adaptiveDiff3Blocks(
+	a: string[],
+	o: string[],
+	b: string[],
+): Diff3Block[] {
+	const exact = usesExactKernel(Math.max(a.length, o.length, b.length));
+	const hunksOf = (x: string[]): DiffHunk[] =>
+		exact
+			? safeDiffIndices(o, x).map((d) => ({
+					oStart: d.buffer1[0],
+					oLength: d.buffer1[1],
+					abStart: d.buffer2[0],
+					abLength: d.buffer2[1],
+				}))
+			: anchoredDiffHunks(o, x);
+	return combineHunksToBlocks(a, o, b, hunksOf(a), hunksOf(b));
+}
+
+/**
+ * Line-aligned blocks of a two-way comparison: equal stretches are `same`,
+ * and every difference is a `conflict` with no base.
+ */
+export function twoWayBlocks(a: string[], b: string[]): Diff3Block[] {
+	const exact = usesExactKernel(Math.max(a.length, b.length));
+	const hunks: DiffHunk[] = exact
+		? safeDiffIndices(a, b).map((d) => ({
+				oStart: d.buffer1[0],
+				oLength: d.buffer1[1],
+				abStart: d.buffer2[0],
+				abLength: d.buffer2[1],
+			}))
+		: anchoredDiffHunks(a, b);
+	const blocks: Diff3Block[] = [];
+	let at = 0;
+	for (const h of hunks) {
+		if (h.oStart > at) blocks.push({ kind: "same", tokens: a.slice(at, h.oStart) });
+		blocks.push({
+			kind: "conflict",
+			a: a.slice(h.oStart, h.oStart + h.oLength),
+			o: [],
+			b: b.slice(h.abStart, h.abStart + h.abLength),
+		});
+		at = h.oStart + h.oLength;
+	}
+	if (at < a.length) blocks.push({ kind: "same", tokens: a.slice(at) });
+	return blocks;
+}
+
+/** `combineHunks`, emitting blocks instead of folding one-sided changes into `ok`. */
+function combineHunksToBlocks(
+	a: string[],
+	o: string[],
+	b: string[],
+	aHunks: DiffHunk[],
+	bHunks: DiffHunk[],
+): Diff3Block[] {
+	interface SideHunk extends DiffHunk {
+		ab: "a" | "b";
+	}
+	const hunks: SideHunk[] = [];
+	for (const h of aHunks) hunks.push({ ab: "a", ...h });
+	for (const h of bHunks) hunks.push({ ab: "b", ...h });
+	hunks.sort((p, q) => p.oStart - q.oStart);
+
+	const blocks: Diff3Block[] = [];
+	const pushSame = (tokens: string[]) => {
+		if (tokens.length === 0) return;
+		const last = blocks[blocks.length - 1];
+		if (last && last.kind === "same") {
+			for (const token of tokens) last.tokens.push(token);
+		} else {
+			blocks.push({ kind: "same", tokens: tokens.slice() });
+		}
+	};
+	let currOffset = 0;
+
+	let index = 0;
+	while (index < hunks.length) {
+		let hunk = hunks[index++];
+		const regionStart = hunk.oStart;
+		let regionEnd = hunk.oStart + hunk.oLength;
+		const regionHunks = [hunk];
+		pushSame(o.slice(currOffset, regionStart));
+
+		while (index < hunks.length && hunks[index].oStart <= regionEnd) {
+			hunk = hunks[index++];
+			regionEnd = Math.max(regionEnd, hunk.oStart + hunk.oLength);
+			regionHunks.push(hunk);
+		}
+
+		if (regionHunks.length === 1) {
+			const only = regionHunks[0];
+			const buffer = only.ab === "a" ? a : b;
+			blocks.push({
+				kind: only.ab,
+				o: o.slice(regionStart, regionEnd),
+				tokens: buffer.slice(only.abStart, only.abStart + only.abLength),
+			});
+		} else {
+			const bounds: Record<"a" | "b", number[]> = {
+				a: [a.length, -1, o.length, -1],
+				b: [b.length, -1, o.length, -1],
+			};
+			for (const h of regionHunks) {
+				const bd = bounds[h.ab];
+				bd[0] = Math.min(h.abStart, bd[0]);
+				bd[1] = Math.max(h.abStart + h.abLength, bd[1]);
+				bd[2] = Math.min(h.oStart, bd[2]);
+				bd[3] = Math.max(h.oStart + h.oLength, bd[3]);
+			}
+			const aStart = bounds.a[0] + (regionStart - bounds.a[2]);
+			const aEnd = bounds.a[1] + (regionEnd - bounds.a[3]);
+			const bStart = bounds.b[0] + (regionStart - bounds.b[2]);
+			const bEnd = bounds.b[1] + (regionEnd - bounds.b[3]);
+			const aContent = a.slice(aStart, aEnd);
+			const bContent = b.slice(bStart, bEnd);
+			if (tokensEqual(aContent, bContent)) {
+				pushSame(aContent);
+			} else {
+				blocks.push({
+					kind: "conflict",
+					a: aContent,
+					o: o.slice(regionStart, regionEnd),
+					b: bContent,
+				});
+			}
+		}
+		currOffset = regionEnd;
+	}
+	pushSame(o.slice(currOffset));
+	return blocks;
+}
+
+/**
  * Combine per-side hunks into ok/conflict regions. Port of node-diff3's
  * diff3MergeRegions + diff3Merge emission (MIT), with excludeFalseConflicts
  * semantics, generalized to take precomputed hunks and using index loops
