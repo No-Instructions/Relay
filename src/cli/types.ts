@@ -1,4 +1,5 @@
 import type { ConflictInfoSnapshot } from "../merge-hsm/conflict";
+import type { BlockDecision } from "../merge-hsm/conflictValue";
 import type {
 	RemoteSharedFolder,
 } from "../Relay";
@@ -45,7 +46,7 @@ export interface CliNoteState {
 	diskMatchesIdb: boolean;
 }
 
-export type HunkResolution = "ours" | "theirs" | "both" | "neither";
+export type { BlockDecision } from "../merge-hsm/conflictValue";
 
 /** Everything a command may reach. Narrow on purpose so tests can fake it. */
 export interface CliContext extends ServerContext {
@@ -75,12 +76,13 @@ export interface CliContext extends ServerContext {
 	notes: {
 		listConflicts(): { folderPath: string; guid: string; path: string }[];
 		conflictInfo(path: string): Promise<ConflictInfoSnapshot>;
-		resolveHunk(
+		decideBlock(
 			path: string,
+			conflictId: string,
 			blockId: string,
-			decision: HunkResolution,
+			decision: BlockDecision,
 		): Promise<string>;
-		resolveContents(path: string, contents: string): Promise<string>;
+		resolveContents(path: string, conflictId: string, contents: string): Promise<string>;
 		state(path: string): Promise<CliNoteState>;
 		/** Ask the folder to converge the note with the server. */
 		converge(path: string): Promise<boolean>;

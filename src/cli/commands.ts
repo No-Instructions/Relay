@@ -2,6 +2,8 @@ import { SERVER_TREE, relayRow, RELAY_OPTION, REMOTE_FOLDER_OPTION } from "./ser
 import { FeatureFlagSchema, isKeyOfFeatureFlags, type FeatureFlags } from "../flags";
 import type { Relay, RemoteSharedFolder } from "../Relay";
 import { SyncSettingsManager, type SyncFlags } from "../SyncSettings";
+import { shortestUniquePrefixLength } from "../merge-hsm/conflict";
+import { conflictBlocks, decidableBlocks, type ConflictSource } from "../merge-hsm/conflictValue";
 import { kv, table, markdownText } from "./format";
 import { flattenCommands } from "./tree";
 import { flag, folderPath, notePath, optional, required } from "./params";
@@ -20,7 +22,7 @@ import {
 	type CliContext,
 	type CliResult,
 	type CliSharedFolder,
-	type HunkResolution,
+	type BlockDecision,
 } from "./types";
 
 const FOLDER_OPTION: Record<string, CliOption> = {
@@ -29,7 +31,7 @@ const FOLDER_OPTION: Record<string, CliOption> = {
 const FOLDER_FILTER = { folder: { ...FOLDER_OPTION.folder, description: "Local folder (default: all)", required: false } };
 /** File-type categories come from the sync settings schema, never a local list. */
 const SYNC_CATEGORIES: (keyof SyncFlags)[] = SyncSettingsManager.categories.map((c) => c.key);
-const DECISIONS: HunkResolution[] = ["ours", "theirs", "both", "neither"];
+const DECISIONS: BlockDecision[] = ["ours", "theirs", "both", "neither"];
 
 function inVault(ctx: CliContext, remote: RemoteSharedFolder): CliSharedFolder | undefined {
 	return ctx.sharedFolders.items().find((folder) => folder.guid === remote.guid);
@@ -423,40 +425,76 @@ const conflicts: CliCommand = {
 
 const NOTE_OPTION: Record<string, CliOption> = { path: { value: "<path>", description: "Vault-relative note path", required: true } };
 
+/** What a side of a conflict is, in the CLI's words. */
+const SOURCE_WORDS: Record<ConflictSource, string> = {
+	editor: "the editor",
+	file: "the file on disk",
+	record: "this device's record",
+	remote: "the remote",
+};
+
 const diff: CliCommand = {
 	name: "conflict",
 	argument: "path",
-	description: "Show conflict sides and hunks",
-	options: NOTE_OPTION,
+	description: "Show conflict sides and blocks",
+	options: {
+		...NOTE_OPTION,
+		"all-blocks": { description: "Include automatically merged blocks" },
+	},
 	async run(params, ctx) {
 		const path = notePath(required(params, "path"));
 		const info = await ctx.notes.conflictInfo(path);
-		const hunks = info.hunks.map((h) => ({ id: h.id, resolved: h.resolved, ours: h.oursContent, theirs: h.theirsContent }));
+		const conflict = info.conflict;
+		if (!conflict) {
+			const data = { path: info.path, state: info.statePath, conflict: false };
+			return { data, text: kv([["note", info.path], ["state", info.statePath], ["conflict", false]]) };
+		}
+		const listAll = flag(params, "all-blocks");
+		const listed = decidableBlocks(conflict).filter((b) => listAll || b.kind === "conflict");
+		const prefix = shortestUniquePrefixLength(decidableBlocks(conflict).map((b) => b.id));
+		const disagreements = conflictBlocks(conflict);
+		const decided = disagreements.filter((b) => info.decisions[b.id] !== undefined).length;
+		const blocks = listed.map((b) => ({
+			id: b.id.slice(0, prefix),
+			kind: b.kind,
+			decision: info.decisions[b.id] ?? null,
+			base: b.base,
+			ours: b.kind === "theirs-only" ? b.base : b.ours,
+			theirs: b.kind === "ours-only" ? b.base : b.theirs,
+		}));
 		const data = {
 			path: info.path,
 			state: info.statePath,
-			conflict: info.hasConflict,
-			ours: info.oursLabel,
-			theirs: info.theirsLabel,
-			resolved: info.resolvedHunkCount,
-			total: info.hunkCount,
-			hunks,
+			conflict: true,
+			id: conflict.id,
+			situation: conflict.situation,
+			ours: conflict.ours,
+			theirs: conflict.theirs,
+			base: conflict.base,
+			decided,
+			total: disagreements.length,
+			blocks,
 		};
 		const lines = [
 			kv([
 				["note", info.path],
 				["state", info.statePath],
-				["conflict", info.hasConflict],
-				["ours", info.oursLabel],
-				["theirs", info.theirsLabel],
-				["hunks", `${info.resolvedHunkCount}/${info.hunkCount} resolved`],
+				["conflict", conflict.id],
+				["situation", conflict.situation],
+				["ours", `${SOURCE_WORDS[conflict.ours.source]}: what this device has`],
+				["theirs", `${SOURCE_WORDS[conflict.theirs.source]}: what came in`],
+				["blocks", `${decided}/${disagreements.length} decided`],
 			]),
 		];
-		for (const hunk of hunks) {
-			lines.push("", `hunk ${hunk.id}${hunk.resolved ? " (resolved)" : ""}`);
-			lines.push("  ours:   " + JSON.stringify(hunk.ours));
-			lines.push("  theirs: " + JSON.stringify(hunk.theirs));
+		for (const block of blocks) {
+			const state = block.decision ? ` (take=${block.decision})` : "";
+			lines.push("", `block ${block.id} ${block.kind}${state}`);
+			lines.push("  ours:   " + JSON.stringify(block.ours));
+			lines.push("  theirs: " + JSON.stringify(block.theirs));
 		}
+		if (conflict.base !== null) lines.push("", "--- baseline ---", conflict.base);
+		lines.push("", `--- ours: ${SOURCE_WORDS[conflict.ours.source]} ---`, conflict.ours.text);
+		lines.push("", `--- theirs: ${SOURCE_WORDS[conflict.theirs.source]} ---`, conflict.theirs.text);
 		return { data, text: lines.join("\n") };
 	},
 };
@@ -467,6 +505,7 @@ const diffResolve: CliCommand = {
 		"Resolve using --block and --take, or replace the whole note with --content or --content-file",
 	options: {
 		...NOTE_OPTION,
+		conflict: { value: "<id>", description: "Conflict ID; rejects stale conflicts", required: true },
 		block: { value: "<id>", description: "Block ID" },
 		take: { value: "ours|theirs|both|neither", description: "ours: local; theirs: incoming", choices: DECISIONS },
 		content: { value: "<text>", description: "Replace whole note; empty clears it. Literal true needs --content-file", allowEmpty: true, preserveWhitespace: true },
@@ -474,6 +513,7 @@ const diffResolve: CliCommand = {
 	},
 	async run(params, ctx) {
 		const path = notePath(required(params, "path"));
+		const conflictId = required(params, "conflict");
 		const block = optional(params, "block");
 		const take = optional(params, "take");
 		const contentFile = optional(params, "content-file");
@@ -484,12 +524,12 @@ const diffResolve: CliCommand = {
 		}
 		if (!wholeNote && !(block && take)) throw new CliError("missing_option", "Give --block and --take, or --content, or --content-file");
 		if (hasContent && params.content === "true") throw new CliError("missing_value", "For literal true use --content-file; Obsidian treats --content=true as a bare switch");
-		if (!wholeNote && !DECISIONS.includes(take as HunkResolution)) throw new CliError("invalid_value", `--take must be one of ${DECISIONS.join(", ")}`);
+		if (!wholeNote && !DECISIONS.includes(take as BlockDecision)) throw new CliError("invalid_value", `--take must be one of ${DECISIONS.join(", ")}`);
 		const content = contentFile ? await ctx.vault.readFile(folderPath(contentFile)) : params.content;
 		// Reading the conflict first materializes a hibernated note's conflict,
 		// which a decision requires; the UI's flow does the same.
 		const info = await ctx.notes.conflictInfo(path);
-		if (!info.hasConflict) {
+		if (!info.conflict) {
 			const loading = /loading|recoverLCA/.test(info.statePath);
 			throw new CliError(
 				"no_conflict",
@@ -497,9 +537,16 @@ const diffResolve: CliCommand = {
 					(loading ? "; the note is still loading, try again shortly" : ""),
 			);
 		}
+		if (info.conflict.id !== conflictId) {
+			throw new CliError(
+				"stale_conflict",
+				`The conflict on ${path} is ${info.conflict.id}, not ${conflictId}: it changed since it was read. Run relay:conflict again`,
+			);
+		}
 		const state = wholeNote
-			? await ctx.notes.resolveContents(path, content)
-			: await ctx.notes.resolveHunk(path, block as string, take as HunkResolution);
+			? await ctx.notes.resolveContents(path, conflictId, content)
+			: await ctx.notes.decideBlock(path, conflictId, block as string, take as BlockDecision);
+		// A decision writes nothing until every disagreement has one.
 		const written = state === "idle.synced" || state === "active.tracking";
 		let convergence = "not-requested";
 		if (state === "idle.synced") {

@@ -26,14 +26,21 @@
 import * as Y from "yjs";
 import { adaptiveDiff3Merge } from "./diff3";
 import { diff_match_patch } from "diff-match-patch";
+import { computeConflict, type ConflictInfoSnapshot } from "./conflict";
 import {
-	Conflict,
-	computeConflict,
-	findConflictRegionOffset,
-	toConflictInfoSnapshot,
-	type ConflictData,
-	type ConflictInfoSnapshot,
-} from "./conflict";
+	assignSides,
+	buildConflict,
+	carryOver,
+	conflictBlocks,
+	decidableBlocks,
+	decisionAllowed,
+	isFullyDecided,
+	outcome,
+	type BlockDecision,
+	type ComparedText,
+	type ConflictSituation,
+	type ConflictValue,
+} from "./conflictValue";
 import type {
 	MergeState,
 	MergeEvent,
@@ -52,7 +59,8 @@ import type {
 	PersistenceMetadata,
 	ConflictRegion,
 	ResolveEvent,
-	ResolveHunkEvent,
+	DecideBlockEvent,
+	MergeConflictEvent,
 	DiskLoader,
 	MachineHSM,
 	ActiveInvoke,
@@ -133,13 +141,12 @@ type PendingMachineEdit = {
 type LCACandidate = Omit<LCAState, "snapshot"> & {
 	snapshot: Uint8Array | null;
 };
+/** What a place that raises a conflict hands over: the two texts it compares, as it knows them, and the baseline if there is one. */
 type ConflictInit = {
-	base: string;
-	ours: string;
-	theirs: string;
-	oursLabel?: string;
-	theirsLabel?: string;
-	regions: ConflictRegion[];
+	situation: ConflictSituation | "by-baseline";
+	base: string | null;
+	x: ComparedText;
+	y: ComparedText;
 };
 type RecoverLCAResult =
 	| {
@@ -390,8 +397,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 	// Active conflict resolution session. Built when conflict detected;
 	// cleared when resolved or superseded by a fresh sync. Read via
-	// `getConflictData()`.
-	private _conflict: Conflict | null = null;
+	// `getConflict()`.
+	private _conflict: ConflictValue | null = null;
+	// Decisions made on the held conflict's blocks. They live beside the value,
+	// never in it, and outlive a conflict that is raised afresh where the block
+	// they answer is still there.
+	private _decisions = new Map<string, BlockDecision>();
 
 	// Track previous sync status for change detection
 	private lastSyncStatus: SyncStatusType = "synced";
@@ -1272,31 +1283,127 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	}
 
 	/**
-	 * Current conflict snapshot. Returns null when the file is clean.
+	 * The conflict the machine holds, or null when the note is clean.
 	 *
-	 * Returns the active resolution session if one is in progress. For
-	 * transient `idle.diverged`, this can still derive a read-only snapshot
-	 * from `_lca` + docs. Parked idle conflicts hold `_conflict` in
-	 * `idle.conflict`.
+	 * A parked or active conflict is held as a value. In the transient
+	 * `idle.diverged` a conflict between the record and the remote can still be
+	 * derived for a reader; it is not held, so nothing can be decided on it yet.
 	 */
-	getConflictData(_options?: { fresh?: boolean }): ConflictData | null {
-		if (this._conflict) return this._conflict.toData();
+	getConflict(_options?: { fresh?: boolean }): ConflictValue | null {
+		if (this._conflict) return this._conflict;
 		// Do not derive conflicts outside idle.diverged. In states like
 		// idle.localAhead, remoteDoc may be intentionally unsynced and transient
 		// derivations can produce false conflicts that poison future transitions.
 		if (this._statePath !== "idle.diverged") return null;
 		if (!this._lca) return null;
-		this.assertMachineResources("before getConflictData");
+		this.assertMachineResources("before getConflict");
 		if (!this.localDoc || !this.remoteDoc) return null;
-		const localDoc = this.requireLocalDoc("getConflictData");
-		const remoteDoc = this.requireRemoteDoc("getConflictData");
-		const base = this.requireLcaContents("getConflictData");
+		const localDoc = this.requireLocalDoc("getConflict");
+		const remoteDoc = this.requireRemoteDoc("getConflict");
+		const base = this.requireLcaContents("getConflict");
 		if (!localDoc || !remoteDoc || base === null) return null;
-		const ours = localDoc.getText("contents").toString();
-		const theirs = remoteDoc.getText("contents").toString();
-		const { hasConflict, regions } = computeConflict(base, ours, theirs);
-		if (!hasConflict) return null;
-		return new Conflict({ base, ours, theirs, regions }).toData();
+		const record = localDoc.getText("contents").toString();
+		const remote = remoteDoc.getText("contents").toString();
+		if (!computeConflict(base, record, remote).hasConflict) return null;
+		return this.conflictFrom({
+			situation: "both-edited",
+			base,
+			x: this.comparedRecord(record, base, "remote"),
+			y: { holder: "remote", text: remote },
+		});
+	}
+
+	/** The decisions made so far on the held conflict's blocks. */
+	getDecisions(): ReadonlyMap<string, BlockDecision> {
+		return new Map(this._decisions);
+	}
+
+	/**
+	 * The record as one of the two texts a conflict compares. Against the
+	 * remote or the editor it is this device's side of the comparison by
+	 * construction. Against the file it is this device's only when it holds
+	 * edits the remote does not have; otherwise what it brings is remote content.
+	 */
+	private comparedRecord(
+		text: string,
+		base: string | null,
+		against: "remote" | "editor" | "file",
+	): ComparedText {
+		return {
+			holder: "record",
+			text,
+			hasOwnEdits: against === "file" ? this.recordHasOwnEdits() : true,
+			moved: base === null ? null : text !== base,
+		};
+	}
+
+	/** The file as one of the two texts a conflict compares. */
+	private comparedFile(text: string, base: string | null): ComparedText {
+		return { holder: "file", text, moved: base === null ? null : text !== base };
+	}
+
+	/**
+	 * Whether the record holds edits of this device that the remote does not
+	 * have. Without a remote to compare with, it is taken to.
+	 */
+	private recordHasOwnEdits(): boolean {
+		if (!this.localDoc || !this.remoteDoc) return true;
+		try {
+			return !snapshotContains(
+				snapshotFromDoc(this.remoteDoc),
+				snapshotFromDoc(this.localDoc),
+			);
+		} catch {
+			return true;
+		}
+	}
+
+	/**
+	 * The conflict value for two compared texts: sides assigned in the one
+	 * place that assigns them, blocks built. "by-baseline" is a comparison that
+	 * uses the baseline when it yields disagreements and otherwise treats every
+	 * difference as one.
+	 */
+	private conflictFrom(init: ConflictInit): ConflictValue {
+		const { ours, theirs } = assignSides(init.x, init.y);
+		if (init.situation !== "by-baseline") {
+			return buildConflict({ situation: init.situation, base: init.base, ours, theirs });
+		}
+		if (init.base !== null) {
+			const threeWay = buildConflict({ situation: "both-edited", base: init.base, ours, theirs });
+			if (conflictBlocks(threeWay).length > 0) return threeWay;
+		}
+		return buildConflict({ situation: "no-baseline", base: null, ours, theirs });
+	}
+
+	/** Hold a conflict. Decisions whose block is still there carry over. */
+	private holdConflict(conflict: ConflictValue): ConflictValue {
+		this._decisions = carryOver(this._decisions, conflict);
+		this._conflict = conflict;
+		return conflict;
+	}
+
+	private raiseConflict(init: ConflictInit): ConflictValue {
+		return this.holdConflict(this.conflictFrom(init));
+	}
+
+	/**
+	 * A merge threw: the machine has two whole texts and no merged one. The
+	 * record is compared with the file's text when it is at hand, and with the
+	 * editor's last text when it is not.
+	 */
+	private raiseMergeFailedConflict(base: string | null): ConflictValue {
+		const localText = this.localDoc?.getText("contents").toString() ?? "";
+		const other: ComparedText =
+			this.pendingDiskContents !== null
+				? this.comparedFile(this.pendingDiskContents, base)
+				: { holder: "editor", text: this.lastKnownEditorText ?? "" };
+		return this.raiseConflict({
+			situation: "merge-failed",
+			base: null,
+			x: this.comparedRecord(localText, base, other.holder === "file" ? "file" : "editor"),
+			y: other,
+		});
 	}
 
 	/**
@@ -1392,15 +1499,18 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	}
 
 	getConflictInfoSnapshot(): ConflictInfoSnapshot {
-		return toConflictInfoSnapshot({
+		const conflict = this.getConflict();
+		return {
 			path: this.path,
 			guid: this._guid,
 			statePath: this._statePath,
-			conflictData: this.getConflictData(),
-		});
+			hasConflict: conflict !== null,
+			conflict,
+			decisions: Object.fromEntries(this._conflict ? this._decisions : []),
+		};
 	}
 
-	private materializeIdleConflict(): Conflict | null {
+	private materializeIdleConflict(): ConflictValue | null {
 		if (this._conflict) return this._conflict;
 		const init = this.buildIdleConflictInit();
 		if (!init) {
@@ -1409,13 +1519,13 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			);
 			return null;
 		}
-		this._conflict = new Conflict(init);
+		this.raiseConflict(init);
 		this.pendingIdleUpdates = null;
 		this.emitPersistState();
 		return this._conflict;
 	}
 
-	private materializeRecoverLCAConflict(): Conflict | null {
+	private materializeRecoverLCAConflict(): ConflictValue | null {
 		if (this._conflict) {
 			this.emitPersistState();
 			return this._conflict;
@@ -1427,7 +1537,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			);
 			return null;
 		}
-		this._conflict = new Conflict(init);
+		this.raiseConflict(init);
 		this.pendingIdleUpdates = null;
 		this.clearPendingDiskContents();
 		this.emitPersistState();
@@ -1456,43 +1566,37 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		if (!localDoc) return null;
 		const localText = localDoc.getText("contents").toString();
 		if (this.isNoLCAEmptyEnrollment(localDoc)) return null;
-
 		const remoteText = this.remoteDoc?.getText("contents").toString() ?? null;
 		const diskText = this.pendingDiskContents ?? this.pendingRecoverLCADisk?.content ?? null;
 		const base = this.getLCAContentsForConflictInit();
 
 		if (base !== null && remoteText !== null) {
-			const result = computeConflict(base, localText, remoteText);
-			if (result.hasConflict) {
+			if (computeConflict(base, localText, remoteText).hasConflict) {
 				return {
+					situation: "both-edited",
 					base,
-					ours: localText,
-					theirs: remoteText,
-					oursLabel: "Local",
-					theirsLabel: "Remote",
-					regions: result.regions,
+					x: this.comparedRecord(localText, base, "remote"),
+					y: { holder: "remote", text: remoteText },
 				};
 			}
 		}
 
 		if (diskText !== null && diskText !== localText) {
-			return this.buildTwoWayConflictInit(
-				localText,
-				diskText,
-				"Local",
-				"Local file",
-				base ?? localText,
-			);
+			return {
+				situation: "by-baseline",
+				base,
+				x: this.comparedRecord(localText, base, "file"),
+				y: this.comparedFile(diskText, base),
+			};
 		}
 
 		if (remoteText !== null && remoteText !== localText) {
-			return this.buildTwoWayConflictInit(
-				localText,
-				remoteText,
-				"Local",
-				"Remote",
-				base ?? localText,
-			);
+			return {
+				situation: "by-baseline",
+				base,
+				x: this.comparedRecord(localText, base, "remote"),
+				y: { holder: "remote", text: remoteText },
+			};
 		}
 
 		return null;
@@ -1515,56 +1619,59 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			diskText !== remoteText &&
 			localText !== remoteText
 		) {
-			return this.buildTwoWayConflictInit(
-				diskText,
-				remoteText,
-				"Local",
-				"Remote",
-				localText,
-			);
+			return {
+				situation: "no-baseline",
+				base: null,
+				x: this.comparedFile(diskText, null),
+				y: { holder: "remote", text: remoteText },
+			};
 		}
 
 		if (remoteText !== null && remoteText !== localText) {
-			return this.buildTwoWayConflictInit(
-				localText,
-				remoteText,
-				"Local",
-				"Remote",
-				localText,
-			);
+			return {
+				situation: "no-baseline",
+				base: null,
+				x: this.comparedRecord(localText, null, "remote"),
+				y: { holder: "remote", text: remoteText },
+			};
 		}
 		if (diskText !== null && diskText !== localText) {
-			return this.buildTwoWayConflictInit(
-				localText,
-				diskText,
-				"Local",
-				"Local file",
-				localText,
-			);
+			return {
+				situation: "no-baseline",
+				base: null,
+				x: this.comparedRecord(localText, null, "file"),
+				y: this.comparedFile(diskText, null),
+			};
 		}
 
 		return null;
 	}
 
-	private buildTwoWayConflictInit(
-		ours: string,
-		theirs: string,
-		oursLabel: string,
-		theirsLabel: string,
-		base: string,
-	): ConflictInit | null {
-		if (ours === theirs) return null;
-		return {
-			base,
-			ours,
-			theirs,
-			oursLabel,
-			theirsLabel,
-			regions: computeTwoWayConflictRegions(ours, theirs),
-		};
+	/**
+	 * The conflict a mutation is about, which must be the one the machine holds:
+	 * an answer worked out against a conflict that has since changed is refused.
+	 * A conflict that is only derivable while idle is held first.
+	 */
+	private requireCurrentConflict(conflictId: string): ConflictValue {
+		const idle = this._statePath === "idle.diverged" || this._statePath === "idle.conflict";
+		const conflict = this._conflict ?? (idle ? this.materializeIdleConflict() : null);
+		if (!conflict) {
+			throw new Error(`No active conflict on ${this.path}`);
+		}
+		if (conflict.id !== conflictId) {
+			throw new Error(
+				`Conflict ${JSON.stringify(conflictId)} is not the current conflict on ${this.path}; the current one is ${conflict.id}`,
+			);
+		}
+		return conflict;
 	}
 
-	async resolveConflictContents(contents: string): Promise<StatePath> {
+	/**
+	 * Resolve the held conflict with a whole outcome. The only operation that
+	 * writes. Works with the note open or closed.
+	 */
+	async resolveConflict(conflictId: string, contents: string): Promise<StatePath> {
+		this.requireCurrentConflict(conflictId);
 		if (this._statePath === "idle.diverged" || this._statePath === "idle.conflict") {
 			await this.resolveConflictHeadless(contents);
 			return this._statePath;
@@ -1572,39 +1679,67 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		if (this._statePath === "active.conflict.bannerShown") {
 			this.send({ type: "OPEN_DIFF_VIEW" });
 		}
-		this.send({ type: "RESOLVE", contents });
+		this.send({ type: "RESOLVE", conflictId, contents });
 		return this._statePath;
 	}
 
-	async resolveConflictHunk(
-		hunkId: string,
-		resolution: ResolveHunkEvent["resolution"],
+	/**
+	 * Record one decision on a block of the held conflict. Nothing is written
+	 * until every disagreement has an answer; then the outcome is computed and
+	 * the conflict is resolved with it. `blockId` may be any prefix that names
+	 * one block.
+	 */
+	async decideConflictBlock(
+		conflictId: string,
+		blockId: string,
+		decision: BlockDecision,
 	): Promise<StatePath> {
-		if (typeof hunkId !== "string") {
-			throw new Error(`Hunk id must be a string on ${this.path}`);
+		const conflict = this.requireCurrentConflict(conflictId);
+		const block = this.findDecidableBlock(conflict, blockId);
+		if (!decisionAllowed(block, decision)) {
+			throw new Error(
+				`${JSON.stringify(decision)} means nothing on block ${block.id}: where one side is empty the choice is ours or theirs`,
+			);
 		}
-		const conflictData = this.getConflictData();
-		if (!conflictData?.conflictRegions) {
-			throw new Error(`No active conflict on ${this.path}`);
-		}
-		findConflictRegionOffset(conflictData.conflictRegions, hunkId);
-
 		if (this._statePath === "idle.diverged" || this._statePath === "idle.conflict") {
-			await this.resolveHunkHeadless(hunkId, resolution);
-			return this._statePath;
+			const event: DecideBlockEvent = { type: "DECIDE_BLOCK", blockId: block.id, decision };
+			await this.runHeadlessApiMutation(event, () => {
+				this._decisions.set(block.id, decision);
+				this.emitPersistState();
+			});
+		} else {
+			if (this._statePath === "active.conflict.bannerShown") {
+				this.send({ type: "OPEN_DIFF_VIEW" });
+			}
+			this.send({ type: "DECIDE_BLOCK", blockId: block.id, decision });
 		}
-		if (this._statePath === "active.conflict.bannerShown") {
-			this.send({ type: "OPEN_DIFF_VIEW" });
+		if (this._conflict === conflict && isFullyDecided(conflict, this._decisions)) {
+			return this.resolveConflict(conflict.id, outcome(conflict, this._decisions));
 		}
-		this.send({ type: "RESOLVE_HUNK", hunkId, resolution });
 		return this._statePath;
+	}
+
+	private findDecidableBlock(conflict: ConflictValue, blockId: string) {
+		if (typeof blockId !== "string" || blockId === "") {
+			throw new Error(`Block id must be a non-empty string on ${this.path}`);
+		}
+		const matches = decidableBlocks(conflict).filter((b) => b.id.startsWith(blockId));
+		if (matches.length === 0) {
+			throw new Error(`Block id ${JSON.stringify(blockId)} not found`);
+		}
+		if (matches.length > 1) {
+			throw new Error(
+				`Block id ${JSON.stringify(blockId)} is ambiguous (${matches.length} candidates: ${matches.map((b) => b.id).join(", ")}) - use a longer prefix`,
+			);
+		}
+		return matches[0];
 	}
 
 	async resolveConflictHeadless(contents: string): Promise<void> {
 		if (this._statePath !== "idle.diverged" && this._statePath !== "idle.conflict") {
 			throw new Error(`resolveConflictHeadless requires idle.diverged or idle.conflict, got ${this._statePath}`);
 		}
-		if (!this.getConflictData()) {
+		if (!this.getConflict()) {
 			throw new Error("resolveConflictHeadless requires an active idle conflict");
 		}
 		const localDoc = this.requireLocalDoc("resolveConflictHeadless");
@@ -1612,7 +1747,6 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		if (!localDoc || !remoteDoc) {
 			throw new Error("resolveConflictHeadless requires localDoc and remoteDoc");
 		}
-
 		const hash = await this.hashFn(contents);
 		const mtime = this.timeProvider.now();
 		const event: ResolveEvent = { type: "RESOLVE", contents };
@@ -1642,39 +1776,6 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			// was refused by the session gate; ask again now that it is settled.
 			this.emitEffect({ type: "ENQUEUE_SYNC", guid: this._guid });
 		});
-	}
-
-	async resolveHunkHeadless(
-		hunkId: string,
-		resolution: ResolveHunkEvent["resolution"],
-	): Promise<void> {
-		if (this._statePath !== "idle.diverged" && this._statePath !== "idle.conflict") {
-			throw new Error(`resolveHunkHeadless requires idle.diverged or idle.conflict, got ${this._statePath}`);
-		}
-		const localDoc = this.requireLocalDoc("resolveHunkHeadless");
-		const remoteDoc = this.requireRemoteDoc("resolveHunkHeadless");
-		if (!localDoc || !remoteDoc) {
-			throw new Error("resolveHunkHeadless requires localDoc and remoteDoc");
-		}
-		if (!this.materializeIdleConflict()) {
-			throw new Error("resolveHunkHeadless requires an active idle conflict");
-		}
-
-		const event: ResolveHunkEvent = { type: "RESOLVE_HUNK", hunkId, resolution };
-		await this.runHeadlessApiMutation(event, () => {
-			this.applyConflictHunkResolution(event, {
-				dispatchEditor: false,
-				autoFinalize: false,
-			});
-		});
-
-		if (this._conflict?.isFullyResolved) {
-			const finalContent = this.localDoc?.getText("contents").toString();
-			if (finalContent === undefined) {
-				throw new Error("resolveHunkHeadless requires localDoc");
-			}
-			await this.resolveConflictHeadless(finalContent);
-		}
 	}
 
 	private readCurrentEditorText(): string | null {
@@ -2521,15 +2622,16 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		});
 		this.logDrift(editorText, yjsText);
 
+		// What the user typed against Relay's copy of it: the editor is ours.
 		this.send({
 			type: "MERGE_CONFLICT",
 			origin: "drift",
-			base: yjsText,
-			ours: yjsText,
-			theirs: editorText,
-			oursLabel: "Remote",
-			theirsLabel: "Local",
-			conflictRegions: [],
+			situation: "drift",
+			base: null,
+			...assignSides(
+				{ holder: "editor", text: editorText },
+				this.comparedRecord(yjsText, null, "editor"),
+			),
 		});
 
 		return true;
@@ -2952,6 +3054,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			// === Active entering/tracking guards ===
 			persistenceHasContent: (_hsm, event) => payload(event).hasContent === true,
 			hasPreexistingConflict: () => this._conflict !== null,
+			// An answer worked out against a conflict that has since changed is refused.
+			resolvesHeldConflict: (_hsm, event) => {
+				const id = payload(event).conflictId;
+				return id === undefined || id === this._conflict?.id;
+			},
 			hasNoLCA: () => this._lca === null,
 			activeReconcileBaseReady: () => !this.needsFullStateForActiveEntry(),
 			persistenceHasContentAndActiveBaseReady: (_hsm, event) =>
@@ -3463,16 +3570,17 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				this.applyResolvedConflict(contents, { dispatchEditor: true });
 			},
 			storeConflictData: (_hsm, event) => {
-				const e = payload(event);
-				const regions = e.conflictRegions ?? [];
-				this._conflict = new Conflict({
-					base: e.base!,
-					ours: e.ours!,
-					theirs: e.theirs!,
-					oursLabel: e.oursLabel ?? "Remote",
-					theirsLabel: e.theirsLabel ?? "Local file",
-					regions,
-				});
+				const e = event as MergeConflictEvent;
+				// Whoever raises a conflict says what each side is. Nothing here
+				// fills in a side that is missing.
+				if (!e.situation || !e.ours?.source || !e.theirs?.source) {
+					throw new Error(
+						`MERGE_CONFLICT on ${this.path} must carry the situation and both sides with their sources`,
+					);
+				}
+				this.holdConflict(
+					buildConflict({ situation: e.situation, base: e.base, ours: e.ours, theirs: e.theirs }),
+				);
 			},
 			storeDeferredConflict: () => {
 				this._deferredConflict = {
@@ -3495,8 +3603,14 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 						});
 					});
 			},
-			resolveHunk: (_hsm, event) => {
-				this.handleResolveHunk(event as ResolveHunkEvent);
+			decideBlock: (_hsm, event) => {
+				const e = event as DecideBlockEvent;
+				const block = this._conflict
+					? decidableBlocks(this._conflict).find((b) => b.id === e.blockId)
+					: undefined;
+				if (!block || !decisionAllowed(block, e.decision)) return;
+				this._decisions.set(block.id, e.decision);
+				this.emitPersistState();
 			},
 			beginReleaseLock: () => {
 				// Capture definitive editor content before releasing the ref
@@ -3617,13 +3731,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			},
 			storeThreeWayConflict: (_hsm, event) => {
 				const data = dataOf(event)!;
-				this._conflict = new Conflict({
-					base: data.baseText!,
-					ours: data.localText!,
-					theirs: data.diskText!,
-					oursLabel: "Remote",
-					theirsLabel: "Local file",
-					regions: data.conflictRegions ?? [],
+				const base = data.baseText!;
+				this.raiseConflict({
+					situation: "both-edited",
+					base,
+					x: this.comparedRecord(data.localText!, base, "file"),
+					y: this.comparedFile(data.diskText!, base),
 				});
 			},
 			storeThreeWayError: (_hsm, event) => {
@@ -3631,16 +3744,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				const message = formatUserFacingError(error, "Merge failed");
 				this.hsmError(`three-way merge failed: ${message}`);
 				this._error = errorFromUnknown(error, "Merge failed");
-				const localText = this.localDoc?.getText("contents").toString() ?? "";
-				const diskText = this.pendingDiskContents ?? this.lastKnownEditorText ?? "";
-				this._conflict = new Conflict({
-					base: this._lca?.contents ?? localText,
-					ours: localText,
-					theirs: diskText,
-					oursLabel: "Remote",
-					theirsLabel: "Local file",
-					regions: [],
-				});
+				this.raiseMergeFailedConflict(this._lca?.contents ?? null);
 			},
 			applyTwoWayCleanMerge: (_hsm, event) => {
 				const data = dataOf(event);
@@ -3682,13 +3786,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 						this.pendingDiskHash = data.disk.hash;
 					}
 				}
-				this._conflict = new Conflict({
-					base: data.localText!,
-					ours: data.localText!,
-					theirs: data.diskText!,
-					oursLabel: "Remote",
-					theirsLabel: "Local file",
-					regions: data.conflictRegions ?? [],
+				this.raiseConflict({
+					situation: "no-baseline",
+					base: null,
+					x: this.comparedRecord(data.localText!, null, "file"),
+					y: this.comparedFile(data.diskText!, null),
 				});
 			},
 			storeTwoWayError: (_hsm, event) => {
@@ -3696,16 +3798,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				const message = formatUserFacingError(error, "Merge failed");
 				this.hsmError(`two-way merge failed: ${message}`);
 				this._error = errorFromUnknown(error, "Merge failed");
-				const localText = this.localDoc?.getText("contents").toString() ?? "";
-				const diskText = this.pendingDiskContents ?? this.lastKnownEditorText ?? "";
-				this._conflict = new Conflict({
-					base: localText,
-					ours: localText,
-					theirs: diskText,
-					oursLabel: "Remote",
-					theirsLabel: "Local file",
-					regions: [],
-				});
+				this.raiseMergeFailedConflict(null);
 			},
 			applyCM6ToLocalDoc: (_hsm, event) => {
 				const e = payload(event);
@@ -4048,10 +4141,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 					this.send({
 						type: "MERGE_CONFLICT",
+						situation: "both-edited",
 						base: fork.base,
-						ours: localContent,
-						theirs: remoteContent,
-						conflictRegions: mergeResult.conflictRegions,
+						...assignSides(
+							this.comparedRecord(localContent, fork.base, "remote"),
+							{ holder: "remote", text: remoteContent },
+						),
 					});
 					return;
 				}
@@ -4335,7 +4430,6 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 					localText,
 					diskText,
 					disk,
-					conflictRegions: computeTwoWayConflictRegions(localText, diskText),
 				};
 			},
 			'idle-merge': async (_hsm, signal) => {
@@ -4705,13 +4799,18 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			};
 		}
 
-		const conflictInit = this.buildTwoWayConflictInit(
-			remoteText,
-			disk.content,
-			"Remote",
-			"Local file",
-			remoteText,
-		);
+		// The record was initialized from the remote a moment ago and holds
+		// nothing of this device's: what it brings to the comparison is remote
+		// content, and the file is what this device has.
+		const conflictInit: ConflictInit | null =
+			disk.content === remoteText
+				? null
+				: {
+						situation: "no-baseline",
+						base: null,
+						x: { holder: "record", text: remoteText, hasOwnEdits: false, moved: null },
+						y: this.comparedFile(disk.content, null),
+					};
 		if (!conflictInit) {
 			return {
 				kind: "declined",
@@ -4723,7 +4822,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			};
 		}
 
-		this._conflict = new Conflict(conflictInit);
+		this.raiseConflict(conflictInit);
 		this._disk = { hash: disk.hash, mtime: disk.mtime };
 		this.pendingIdleUpdates = null;
 		this.clearPendingDiskContents();
@@ -5236,11 +5335,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		// provider sync would make localDoc and disk identical, causing the
 		// active.entering reconciliation to skip conflict detection
 		// (localText === diskText).
-		this._conflict = new Conflict({
+		this.raiseConflict({
+			situation: "both-edited",
 			base: fork.base,
-			ours: localContent,
-			theirs: remoteContent,
-			regions: mergeResult.conflictRegions ?? [],
+			x: this.comparedRecord(localContent, fork.base, "remote"),
+			y: { holder: "remote", text: remoteContent },
 		});
 		return { success: false };
 	}
@@ -6289,22 +6388,15 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		});
 	}
 
-	/** Present the fork as a conflict: the fork's base, localDoc as ours, remoteDoc as theirs. */
+	/** Present the fork as a conflict: the fork's base, the record holding this device's held edits, and the remote. */
 	private presentReadFork(): void {
 		if (!this._fork || !this.localDoc || !this.remoteDoc || !this._isProviderSynced()) return;
 		const base = this._fork.base;
-		const ours = this.localDoc.getText("contents").toString();
-		const theirs = this.remoteDoc.getText("contents").toString();
-		this._conflict = new Conflict({
+		this.raiseConflict({
+			situation: "both-edited",
 			base,
-			ours,
-			theirs,
-			regions: [{
-				baseStart: 0,
-				baseEnd: base.split(/(\n)/).length,
-				oursContent: ours,
-				theirsContent: theirs,
-			}],
+			x: this.comparedRecord(this.localDoc.getText("contents").toString(), base, "remote"),
+			y: { holder: "remote", text: this.remoteDoc.getText("contents").toString() },
 		});
 		this.emitPersistState();
 	}
@@ -6635,6 +6727,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		this._bridge.resetPendingCounters();
 		this._ingestionTexts = [];
 		this._conflict = null;
+		this._decisions.clear();
 		// The user just settled this difference by hand. Any record that it was
 		// left outstanding at some earlier point is describing something that
 		// no longer exists, and leaving it behind refuses the note a fresh copy
@@ -6661,90 +6754,6 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		this.clearPendingDiskContents();
 		this.pendingEditorContent = null;
 		return resolvedText;
-	}
-
-	private applyConflictHunkResolution(
-		event: ResolveHunkEvent,
-		options: { dispatchEditor: boolean; autoFinalize: boolean },
-	): void {
-		const localDoc = this.requireLocalDoc("applyConflictHunkResolution");
-		if (!this._conflict || !localDoc) return;
-
-		const { hunkId, resolution } = event;
-		const conflict = this._conflict;
-		const regionOffset = findConflictRegionOffset(conflict.regions, hunkId);
-
-		if (conflict.resolved.has(regionOffset)) return;
-
-		const region = conflict.regions[regionOffset];
-		const positioned = conflict.positions[regionOffset];
-
-		if (!region || !positioned) return;
-
-		let newContent: string;
-		switch (resolution) {
-			case "ours":
-				newContent = region.oursContent;
-				break;
-			case "theirs":
-				newContent = region.theirsContent;
-				break;
-			case "neither":
-				newContent = "";
-				break;
-			case "both":
-				newContent = region.oursContent + "\n" + region.theirsContent;
-				break;
-		}
-
-		const beforeText = localDoc.getText("contents").toString();
-
-		const ytext = localDoc.getText("contents");
-		localDoc.transact(() => {
-			const deleteLength = positioned.localEnd - positioned.localStart;
-			if (deleteLength > 0) {
-				ytext.delete(positioned.localStart, deleteLength);
-			}
-			if (newContent) {
-				ytext.insert(positioned.localStart, newContent);
-			}
-		}, this);
-
-		conflict.markResolved(regionOffset);
-
-		const afterText = localDoc.getText("contents").toString();
-		if (options.dispatchEditor) {
-			// The editor may hold the file's text rather than the collaborative
-			// copy, as it does for a conflict that follows a lost merge base.
-			// Diff from what the editor shows, so the dispatched change lands
-			// on the characters it displays and leaves it mirroring localDoc.
-			const editorText = this.readCurrentEditorText() ?? beforeText;
-			const changes = computePositionedChanges(editorText, afterText);
-			if (changes.length > 0) {
-				this.emitEffect({ type: "DISPATCH_CM6", changes });
-			}
-		}
-
-		this.lastKnownEditorText = afterText;
-		conflict.updateOurs(afterText);
-
-		this._bridge.flushOutbound();
-
-		if (options.autoFinalize && conflict.isFullyResolved) {
-			this.send({ type: "RESOLVE", contents: afterText });
-		}
-	}
-
-	/**
-	 * Handle per-hunk conflict resolution from inline decorations.
-	 */
-	private handleResolveHunk(event: ResolveHunkEvent): void {
-		// Allow resolving from either bannerShown or resolving state
-		if (!this._statePath.includes("conflict")) return;
-		this.applyConflictHunkResolution(event, {
-			dispatchEditor: true,
-			autoFinalize: true,
-		});
 	}
 
 	private async computeLocalHash(): Promise<string> {
@@ -7985,59 +7994,6 @@ function extractConflictRegions(
 			lineOffset += region.ok.length;
 		}
 	}
-
-	return regions;
-}
-
-/**
- * Build per-hunk ConflictRegions from a two-way diff (no LCA).
- * Uses local text as the positional reference so that
- * `positionRegions` (in conflict.ts) can find each hunk by string search.
- */
-function computeTwoWayConflictRegions(
-	localText: string,
-	diskText: string,
-): ConflictRegion[] {
-	const dmp = new diff_match_patch();
-	const diffs = dmp.diff_main(localText, diskText);
-	dmp.diff_cleanupSemantic(diffs);
-
-	const regions: ConflictRegion[] = [];
-	let localPos = 0;
-	let oursAccum = "";
-	let theirsAccum = "";
-	let hunkStart = -1;
-
-	const flushHunk = () => {
-		if (hunkStart === -1) return;
-		regions.push({
-			baseStart: hunkStart,
-			baseEnd: localPos,
-			oursContent: oursAccum,
-			theirsContent: theirsAccum,
-		});
-		oursAccum = "";
-		theirsAccum = "";
-		hunkStart = -1;
-	};
-
-	for (const [op, text] of diffs) {
-		if (op === 0) {
-			// Equal — flush any pending hunk
-			flushHunk();
-			localPos += text.length;
-		} else if (op === -1) {
-			// Deleted from local (present in local, absent in disk)
-			if (hunkStart === -1) hunkStart = localPos;
-			oursAccum += text;
-			localPos += text.length;
-		} else if (op === 1) {
-			// Inserted in disk (absent in local, present in disk)
-			if (hunkStart === -1) hunkStart = localPos;
-			theirsAccum += text;
-		}
-	}
-	flushHunk();
 
 	return regions;
 }
