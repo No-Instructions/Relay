@@ -1,5 +1,4 @@
 import { Component, Modal, type App, type TextFileView } from "obsidian";
-import type NetworkStatus from "../NetworkStatus";
 import type { SharedFolders } from "../SharedFolder";
 import { iterateTextFileViews, type TextViewRegistry } from "../TextViewRegistry";
 import type { ServiceMessage, ServiceMessageAction, ServiceMessages } from "../ServiceMessages";
@@ -15,7 +14,6 @@ export class NoteMessageBanners extends Component {
 
 	constructor(
 		private app: App,
-		private network: NetworkStatus,
 		private messages: ServiceMessages,
 		private folders: SharedFolders,
 		private registry: TextViewRegistry,
@@ -28,7 +26,6 @@ export class NoteMessageBanners extends Component {
 			this.message = message;
 			this.refresh();
 		}, "note"));
-		this.register(this.network.subscribeNoteMessage(message => this.messages.update(message, "note")));
 		this.register(this.folders.subscribe(() => this.refresh()));
 		this.registerEvent(this.app.workspace.on("layout-change", () => this.refresh()));
 		this.registerEvent(this.app.workspace.on("file-open", () => this.refresh()));

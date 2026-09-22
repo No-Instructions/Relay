@@ -1,5 +1,6 @@
 import { LocalStorage } from "./LocalStorage";
 import { curryLog } from "./debug";
+import type { TimeProvider } from "./TimeProvider";
 
 export interface MessageValidity {
 	validFrom?: string;
@@ -94,52 +95,149 @@ export function readServiceMessage(value: unknown): ServiceMessage | null | unde
 }
 
 type ServiceMessageSurface = "sidebar" | "note";
+export type ServiceMessageSelection = Record<ServiceMessageSurface, ServiceMessage | null>;
+interface Dismissal { expiresAt: string }
+const DISMISSAL_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 
 /** Vault-local dismissals, shared by message ID across surfaces and plugin versions. */
 export class ServiceMessages {
-	private dismissed: LocalStorage<boolean>;
-	private sessionDismissals = new Set<string>();
-	private messages: Record<ServiceMessageSurface, ServiceMessage | null> = { sidebar: null, note: null };
+	private dismissed: LocalStorage<Dismissal>;
+	private deadlines = new Map<string, number>();
+	private messages: ServiceMessageSelection = { sidebar: null, note: null };
+	private timer?: number;
+	private destroyed = false;
 	private listeners = {
 		sidebar: new Set<(message: ServiceMessage | null) => void>(),
 		note: new Set<(message: ServiceMessage | null) => void>(),
 	};
 	private log = curryLog("[ServiceMessages]");
 
-	constructor(appId: string, pluginId: string) {
-		this.dismissed = new LocalStorage<boolean>(`${appId}-${pluginId}/serviceMessages`);
+	constructor(appId: string, pluginId: string, private time: Pick<TimeProvider, "now" | "setTimeout" | "clearTimeout">) {
+		this.dismissed = new LocalStorage<Dismissal>(`${appId}-${pluginId}/serviceMessages`);
+		const now = time.now();
+		for (const id of this.dismissed.keys()) {
+			try {
+				const record: unknown = this.dismissed.get(id);
+				// Boolean records carry no date; give them a bounded retention window.
+				if (record === true) {
+					this.persist(id, now + DISMISSAL_RETENTION_MS);
+					continue;
+				}
+				const expiresAt = record && typeof record === "object" && "expiresAt" in record ? record.expiresAt : undefined;
+				const validity = readMessageValidity({ validUntil: expiresAt });
+				if (validity?.validUntil && Date.parse(validity.validUntil) > now) {
+					this.deadlines.set(id, Date.parse(validity.validUntil));
+					continue;
+				}
+			} catch (error) {
+				this.log("Unable to read announcement dismissal", error);
+			}
+			this.remove(id);
+		}
+		this.schedule();
 	}
 
 	update(message: ServiceMessage | null, surface: ServiceMessageSurface = "sidebar"): void {
-		this.messages[surface] = message;
-		this.notify(surface);
+		this.updateSelection({ ...this.messages, [surface]: message });
+	}
+
+	/** Apply both surfaces together so shared IDs use the complete server-selected expiry. */
+	updateSelection(messages: ServiceMessageSelection): void {
+		if (this.destroyed) return;
+		// An extension received after expiry must not resurrect a forgotten dismissal.
+		this.prune();
+		this.messages = { ...messages };
+		for (const id of this.deadlines.keys()) {
+			if (Object.values(messages).some(message => message?.id === id)) this.persist(id, this.expiry(id));
+		}
+		this.refresh();
 	}
 
 	dismiss(id: string): void {
-		if (!Object.values(this.messages).some(message => message?.id === id)) return;
-		this.sessionDismissals.add(id);
+		if (this.destroyed || !Object.values(this.messages).some(message => message?.id === id && messageIsCurrent(message, this.time.now()))) return;
+		this.prune();
+		this.persist(id, this.expiry(id));
+		this.refresh();
+	}
+
+	private expiry(id: string): number {
+		const fallback = this.deadlines.get(id) ?? this.time.now() + DISMISSAL_RETENTION_MS;
+		return Math.max(...Object.values(this.messages)
+			.filter((message): message is ServiceMessage => message?.id === id)
+			.map(message => message.validUntil ? Date.parse(message.validUntil) : fallback));
+	}
+
+	private persist(id: string, deadline: number): void {
+		if (this.deadlines.get(id) === deadline) return;
+		this.deadlines.set(id, deadline);
 		try {
-			this.dismissed.set(id, true);
+			this.dismissed.set(id, { expiresAt: new Date(deadline).toISOString() });
 		} catch (error) {
 			this.log("Unable to persist announcement dismissal", error);
 		}
-		this.notify("sidebar");
-		this.notify("note");
+	}
+
+	private remove(id: string): void {
+		this.deadlines.delete(id);
+		try {
+			this.dismissed.delete(id);
+		} catch (error) {
+			this.log("Unable to delete announcement dismissal", error);
+		}
+	}
+
+	private prune(): void {
+		const now = this.time.now();
+		for (const [id, deadline] of this.deadlines) if (deadline <= now) this.remove(id);
+	}
+
+	private refresh(): void {
+		this.prune();
+		this.schedule();
+		for (const surface of ["sidebar", "note"] as const) {
+			const visible = this.visible(surface);
+			this.listeners[surface].forEach(listener => this.notify(listener, visible));
+		}
+	}
+
+	private schedule(): void {
+		if (this.timer !== undefined) this.time.clearTimeout(this.timer);
+		this.timer = undefined;
+		const now = this.time.now();
+		const boundaries = Object.values(this.messages).flatMap(message =>
+			message ? [message.validFrom, message.validUntil].filter((bound): bound is string => !!bound).map(Date.parse) : []);
+		let next = Infinity;
+		for (const boundary of [...this.deadlines.values(), ...boundaries]) if (boundary > now) next = Math.min(next, boundary);
+		if (Number.isFinite(next)) this.timer = this.time.setTimeout(() => {
+			this.timer = undefined;
+			this.refresh();
+		}, Math.min(next - now, 2_147_483_647));
 	}
 
 	subscribe(listener: (message: ServiceMessage | null) => void, surface: ServiceMessageSurface = "sidebar"): () => void {
+		if (this.destroyed) return () => {};
 		this.listeners[surface].add(listener);
-		listener(this.visible(surface));
+		this.notify(listener, this.visible(surface));
 		return () => { this.listeners[surface].delete(listener); };
 	}
 
 	private visible(surface: ServiceMessageSurface): ServiceMessage | null {
 		const message = this.messages[surface];
-		return message && !this.sessionDismissals.has(message.id) && !this.dismissed.has(message.id) ? message : null;
+		return message && messageIsCurrent(message, this.time.now()) && (this.deadlines.get(message.id) ?? 0) <= this.time.now() ? message : null;
 	}
 
-	private notify(surface: ServiceMessageSurface): void {
-		const visible = this.visible(surface);
-		this.listeners[surface].forEach(listener => listener(visible));
+	private notify(listener: (message: ServiceMessage | null) => void, message: ServiceMessage | null): void {
+		try { listener(message); }
+		catch (error) { this.log("Announcement listener failed", error); }
+	}
+
+	destroy(): void {
+		this.destroyed = true;
+		if (this.timer !== undefined) this.time.clearTimeout(this.timer);
+		this.timer = undefined;
+		this.listeners.sidebar.clear();
+		this.listeners.note.clear();
+		this.messages = { sidebar: null, note: null };
+		this.deadlines.clear();
 	}
 }

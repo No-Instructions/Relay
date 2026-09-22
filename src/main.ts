@@ -931,12 +931,14 @@ export default class Live extends Plugin {
 		this.networkStatus = new NetworkStatus(this.timeProvider, HEALTH_URL);
 
 		this.registerView(SERVICE_MESSAGE_VIEW, leaf => new ServiceMessageView(leaf));
-		const serviceMessages = new ServiceMessages(this.appId, this.manifest.id);
+		const serviceMessages = new ServiceMessages(this.appId, this.manifest.id, this.timeProvider);
+		this.register(() => serviceMessages.destroy());
+		this.register(this.networkStatus.subscribeServiceMessageSelection(selection => serviceMessages.updateSelection(selection)));
 		this.serviceMessagesSidebarNotice = new SidebarNoticeMount(
 			this.app.workspace,
 			"system3-service-messages-slot",
 			(target, anchor) => mountComponent(ServiceMessagesNotice, {
-				target, anchor, props: { networkStatus: this.networkStatus, messages: serviceMessages, onAction: (action: ServiceMessageAction) => { void this.openServiceMessageAction(action); } },
+				target, anchor, props: { messages: serviceMessages, onAction: (action: ServiceMessageAction) => { void this.openServiceMessageAction(action); } },
 			}),
 		);
 
@@ -976,7 +978,7 @@ export default class Live extends Plugin {
 
 			this.sharedFolders.load();
 			this.addChild(new NoteMessageBanners(
-				this.app, this.networkStatus, serviceMessages, this.sharedFolders, this.textViewRegistry,
+				this.app, serviceMessages, this.sharedFolders, this.textViewRegistry,
 				action => { void this.openServiceMessageAction(action); },
 			));
 			this._liveViews = new LiveViewManager(

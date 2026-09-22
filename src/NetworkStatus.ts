@@ -1,7 +1,7 @@
 import { curryLog } from "./debug";
 import type { TimeProvider } from "./TimeProvider";
 import { getRelayRequestHeaders, requestUrlWithMetrics } from "./customFetch";
-import { httpUrl, readServiceMessage, readMessageValidity, readMessageActions, messageIsCurrent, type MessageValidity, type ServiceMessage, type ServiceMessageAction } from "./ServiceMessages";
+import { httpUrl, readServiceMessage, readMessageValidity, readMessageActions, messageIsCurrent, type MessageValidity, type ServiceMessage, type ServiceMessageAction, type ServiceMessageSelection } from "./ServiceMessages";
 
 export interface ServiceStatus extends MessageValidity {
 	id?: string;
@@ -42,6 +42,7 @@ class NetworkStatus {
 	private messageListeners = new Set<(message: ServiceMessage | null) => void>();
 	private statusListeners = new Set<(status: ServiceStatus | undefined) => void>();
 	private noteListeners = new Set<(message: ServiceMessage | null) => void>();
+	private selectionListeners = new Set<(selection: ServiceMessageSelection) => void>();
 	private selectedNote: ServiceMessage | null = null;
 	private note: ServiceMessage | null = null;
 	private selectedStatus: ServiceStatus | null = null;
@@ -120,6 +121,8 @@ class NetworkStatus {
 				if (result.serviceStatus !== undefined) this.selectedStatus = result.serviceStatus;
 				if (result.sidebar !== undefined) this.selectedSidebar = result.sidebar;
 				if (result.note !== undefined) this.selectedNote = result.note;
+				const selection = { sidebar: this.selectedSidebar, note: this.selectedNote };
+				this.selectionListeners.forEach(listener => this.notify(listener, selection));
 				this.refreshMessages();
 				if (this.monitorConnectivity) this.setOnline(isHealthy(result));
 				return;
@@ -186,6 +189,14 @@ class NetworkStatus {
 		}
 	}
 
+	/** Includes inactive messages so dismissal metadata can follow server expiry edits. */
+	public subscribeServiceMessageSelection(listener: (selection: ServiceMessageSelection) => void): () => void {
+		if (this.destroyed) return () => {};
+		this.selectionListeners.add(listener);
+		this.notify(listener, { sidebar: this.selectedSidebar, note: this.selectedNote });
+		return () => { this.selectionListeners.delete(listener); };
+	}
+
 	public subscribeServiceStatus(listener: (status: ServiceStatus | undefined) => void): () => void {
 		if (this.destroyed) return () => {};
 		this.refreshMessages();
@@ -235,6 +246,7 @@ class NetworkStatus {
 		this.messageListeners.clear();
 		this.statusListeners.clear();
 		this.noteListeners.clear();
+		this.selectionListeners.clear();
 		this.selectedNote = null;
 		this.note = null;
 		this.selectedStatus = null;
