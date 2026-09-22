@@ -1,156 +1,113 @@
 import { curryLog } from "./debug";
 import type { TimeProvider } from "./TimeProvider";
-import { getRelayRequestHeaders, requestUrlWithMetrics } from "./customFetch";
+import { StatusRequest } from "./StatusRequest";
 
 interface ServiceStatus {
 	status: string;
-	versions?: {
-		stable: string;
-		beta: string;
-	};
+	versions?: { stable: string; beta: string };
 	backgroundColor?: string;
 	color?: string;
 	link?: string;
 }
 
 type Callback = (status?: ServiceStatus) => void;
-
-// A network switch (VPN toggle, interface change) surfaces as
-// ERR_NETWORK_CHANGED without implying a disconnect, so the check retries
-// immediately — but a flapping interface must not recurse unbounded.
 const NETWORK_CHANGED_RETRY_LIMIT = 3;
 
 class NetworkStatus {
-	private url: string;
-	private interval: number;
 	private onOnline: Callback[] = [];
-	private _onceOnline: Set<Callback>;
 	private onOffline: Callback[] = [];
+	private _onceOnline = new Set<Callback>();
 	private timer?: number;
-	private _log: (message: string, ...args: unknown[]) => void;
+	private generation = 0;
+	private requestSequence = 0;
+	private latestResultSequence = 0;
+	private destroyed = false;
+	private _log = curryLog("[NetworkStatus]");
+	private readonly request: StatusRequest;
 	status?: ServiceStatus;
 	online = true;
-	private _networkChangedRetries = 0;
 
-	constructor(
-		private timeProvider: TimeProvider,
-		url: string,
-		interval = 10000,
-	) {
-		this._log = curryLog("[NetworkStatus]");
-		this.url = url;
-		this.interval = interval;
-		this._onceOnline = new Set();
+	constructor(private timeProvider: TimeProvider, url: string, private interval = 10000) {
+		this.request = new StatusRequest(timeProvider, url);
 	}
 
 	log(message: string, ...args: unknown[]) {
 		this._log(message, ...args);
 	}
 
-	public start() {
-		if (!this.timer) {
-			this.timer = this.checkStatusRepeatedly();
-		}
+	public start(): void {
+		if (this.destroyed || this.timer !== undefined) return;
+		this.timer = this.timeProvider.setInterval(() => { void this._checkStatus(); }, this.interval);
 	}
 
-	public stop() {
-		if (this.timer) {
-			this.timeProvider.clearInterval(this.timer);
-		}
+	public stop(): void {
+		if (this.timer !== undefined) this.timeProvider.clearInterval(this.timer);
+		this.timer = undefined;
+		this.generation++;
+		this.request.stop();
 	}
 
-	private checkStatusRepeatedly(): number {
-		return this.timeProvider.setInterval(
-			this._checkStatus.bind(this),
-			this.interval,
-		);
-	}
-
-	public checkStatus(): Promise<boolean> {
-		if (this.online) {
-			return Promise.resolve(true);
-		}
-		return new Promise((resolve) => {
-			void this._checkStatus().then(() => {
-				resolve(this.online);
-			});
-		});
+	public async checkStatus(): Promise<boolean> {
+		if (!this.online && !this.destroyed) await this._checkStatus();
+		return this.online;
 	}
 
 	private async _checkStatus(): Promise<void> {
-		return requestUrlWithMetrics({
-			url: this.url,
-			method: "GET",
-			headers: getRelayRequestHeaders(),
-			relayNetworkDomain: "api",
-		})
-			.then((response) => {
+		if (this.destroyed) return;
+		const generation = this.generation;
+		const sequence = ++this.requestSequence;
+		const isCurrent = () => !this.destroyed && generation === this.generation && sequence >= this.latestResultSequence;
+		for (let attempt = 0; attempt <= NETWORK_CHANGED_RETRY_LIMIT; attempt++) {
+			try {
+				const response = await this.request.request();
+				if (!isCurrent()) return;
+				this.latestResultSequence = sequence;
 				if (response.status === 200) {
-					this._networkChangedRetries = 0;
 					const body = response.json as ServiceStatus | undefined;
-					if (body?.status) {
-						this.status = body;
-					}
-					if (!this.online) {
-						this.log("back online");
-						this.online = true;
-						this.onOnline.forEach((callback) => callback(this.status));
-
-						this._onceOnline.forEach((callback) => callback(this.status));
-						this._onceOnline.clear();
-
-						return;
-					}
-				} else if (response.status !== 200 && this.online) {
-					throw new Error("disconnected");
-				}
-			})
-			.catch((error: unknown) => {
+					if (body?.status) this.status = body;
+					this.setOnline(true);
+				} else this.setOnline(false);
+				return;
+			} catch (error) {
+				if (!isCurrent()) return;
 				const message = error instanceof Error ? error.message : String(error);
-				if (
-					message.includes("ERR_NETWORK_CHANGED") &&
-					this._networkChangedRetries < NETWORK_CHANGED_RETRY_LIMIT
-				) {
-					// This doesn't necessarily imply a disconnect,
-					// We should immediately try again to get a name resolution error.
-					this._networkChangedRetries++;
-					void this._checkStatus();
-					return;
-				}
-				this._networkChangedRetries = 0;
-				// Only notify on the online→offline edge. While already
-				// offline, each poll is a bare probe: re-firing the offline
-				// callbacks re-runs the full teardown across every tracked
-				// doc, which costs O(docs) work and log volume per tick.
-				const wasOnline = this.online;
-				this.online = false;
-				if (wasOnline) {
-					this.onOffline?.forEach((callback) => callback(this.status));
-				}
-			});
-	}
-
-	public onceOnline(callback: Callback): void {
-		this._onceOnline.add(callback);
-	}
-
-	public addEventListener(
-		eventType: "online" | "offline",
-		callback: Callback,
-	): void {
-		if (eventType === "online") {
-			this.onOnline.push(callback);
-		} else if (eventType === "offline") {
-			this.onOffline.push(callback);
+				if (message.includes("ERR_NETWORK_CHANGED") && attempt < NETWORK_CHANGED_RETRY_LIMIT) continue;
+				this.latestResultSequence = sequence;
+				this.setOnline(false);
+				return;
+			}
 		}
 	}
 
-	destroy() {
+	private setOnline(online: boolean): void {
+		if (this.online === online) return;
+		this.online = online;
+		if (online) {
+			this.log("back online");
+			const once = [...this._onceOnline];
+			this._onceOnline.clear();
+			this.onOnline.forEach(callback => this.notify(callback));
+			once.forEach(callback => this.notify(callback));
+		} else this.onOffline.forEach(callback => this.notify(callback));
+	}
+
+	private notify(callback: Callback): void {
+		try { callback(this.status); }
+		catch (error) { this.log("Network status listener failed", error); }
+	}
+
+	public onceOnline(callback: Callback): void { this._onceOnline.add(callback); }
+
+	public addEventListener(eventType: "online" | "offline", callback: Callback): void {
+		(eventType === "online" ? this.onOnline : this.onOffline).push(callback);
+	}
+
+	destroy(): void {
+		this.stop();
+		this.destroyed = true;
 		this._onceOnline.clear();
-		this._onceOnline = null as unknown as typeof this._onceOnline;
-		this.onOnline = null as unknown as typeof this.onOnline;
-		this.onOffline = null as unknown as typeof this.onOffline;
-		this.timeProvider = null as unknown as typeof this.timeProvider;
+		this.onOnline = [];
+		this.onOffline = [];
 	}
 }
 
