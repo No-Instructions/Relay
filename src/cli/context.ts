@@ -1,5 +1,6 @@
 import { suggest } from "./suggest";
 import { FileSystemAdapter } from "obsidian";
+import type { SyncParticipant } from "../background-sync/SyncParticipant";
 import { FeatureFlagDefaults, type FeatureFlags } from "../flags";
 import type Live from "../main";
 import type { MetadataHealthState } from "../MetadataHealth";
@@ -34,6 +35,7 @@ export function buildCliContext(plugin: Live, deps: CliContextDeps): CliContext 
 				return adapter instanceof FileSystemAdapter ? adapter.getBasePath() : null;
 			},
 			hasFolder: (path) => plugin.app.vault.getFolderByPath(path) !== null,
+			readFile: (path) => plugin.app.vault.adapter.read(path),
 			createFolder: async (path) => {
 				await plugin.app.vault.createFolder(path);
 			},
@@ -74,8 +76,33 @@ export function buildCliContext(plugin: Live, deps: CliContextDeps): CliContext 
 			resume: () => plugin.backgroundSync.resume(),
 			paused: () => plugin.backgroundSync.paused,
 		},
+		timers: plugin.timeProvider,
 		notes: {
 			listConflicts: () => debugAPI.listAllConflicts(),
+			conflictInfo: (path) => debugAPI.getConflictInfo(path),
+			decideBlock: (path, conflictId, blockId, decision) =>
+				debugAPI.decideConflictBlock(path, conflictId, blockId, decision),
+			resolveContents: (path, conflictId, contents) =>
+				debugAPI.resolveConflict(path, conflictId, contents),
+			state: async (path) => {
+				const snapshot = await debugAPI.getHsmStateSnapshot(path);
+				return {
+					statePath: snapshot.statePath,
+					hasConflict: snapshot.hasConflict,
+					hasLCA: snapshot.hasLCA,
+					diskMatchesIdb: snapshot.diskMatchesIdb,
+				};
+			},
+			// The machine requests a background sync as it settles; join that
+			// work so the answer can say whether the server has the result.
+			converge: async (path) => {
+				const lookup = debugAPI.lookupDocument(path);
+				if (!lookup) return false;
+				await lookup.folder.backgroundSync.enqueueSync(
+					lookup.doc as unknown as SyncParticipant,
+				);
+				return true;
+			},
 		},
 		flags: {
 			get: () => ({ ...FeatureFlagDefaults, ...deps.flags.get() }),
