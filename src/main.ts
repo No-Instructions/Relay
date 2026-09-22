@@ -2,6 +2,7 @@
 import { AttachmentTransfers } from "./AttachmentTransfers";
 
 import type { MergeEvent } from "./merge-hsm/types";
+import { isHoldingActiveDiskReload, reloadActiveNote } from "./merge-hsm/integration/activeDiskReload";
 import {
 	type EventRef,
 	TFolder,
@@ -1499,6 +1500,18 @@ export default class Live extends Plugin {
 						file.hsm &&
 						tfile instanceof TFile
 					) {
+						// Existing panes retain the native onModify callback
+						// registered at load time. Forward modifications while
+						// a reload holds their saving flag, before awaiting the
+						// document read that could let the hold finish.
+						this.app.workspace.iterateAllLeaves((leaf) => {
+							const view = leaf.view as PatchedMarkdownView;
+							if (view.file === tfile && isHoldingActiveDiskReload(view)) {
+								void view.loadFileInternal(tfile, false).catch((error) => {
+									vaultLog("Failed to reload a modified active note", error);
+								});
+							}
+						});
 						try {
 							await file.handleDiskChange();
 						} catch (e) {
@@ -1544,6 +1557,9 @@ export default class Live extends Plugin {
 			dirty?: boolean;
 			lastSavedData?: string | null;
 			isPlaintext?: boolean;
+			saving?: boolean;
+			setData(contents: string, clear: boolean): void;
+			loadFileInternal(file: TFile, initial: boolean): Promise<unknown>;
 		};
 
 		const sendDiagnosticToHSM = (file: TFile, event: MergeEvent) => {
@@ -1642,6 +1658,14 @@ export default class Live extends Plugin {
 			},
 			loadFileInternal(old: (...args: unknown[]) => Promise<unknown>) {
 				return async function (this: PatchedMarkdownView, file: TFile, isInitialLoad: boolean) {
+					if (!isInitialLoad && this.file === file) {
+						const folder = plugin.sharedFolders.lookup(file.path);
+						const doc = folder?.proxy.getFile(file);
+						if (doc && isDocument(doc) && doc.hsm) {
+							const reload = reloadActiveNote(this, file, doc.hsm, () => doc.readDiskContentAfterQueuedWrites());
+							if (reload) return await reload;
+						}
+					}
 					// Mark the critical section: view.file has already been
 					// reassigned by the caller; view.data is still stale until
 					// setData runs inside the original call. The getViewData

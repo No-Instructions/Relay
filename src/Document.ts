@@ -1418,7 +1418,7 @@ export class Document
 	 * writes settle first and keep later writes behind the read. The write
 	 * path reads the file itself from inside that queue and must not wait on it.
 	 */
-	private async readDiskContentAfterQueuedWrites(): Promise<{
+	async readDiskContentAfterQueuedWrites(): Promise<{
 		content: string;
 		hash: string;
 		mtime: number;

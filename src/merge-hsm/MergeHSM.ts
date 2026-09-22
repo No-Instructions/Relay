@@ -5439,10 +5439,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				return; // Diagnostic only, no state transition
 			}
 		if (event.type === 'OBSIDIAN_SET_VIEW_DATA') {
-			// loadFileInternal is the authoritative open-view disk ingress.
-			// In active tracking, apply its final (possibly three-way merged)
-			// view body immediately. The following CM6 "set" transaction is an
-			// idempotent editor echo, not a second opportunity to infer origin.
+			// A reload supplies the unmerged file and its saved ancestor before
+			// replacing the view. Decide against the live CRDT so typing and peer
+			// updates received during the disk read participate in the merge.
+			// The following CM6 "set" transaction only echoes the accepted text.
 			if (
 				event.diskReload &&
 				this._statePath === "active.tracking" &&
@@ -5450,10 +5450,31 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				!this._conflict &&
 				this.localDoc
 			) {
-				this.applyContentToLocalDoc(event.data);
-				this.lastKnownEditorText = event.data;
+				let contents = event.data;
+				if (event.reload) {
+					const { base, disk } = event.reload;
+					const local = this.localDoc.getText("contents").toString();
+					const ancestor = base ?? this._lca?.contents ?? null;
+					this.send({ type: "DISK_CHANGED", contents: disk.content, hash: disk.hash, mtime: disk.mtime });
+					const result = ancestor !== null
+						? performThreeWayMerge(ancestor, local, disk.content)
+						: local === disk.content
+							? { success: true as const, merged: local }
+							: { success: false as const, conflictRegions: computeTwoWayConflictRegions(local, disk.content) };
+					if (!result.success) {
+						this.send({
+							type: "MERGE_CONFLICT", base: ancestor ?? local,
+							ours: local, theirs: disk.content,
+							conflictRegions: result.conflictRegions ?? [],
+						});
+						return;
+					}
+					contents = result.merged;
+				}
+				this.applyContentToLocalDoc(contents);
+				this.lastKnownEditorText = contents;
 				this._bridge.flushOutbound();
-				this.capturePendingDiskLCA(event.data);
+				this.capturePendingDiskLCA(contents);
 			} else if (event.clear && this._statePath !== "active.tracking") {
 				// Before active tracking, retain a full replacement as the disk
 				// side of active-entry reconciliation.

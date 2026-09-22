@@ -585,6 +585,8 @@ export interface ObsidianSetViewDataEvent {
 	clear: boolean;
 	/** Present when the call reloads disk into an already-open view. */
 	diskReload?: true;
+	/** Unmerged disk read and the view's last saved text, captured before replacement. */
+	reload?: { base: string | null; disk: DiskContent };
 }
 
 /**
