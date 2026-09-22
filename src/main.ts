@@ -32,6 +32,12 @@ import {
 import { SharedFolders } from "./SharedFolder";
 import { FolderNavigationDecorations } from "./ui/FolderNav";
 import { MetadataHealthSidebarNoticeMount } from "./ui/MetadataHealthSidebarNotice";
+import { SidebarNoticeMount } from "./ui/SidebarNoticeMount";
+import { mountComponent } from "./ui/svelteHost.svelte";
+import ServiceMessagesNotice from "./components/ServiceMessagesNotice.svelte";
+import { ServiceMessages, type ServiceMessageAction } from "./ServiceMessages";
+import { SERVICE_MESSAGE_VIEW, ServiceMessageView, openServiceMessageView } from "./ui/ServiceMessageView";
+import { NoteMessageBanners } from "./ui/NoteMessageBanners";
 import { ResourceMeterMount } from "./ui/ResourceMeter";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager, type LoginSettings } from "./LoginManager";
@@ -173,6 +179,7 @@ export default class Live extends Plugin {
 	backgroundSync!: BackgroundSync;
 	folderNavDecorations!: FolderNavigationDecorations;
 	private metadataHealthSidebarNotice: MetadataHealthSidebarNoticeMount | null = null;
+	private serviceMessagesSidebarNotice: SidebarNoticeMount | null = null;
 	private resourceMeter: ResourceMeterMount | null = null;
 	relayManager!: RelayManager;
 	deviceManager!: DeviceManager;
@@ -924,6 +931,18 @@ export default class Live extends Plugin {
 
 		this.networkStatus = new NetworkStatus(this.timeProvider, HEALTH_URL);
 
+		this.registerView(SERVICE_MESSAGE_VIEW, leaf => new ServiceMessageView(leaf));
+		const serviceMessages = new ServiceMessages(this.appId, this.manifest.id, this.timeProvider);
+		this.register(() => serviceMessages.destroy());
+		this.register(this.networkStatus.subscribeServiceMessageSelection(selection => serviceMessages.updateSelection(selection)));
+		this.serviceMessagesSidebarNotice = new SidebarNoticeMount(
+			this.app.workspace,
+			"system3-service-messages-slot",
+			(target, anchor) => mountComponent(ServiceMessagesNotice, {
+				target, anchor, props: { messages: serviceMessages, onAction: (action: ServiceMessageAction) => { void this.openServiceMessageAction(action); } },
+			}),
+		);
+
 		this.backgroundSync = new BackgroundSync(
 			this.loginManager,
 			this.timeProvider,
@@ -959,6 +978,10 @@ export default class Live extends Plugin {
 			this.textViewRegistry.load();
 
 			this.sharedFolders.load();
+			this.addChild(new NoteMessageBanners(
+				this.app, serviceMessages, this.sharedFolders, this.textViewRegistry,
+				action => { void this.openServiceMessageAction(action); },
+			));
 			this._liveViews = new LiveViewManager(
 				this.app,
 				this.sharedFolders,
@@ -984,7 +1007,7 @@ export default class Live extends Plugin {
 			this.tokenStore.start();
 
 			if (!Platform.isIosApp) {
-				// We can't run network status on iOS or it will always be offline.
+				// iOS health probes must not control sync connectivity.
 				this.networkStatus.addEventListener("offline", () => {
 					this.tokenStore.stop();
 					this.relayManager.offline();
@@ -996,8 +1019,8 @@ export default class Live extends Plugin {
 					void this.relayManager.online();
 					this._liveViews.goOnline();
 				});
-				this.networkStatus.start();
 			}
+			this.networkStatus.start({ monitorConnectivity: !Platform.isIosApp });
 
 			this.registerView(
 				VIEW_TYPE_DIFFERENCES,
@@ -1248,6 +1271,22 @@ export default class Live extends Plugin {
 		await setting.open();
 		await setting.openTabById("system3-relay");
 		this.settingsTab.navigateTo(path);
+	}
+
+	async openServiceMessageAction(action: ServiceMessageAction): Promise<void> {
+		try {
+			if (action.type === "settings") {
+				await this.openSettings(action.path);
+			} else if (action.type === "link") {
+				window.open(action.url, "_blank", "noopener,noreferrer");
+			} else {
+				const setting = (this.app as typeof this.app & { setting: SettingsController & { close(): void } }).setting;
+				setting.close();
+				await openServiceMessageView(this.app.workspace, action);
+			}
+		} catch (error) {
+			this.warn("Unable to open service message action", error);
+		}
 	}
 
 	openReleaseManager(version?: string) {
@@ -1958,6 +1997,10 @@ export default class Live extends Plugin {
 		teardownStep("metadataHealthFeature.destroy", () => {
 			this.destroyMetadataHealthFeature();
 		});
+		teardownStep("serviceMessagesSidebarNotice.destroy", () => {
+			this.serviceMessagesSidebarNotice?.destroy();
+		});
+		this.serviceMessagesSidebarNotice = null;
 
 		teardownStep("folderNavDecorations.destroy", () => {
 			this.folderNavDecorations?.destroy();
