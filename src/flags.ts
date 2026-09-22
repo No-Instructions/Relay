@@ -24,6 +24,7 @@ export interface FeatureFlags {
 	enableStreamerMode: boolean;
 	enableCanvasPresence: boolean;
 	enableReaderRole: boolean;
+	enableInNoteConflicts: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -222,6 +223,13 @@ export const FeatureFlagSchema: {
 		title: "Reader role",
 		description:
 			"Offer the Reader role when sharing folders and inviting users. Readers receive live updates without publishing changes.",
+	},
+	enableInNoteConflicts: {
+		default: false,
+		category: "labs",
+		title: "Resolve conflicts in the note",
+		description:
+			"Show a merge conflict inside the note, with each side's lines to pick between, instead of the banner and the side-by-side view.",
 	},
 };
 
