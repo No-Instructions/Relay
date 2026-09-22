@@ -1,4 +1,5 @@
 import { type Extension } from "@codemirror/state";
+import { conflictSideNames } from "./differ/conflictNames";
 import { EditorView } from "@codemirror/view";
 import {
 	App,
@@ -721,54 +722,26 @@ export class LiveView<ViewType extends TextFileView>
 				// HSM-aware conflict resolution path
 				const hsm = this.document.hsm;
 				if (hsm) {
-					const conflictData = hsm.getConflictData({ fresh: true });
+					const conflict = hsm.getConflict({ fresh: true });
 					const localDoc = hsm.getLocalDoc();
 					if (
-						conflictData &&
+						conflict &&
 						localDoc &&
 						hsm.state.statePath.includes("conflict")
 					) {
 						this.log("[mergeBanner] Opening diff view for conflict resolution");
 
-						// Check if there are inline conflict regions (new flow)
-						const hasInlineConflicts =
-							conflictData.conflictRegions &&
-							conflictData.conflictRegions.length > 0;
-
-						if (hasInlineConflicts) {
-							// With inline conflicts, clicking banner opens diff view as alternative
-							this.log(
-								"[mergeBanner] Inline conflicts present, opening diff view as alternative",
-							);
-						}
-
-						// Use the conflict payload sides directly so labels and hunk actions
-						// stay aligned with what the HSM declared as ours/theirs.
-						const oursContent = conflictData.ours;
-						const theirsContent = conflictData.theirs;
-						const currentLocalContent = localDoc.getText("contents").toString();
-						if (currentLocalContent !== oursContent) {
-							this.log(
-								`[mergeBanner] conflict side drift detected: localDoc=${currentLocalContent.length}, conflict.ours=${oursContent.length}`,
-							);
-						}
-
+						// Ours is what this device has and theirs is what came in, in
+						// every situation, so ours goes first. The names come from what
+						// each side is, never from the engine or from label text.
+						const names = conflictSideNames(conflict);
+						const topContent = conflict.ours.text;
+						const bottomContent = conflict.theirs.text;
+						const topLabel = names.ours;
+						const bottomLabel = names.theirs;
 						this.log(
-							`[mergeBanner] ours: ${oursContent.length} chars, theirs: ${theirsContent.length} chars`,
+							`[mergeBanner] ${conflict.situation}: ours ${conflict.ours.source} ${topContent.length} chars, theirs ${conflict.theirs.source} ${bottomContent.length} chars`,
 						);
-
-						const oursLabel = conflictData.oursLabel ?? "Editor";
-						const theirsLabel = conflictData.theirsLabel ?? "Disk";
-						const showRemoteOnTop =
-							oursLabel.toLowerCase().includes("local")
-							&& (
-								theirsLabel.toLowerCase().includes("remote")
-								|| theirsLabel.toLowerCase().includes("peer")
-							);
-						const topContent = showRemoteOnTop ? theirsContent : oursContent;
-						const bottomContent = showRemoteOnTop ? oursContent : theirsContent;
-						const topLabel = showRemoteOnTop ? theirsLabel : oursLabel;
-						const bottomLabel = showRemoteOnTop ? oursLabel : theirsLabel;
 
 						// Create DiskBuffer wrappers (differ expects TFile-like objects).
 						// file1 is always shown on top/left in the differ.
@@ -801,7 +774,9 @@ export class LiveView<ViewType extends TextFileView>
 								// Get the resolved content and apply it to HSM's localDoc.
 								const resolvedContent = topFile.contents;
 
-								hsm.send({ type: "RESOLVE", contents: resolvedContent });
+								// The id says which conflict this answers: one that has
+								// since changed is refused instead of overwritten.
+								await hsm.resolveConflict(conflict.id, resolvedContent);
 
 								this._banner?.destroy();
 								this._banner = undefined;

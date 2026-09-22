@@ -1,3 +1,5 @@
+import type { ConflictInfoSnapshot } from "../merge-hsm/conflict";
+import type { BlockDecision } from "../merge-hsm/conflictValue";
 import type {
 	RemoteSharedFolder,
 } from "../Relay";
@@ -44,6 +46,8 @@ export interface CliNoteState {
 	diskMatchesIdb: boolean;
 }
 
+export type { BlockDecision } from "../merge-hsm/conflictValue";
+
 /** Everything a command may reach. Narrow on purpose so tests can fake it. */
 export interface CliContext extends ServerContext {
 	version: string;
@@ -52,6 +56,7 @@ export interface CliContext extends ServerContext {
 		path: string | null;
 		hasFolder(path: string): boolean;
 		createFolder(path: string): Promise<void>;
+		readFile(path: string): Promise<string>;
 	};
 	login: {
 		loggedIn: boolean;
@@ -66,8 +71,21 @@ export interface CliContext extends ServerContext {
 	};
 	folderStatus(folder: CliSharedFolder): CliFolderStatus;
 	backgroundSync: { pause(): void; resume(): void; paused(): boolean };
+	/** The plugin's timers, so a deadline never reaches for a bare global. */
+	timers: { setTimeout(callback: () => void, ms: number): number; clearTimeout(timerId: number): void };
 	notes: {
 		listConflicts(): { folderPath: string; guid: string; path: string }[];
+		conflictInfo(path: string): Promise<ConflictInfoSnapshot>;
+		decideBlock(
+			path: string,
+			conflictId: string,
+			blockId: string,
+			decision: BlockDecision,
+		): Promise<string>;
+		resolveContents(path: string, conflictId: string, contents: string): Promise<string>;
+		state(path: string): Promise<CliNoteState>;
+		/** Ask the folder to converge the note with the server. */
+		converge(path: string): Promise<boolean>;
 	};
 	flags: {
 		get(): FeatureFlags;
