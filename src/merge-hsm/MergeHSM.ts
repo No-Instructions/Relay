@@ -350,6 +350,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	// Each ingestDisk call pushes one entry, giving 1:1 correspondence
 	// with CapturedOp entries from OpCapture. Cleared when the fork is cleared.
 	private _ingestionTexts: string[] = [];
+	// Disk intake is queued by idle transitions and applied only after the
+	// persisted CRDT and its operation capture have finished loading.
+	private _idleDiskIngestionPending = false;
 	// Bridge: manages CRDT op flow between localDoc and remoteDoc
 	private _bridge: SyncBridge;
 
@@ -637,6 +640,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		this.pendingDiskContents = null;
 		this.pendingDiskSource = null;
 		this.pendingDiskHash = null;
+		this._idleDiskIngestionPending = false;
 	}
 
 	// Returns null when a baseline was captured, otherwise the name of the
@@ -3384,6 +3388,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				this._remoteSnapshot = null;
 				this._needsDiskContentLoad = false;
 				this._restoredForkNeedsDiskRead = false;
+				this._idleDiskIngestionPending = false;
 				this.clearEnrolledLocalHead();
 			},
 			storeError: (_hsm, event) => {
@@ -3970,12 +3975,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				this.pendingIdleUpdates = null;
 				this.emitPersistState();
 			},
-			ingestDiskToLocalDoc: () => {
-				if (this.pendingDiskContents !== null) {
-					this.applyContentToLocalDoc(this.pendingDiskContents, DISK_ORIGIN);
-					this._ingestionTexts.push(this.pendingDiskContents);
-					this._restoredForkNeedsDiskRead = false;
-				}
+			queueDiskToLocalDoc: () => {
+				this._idleDiskIngestionPending = true;
 			},
 			reconcileForkInActive: () => {
 				// Reconcile fork when PROVIDER_SYNCED arrives in active mode
@@ -4410,6 +4411,19 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 					if (signal.aborted) return { success: false };
 				}
 				this.assertMachineResources("before fork-reconcile");
+				// Access and disk contents can change while persistence is loading.
+				// Only the current invoke may ingest, using the newest observed file.
+				if (this.isReadMode()) {
+					return { success: false, awaitingProvider: true };
+				}
+				if (this._idleDiskIngestionPending) {
+					this._idleDiskIngestionPending = false;
+					if (this._fork?.origin !== "demotion" && this.hasSessionFreshDiskContents()) {
+						this.applyContentToLocalDoc(this.pendingDiskContents!, DISK_ORIGIN);
+						this._ingestionTexts.push(this.pendingDiskContents!);
+						this._restoredForkNeedsDiskRead = false;
+					}
+				}
 				return this.invokeForkReconcile(signal);
 			},
 			'read-repair': async (_hsm, signal) => {

@@ -178,7 +178,7 @@ export const MACHINE: MachineDefinition = {
 			{ target: 'idle.synced', guard: 'allSyncedAtLoad' },
 			{ target: 'idle.recoverLCA', guard: 'canRecoverLCAWithPendingDisk', actions: ['prepareRecoverLCAFromPendingDisk'] },
 			{ target: 'idle.diverged', guard: 'noLCADiskConflictAtLoad' },
-			{ target: 'idle.localAhead', guard: 'restoredForkHasFreshDiskContents', actions: ['ingestDiskToLocalDoc'] },
+			{ target: 'idle.localAhead', guard: 'restoredForkHasFreshDiskContents', actions: ['queueDiskToLocalDoc'] },
 			{ target: 'idle.localAhead', guard: 'localAheadAtLoad' },
 			{ target: 'idle.remoteAhead', guard: 'remoteAheadAtLoad' },
 			// In read mode a disk-ahead load is repaired from remote instead of forking.
@@ -314,7 +314,7 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.localAhead', guard: 'diskMatchesLCA', actions: ['storeDiskMetadata', 'updateLCAMtime'] },
 				// In read mode disk is never ingested; the fork stays parked.
 				{ target: 'idle.localAhead', guard: 'isReadMode', actions: ['storeDiskMetadata'] },
-				{ target: 'idle.localAhead', actions: ['storeDiskMetadata', 'ingestDiskToLocalDoc'], reenter: true },
+				{ target: 'idle.localAhead', actions: ['storeDiskMetadata', 'queueDiskToLocalDoc'], reenter: true },
 			],
 			CM6_CHANGE: { target: 'idle.localAhead', actions: ['accumulateCM6Change'] },
 			SERVER_AHEAD: POCKET_SERVER_AHEAD('idle.localAhead'),
