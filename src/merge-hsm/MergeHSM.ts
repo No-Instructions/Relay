@@ -132,6 +132,12 @@ type PendingMachineEdit = {
 	captureMark: number;
 	registeredAt: number;
 	teardownCompletion: MachineEditTeardownCompletion;
+	/** Published idle repairs cannot be cancelled; only surplus copies may be deleted. */
+	publishedInsertions?: Array<{
+		start: Y.RelativePosition;
+		end: Y.RelativePosition;
+		text: string;
+	}>;
 };
 /**
  * An LCA produced by an idle-merge invoke. The head snapshot is deferred
@@ -4899,30 +4905,15 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			Y.applyUpdate(tempDoc, Y.encodeStateAsUpdate(localDoc), this);
 			Y.applyUpdate(tempDoc, updates, this.remoteDoc);
 
+			// Adopt the peer's operation identities and delete surplus copies on
+			// the merged CRDT. Skipping an update leaves it available to a retry,
+			// which would reintroduce the same duplicate after consuming a marker.
+			const repairedMachineEdit = this.reducePublishedMachineEdits(tempDoc);
 			const mergedContent = tempDoc.getText("contents").toString();
 			this.idleMergeLog(`[idle-merge-debug] ${this._guid} mergedContentLen=${mergedContent.length}`);
 			if (flags().enableDeltaLogging) {
 				this.idleMergeLog(`[idle-merge-debug] ${this._guid} mergedContent=${JSON.stringify(mergedContent)}`);
 			}
-
-			// Check if this remote update carries an edit already applied by
-			// fork-reconcile (machine edit). The LCA was set to the merged
-			// result by fork-reconcile. If any pending machine edit's
-			// expectedText matches the current LCA, the remote CRDT is
-			// delivering the same edit we already have — skip to prevent
-			// CRDT duplication.
-				if (this._lca) {
-					const machineIdx = this._pendingMachineEdits.findIndex(entry =>
-						entry.expectedText === this._lca!.contents
-					);
-					if (machineIdx >= 0) {
-						this._pendingMachineEdits.splice(machineIdx, 1);
-						this.hsmWarn(
-							`idle-merge: skipped duplicate machine edit | guid=${this._guid}`
-						);
-						return { success: true, newLCA: this._lca, noop: true };
-					}
-				}
 
 			const hash = await this.hashFn(mergedContent);
 			if (signal.aborted) return { success: false };
@@ -4932,7 +4923,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			return {
 				success: true,
 				mergedContent,
-				updates,
+				updates: repairedMachineEdit
+					? Y.encodeStateAsUpdate(tempDoc, Y.encodeStateVector(localDoc))
+					: updates,
+				needsSync: repairedMachineEdit,
 				needsDiskWrite: diskWrite.needsDiskWrite,
 				newLCA: { contents: mergedContent, meta: { hash, mtime: diskWrite.mtime }, snapshot: null },
 			};
@@ -5286,10 +5280,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				remoteDoc,
 				Y.encodeStateVector(localDoc),
 			);
-			this.applyRemoteStateThenMergedContent(
-				remoteUpdate,
-				mergeResult.merged,
-			);
+			this._bridge.syncToLocal(remoteUpdate);
+			const repairSource = localDoc.getText("contents").toString();
+			this.applyContentToLocalDoc(mergeResult.merged);
 
 			const snapshot = snapshotFromDoc(localDoc).snapshot;
 			const update = Y.encodeStateAsUpdate(localDoc);
@@ -5302,9 +5295,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			);
 			this._bridge.syncToRemote(update);
 
-			// If fork originated from a machine edit, register as pending so
-			// the late-arriving remote CRDT (same edit from the other vault)
-			// is detected and skipped by idle-merge.
+			// Retain the insertion boundaries after publication. A peer can have
+			// independently made the same repair before receiving this update.
+			// Boundaries refer to the surrounding shared characters, so both peers
+			// select the same surviving copy without reverting unrelated edits.
 			if (fork.origin === 'machine-edit' && fork.machineEditFn) {
 				this._pendingMachineEdits.push({
 					fn: fork.machineEditFn,
@@ -5312,6 +5306,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 					captureMark: fork.captureMark,
 					registeredAt: this.timeProvider.now(),
 					teardownCompletion: { kind: "closed" },
+					publishedInsertions: this.capturePublishedMachineInsertions(
+						repairSource,
+						mergeResult.merged,
+					),
 				});
 				const MACHINE_EDIT_TTL = 5000;
 				this.timeProvider.setTimeout(() => {
@@ -5479,10 +5477,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				return; // Diagnostic only, no state transition
 			}
 		if (event.type === 'OBSIDIAN_SET_VIEW_DATA') {
-			// loadFileInternal is the authoritative open-view disk ingress.
-			// In active tracking, apply its final (possibly three-way merged)
-			// view body immediately. The following CM6 "set" transaction is an
-			// idempotent editor echo, not a second opportunity to infer origin.
+			// A reload supplies the unmerged file and its saved ancestor before
+			// replacing the view. Decide against the live CRDT so typing and peer
+			// updates received during the disk read participate in the merge.
+			// The following CM6 "set" transaction only echoes the accepted text.
 			if (
 				event.diskReload &&
 				this._statePath === "active.tracking" &&
@@ -5490,10 +5488,42 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				!this._conflict &&
 				this.localDoc
 			) {
-				this.applyContentToLocalDoc(event.data);
-				this.lastKnownEditorText = event.data;
-				this._bridge.flushOutbound();
-				this.capturePendingDiskLCA(event.data);
+				let contents = event.data;
+				if (event.reload) {
+					const { base, disk } = event.reload;
+					const local = this.localDoc.getText("contents").toString();
+					const ancestor = base ?? this._lca?.contents ?? null;
+					this.send({ type: "DISK_CHANGED", contents: disk.content, hash: disk.hash, mtime: disk.mtime });
+					const result = ancestor !== null
+						? performThreeWayMerge(ancestor, local, disk.content)
+						: local === disk.content
+							? { success: true as const, merged: local }
+							: { success: false as const };
+					if (!result.success) {
+						this.send({
+							type: "MERGE_CONFLICT",
+							situation: ancestor === null ? "no-baseline" : "both-edited",
+							base: ancestor,
+							...assignSides(
+								{ holder: "editor", text: local },
+								this.comparedFile(disk.content, ancestor),
+							),
+						});
+						return;
+					}
+					contents = result.merged;
+				}
+				if (this._pendingMachineEdits.some((edit) => edit.expectedText === contents)) {
+					// A registered repair must keep its deferred operation identity
+					// before the view echoes it. Publishing it as an ordinary disk
+					// edit would duplicate an independently generated peer repair.
+					this.send({ type: "CM6_CHANGE", changes: [], docText: contents, userEvent: "set" });
+				} else {
+					this.applyContentToLocalDoc(contents);
+					this.lastKnownEditorText = contents;
+					this._bridge.flushOutbound();
+				}
+				this.capturePendingDiskLCA(contents);
 			} else if (event.clear && this._statePath !== "active.tracking") {
 				// Before active tracking, retain a full replacement as the disk
 				// side of active-entry reconciliation.
@@ -6852,12 +6882,55 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 	private static readonly MACHINE_EDIT_TTL = 5000;
 
+	private capturePublishedMachineInsertions(
+		before: string,
+		after: string,
+	): NonNullable<PendingMachineEdit["publishedInsertions"]> {
+		const text = this.localDoc!.getText("contents");
+		let offset = 0;
+		const ranges: NonNullable<PendingMachineEdit["publishedInsertions"]> = [];
+		for (const change of this.computeDiffChanges(before, after)) {
+			const start = change.from + offset;
+			if (change.insert.length > 0) {
+				ranges.push({
+					start: Y.createRelativePositionFromTypeIndex(text, start, -1),
+					end: Y.createRelativePositionFromTypeIndex(text, start + change.insert.length, 0),
+					text: change.insert,
+				});
+			}
+			offset += change.insert.length - (change.to - change.from);
+		}
+		return ranges;
+	}
+
+	private reducePublishedMachineEdits(doc: Y.Doc): boolean {
+		const text = doc.getText("contents");
+		let reduced = false;
+		for (const edit of this._pendingMachineEdits) {
+			for (const range of edit.publishedInsertions ?? []) {
+				const start = Y.createAbsolutePositionFromRelativePosition(range.start, doc);
+				const end = Y.createAbsolutePositionFromRelativePosition(range.end, doc);
+				if (!start || !end || start.type !== text || end.type !== text) continue;
+				const contents = text.toString().slice(start.index, end.index);
+				const copies = contents.length / range.text.length;
+				if (copies < 2 || !Number.isInteger(copies)) continue;
+				if (contents !== range.text.repeat(copies)) continue;
+				// Each peer sees the same item order and keeps its first run. These
+				// are ordinary published deletions, safe to replay and cross-deliver.
+				text.delete(start.index + range.text.length, contents.length - range.text.length);
+				reduced = true;
+			}
+		}
+		return reduced;
+	}
+
 	/**
 	 * Find a pending machine edit whose fn is already satisfied by remoteText.
 	 * fn(remoteText) === remoteText means the remote already has this transform.
 	 */
 	private _matchMachineEdit(remoteText: string): typeof this._pendingMachineEdits[number] | null {
 		for (const entry of this._pendingMachineEdits) {
+			if (entry.publishedInsertions) continue;
 			if (remoteText === entry.expectedText) {
 				return entry;
 			}
