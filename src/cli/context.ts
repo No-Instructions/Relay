@@ -64,8 +64,10 @@ export function buildCliContext(plugin: Live, deps: CliContextDeps): CliContext 
 		notes: {
 			listConflicts: () => debugAPI.listAllConflicts(),
 			conflictInfo: (path) => debugAPI.getConflictInfo(path),
-			resolveHunk: (path, hunkId, resolution) => debugAPI.resolveHunk(path, hunkId, resolution),
-			resolveContents: (path, contents) => debugAPI.resolveConflict(path, contents),
+			decideBlock: (path, conflictId, blockId, decision) =>
+				debugAPI.decideConflictBlock(path, conflictId, blockId, decision),
+			resolveContents: (path, conflictId, contents) =>
+				debugAPI.resolveConflict(path, conflictId, contents),
 			state: async (path) => {
 				const snapshot = await debugAPI.getHsmStateSnapshot(path);
 				return {

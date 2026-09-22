@@ -33,7 +33,7 @@ import { Canvas, isCanvas } from './Canvas';
 import { readCanvasPresence, readCanvasPresenceUser, type CanvasPresenceState, type CanvasPresenceUser } from './canvas-presence/types';
 import type { CanvasHSM } from './canvas-hsm/CanvasHSM';
 import type { CanvasData } from './CanvasView';
-import type { ConflictData } from './merge-hsm/conflict';
+import type { BlockDecision, ConflictValue } from './merge-hsm/conflictValue';
 import type Live from './main';
 import type { RelayCanvasView } from './LiveViews';
 import type { SharedFolder } from './SharedFolder';
@@ -43,7 +43,8 @@ import type { MergeManager, MergeManagerDocument } from './merge-hsm/MergeManage
 import type { RemoteEntityFile } from './BackgroundSync';
 import { areCanvasDataEqual } from './CanvasData';
 
-export type { ConflictHunkInfo, ConflictInfoSnapshot } from './merge-hsm/conflict';
+export type { ConflictInfoSnapshot } from './merge-hsm/conflict';
+export type { BlockDecision, ConflictBlock, ConflictSide, ConflictValue } from './merge-hsm/conflictValue';
 
 // =============================================================================
 // Types
@@ -271,7 +272,7 @@ export interface HsmStateSnapshot {
   persistedLcaContent: string | null;
   persistedAt: number | null;
   hasConflict: boolean;
-  conflictData: ConflictData | null;
+  conflict: ConflictValue | null;
   localDocLength: number;
   idbContent: string | null;
   diskMtime: number | null;
@@ -464,39 +465,30 @@ export interface RelayDebugGlobal {
    */
   awaitCanvasState: (path: string, statePrefix: string, timeoutMs: number) => Promise<string>;
   /**
-   * Focused conflict snapshot: base/ours/theirs plus labels so callers
-   * can pick the right side by semantic name without pulling the whole
-   * HsmStateSnapshot. Throws if the document is not found.
+   * Focused conflict snapshot: the conflict value, with both sides, what each
+   * one is, the baseline and the blocks, plus the decisions made so far.
+   * Throws if the document is not found.
    */
   getConflictInfo: (path: string) => Promise<ConflictInfoSnapshot>;
   /**
-   * Resolve the conflict with the chosen final content. Active conflicts use
-   * the normal HSM event path; idle.diverged conflicts resolve headlessly
-   * without opening editors or views.
+   * Resolve the conflict with the chosen final content. `conflictId` is the id
+   * from `getConflictInfo`; an id that is not the current conflict's is
+   * refused, so an outcome worked out against a conflict that has since
+   * changed is never applied. Works with the note open or closed.
    */
-  resolveConflict: (path: string, contents: string) => Promise<string>;
+  resolveConflict: (path: string, conflictId: string, contents: string) => Promise<string>;
   /**
-   * Dispatch a `RESOLVE_HUNK` event for a single conflict hunk.
-   *
-   * `hunkId` is matched against `ConflictHunkInfo.id`; throws on
-   * ambiguous (collision) or missing. Numeric array indices are not
-   * accepted at this boundary because digit-only hash prefixes are valid ids.
-   *
-   * `resolution` picks the side to apply:
-   *   - "ours"    → oursContent
-   *   - "theirs"  → theirsContent
-   *   - "both"    → oursContent + "\n" + theirsContent
-   *   - "neither" → remove the hunk entirely
-   *
-   * The HSM mutates localDoc in place at the hunk's positioned region,
-   * marks the hunk resolved, and once every hunk is resolved commits
-   * the final content. idle.diverged conflicts resolve headlessly
-   * without opening editors or views.
+   * Record one decision on a block of the conflict. `blockId` is a block's id
+   * or any prefix that names one block. Ours is what this device has and
+   * theirs is what came in, in every situation; both and neither are valid
+   * only between two texts. Nothing is written until every disagreement has
+   * an answer, and then the outcome is applied.
    */
-  resolveHunk: (
+  decideConflictBlock: (
     path: string,
-    hunkId: string,
-    resolution: 'ours' | 'theirs' | 'both' | 'neither',
+    conflictId: string,
+    blockId: string,
+    decision: BlockDecision,
   ) => Promise<string>;
   /**
    * Dispatch an `OPEN_DIFF_VIEW` event — the state-machine-level
@@ -741,9 +733,10 @@ export class RelayDebugAPI {
       awaitHsmState: async (path, statePrefix, timeoutMs) =>
         this.awaitHsmState(path, statePrefix, timeoutMs),
       getConflictInfo: async (path) => this.getConflictInfo(path),
-      resolveConflict: async (path, contents) => this.resolveConflict(path, contents),
-      resolveHunk: async (path, hunkId, resolution) =>
-        this.resolveHunk(path, hunkId, resolution),
+      resolveConflict: async (path, conflictId, contents) =>
+        this.resolveConflict(path, conflictId, contents),
+      decideConflictBlock: async (path, conflictId, blockId, decision) =>
+        this.decideConflictBlock(path, conflictId, blockId, decision),
       openDiffView: async (path) => this.sendConflictEvent(path, { type: 'OPEN_DIFF_VIEW' }),
       cancelDiffView: async (path) => this.sendConflictEvent(path, { type: 'CANCEL' }),
       clearLca: async (path) => this.clearLca(path),
@@ -1743,8 +1736,8 @@ export class RelayDebugAPI {
       persistedLcaContentLength: persistedLcaContent?.length ?? null,
       persistedLcaContent,
       persistedAt,
-      hasConflict: !!hsm.getConflictData(),
-      conflictData: hsm.getConflictData() || null,
+      hasConflict: !!hsm.getConflict(),
+      conflict: hsm.getConflict() || null,
       localDocLength: localDoc
         ? (localDoc.getText?.('contents')?.toString()?.length ?? 0)
         : 0,
@@ -1837,12 +1830,12 @@ export class RelayDebugAPI {
     };
   }
 
-  async resolveConflict(path: string, contents: string): Promise<string> {
+  async resolveConflict(path: string, conflictId: string, contents: string): Promise<string> {
     const { manager, guid } = this.resolveConflictTarget(path);
     if (typeof manager.resolveConflict !== 'function') {
       throw new Error(`Conflict resolution is not available: ${path}`);
     }
-    return manager.resolveConflict(guid, contents);
+    return manager.resolveConflict(guid, conflictId, contents);
   }
 
   /**
@@ -2020,16 +2013,17 @@ export class RelayDebugAPI {
     return this.hsmInternals(hsm)._statePath || 'unknown';
   }
 
-  async resolveHunk(
+  async decideConflictBlock(
     path: string,
-    hunkId: string,
-    resolution: 'ours' | 'theirs' | 'both' | 'neither',
+    conflictId: string,
+    blockId: string,
+    decision: BlockDecision,
   ): Promise<string> {
     const { manager, guid } = this.resolveConflictTarget(path);
-    if (typeof manager.resolveConflictHunk !== 'function') {
-      throw new Error(`Conflict hunk resolution is not available: ${path}`);
+    if (typeof manager.decideConflictBlock !== 'function') {
+      throw new Error(`Conflict decisions are not available: ${path}`);
     }
-    return manager.resolveConflictHunk(guid, hunkId, resolution);
+    return manager.decideConflictBlock(guid, conflictId, blockId, decision);
   }
 
   /**

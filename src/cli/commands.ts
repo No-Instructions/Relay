@@ -2,6 +2,8 @@ import type { CliFlags } from "obsidian";
 import { FeatureFlagSchema, isKeyOfFeatureFlags, type FeatureFlags } from "../flags";
 import type { Relay, RemoteSharedFolder } from "../Relay";
 import { SyncSettingsManager, type SyncFlags } from "../SyncSettings";
+import { shortestUniquePrefixLength } from "../merge-hsm/conflict";
+import { conflictBlocks, decidableBlocks, type ConflictSource } from "../merge-hsm/conflictValue";
 import { kv, table } from "./format";
 import { flag, folderPath, notePath, optional, parseOnOff, required } from "./params";
 import {
@@ -20,7 +22,7 @@ import {
 	type CliContext,
 	type CliResult,
 	type CliSharedFolder,
-	type HunkResolution,
+	type BlockDecision,
 } from "./types";
 
 const RELAY_FLAG: CliFlags = {
@@ -31,7 +33,7 @@ const FOLDER_FLAG: CliFlags = {
 };
 /** File-type categories come from the sync settings schema, never a local list. */
 const SYNC_CATEGORIES: (keyof SyncFlags)[] = SyncSettingsManager.categories.map((c) => c.key);
-const RESOLUTIONS: HunkResolution[] = ["ours", "theirs", "both", "neither"];
+const DECISIONS: BlockDecision[] = ["ours", "theirs", "both", "neither"];
 
 function bytes(n: number): string {
 	const units = ["B", "KB", "MB", "GB", "TB"];
@@ -703,68 +705,107 @@ const conflicts: CliCommand = {
 
 const NOTE_FLAG: CliFlags = { path: { value: "<path>", description: "Note path", required: true } };
 
+/** What a side of a conflict is, in the CLI's words. */
+const SOURCE_WORDS: Record<ConflictSource, string> = {
+	editor: "the editor",
+	file: "the file on disk",
+	record: "this device's record",
+	remote: "the remote",
+};
+
 const diff: CliCommand = {
 	id: "relay:diff",
-	description: "One note: state, conflict labels, and hunks",
-	flags: NOTE_FLAG,
+	description: "One note: state, the conflict's sides, and the blocks they disagree on",
+	flags: {
+		...NOTE_FLAG,
+		blocks: { value: "all", description: "Also list the changes only one side made, which merged on their own" },
+	},
 	async run(params, ctx) {
 		const path = notePath(required(params, "path"));
 		const info = await ctx.notes.conflictInfo(path);
-		const hunks = info.hunks.map((h) => ({ id: h.id, resolved: h.resolved, ours: h.oursContent, theirs: h.theirsContent }));
+		const conflict = info.conflict;
+		if (!conflict) {
+			const data = { path: info.path, state: info.statePath, conflict: false };
+			return { data, text: kv([["note", info.path], ["state", info.statePath], ["conflict", false]]) };
+		}
+		const listAll = optional(params, "blocks") === "all";
+		const listed = decidableBlocks(conflict).filter((b) => listAll || b.kind === "conflict");
+		const prefix = shortestUniquePrefixLength(decidableBlocks(conflict).map((b) => b.id));
+		const disagreements = conflictBlocks(conflict);
+		const decided = disagreements.filter((b) => info.decisions[b.id] !== undefined).length;
+		const blocks = listed.map((b) => ({
+			id: b.id.slice(0, prefix),
+			kind: b.kind,
+			decision: info.decisions[b.id] ?? null,
+			base: b.base,
+			ours: b.kind === "theirs-only" ? b.base : b.ours,
+			theirs: b.kind === "ours-only" ? b.base : b.theirs,
+		}));
 		const data = {
 			path: info.path,
 			state: info.statePath,
-			conflict: info.hasConflict,
-			ours: info.oursLabel,
-			theirs: info.theirsLabel,
-			resolved: info.resolvedHunkCount,
-			total: info.hunkCount,
-			hunks,
+			conflict: true,
+			id: conflict.id,
+			situation: conflict.situation,
+			ours: conflict.ours,
+			theirs: conflict.theirs,
+			base: conflict.base,
+			decided,
+			total: disagreements.length,
+			blocks,
 		};
 		const lines = [
 			kv([
 				["note", info.path],
 				["state", info.statePath],
-				["conflict", info.hasConflict],
-				["ours", info.oursLabel],
-				["theirs", info.theirsLabel],
-				["hunks", `${info.resolvedHunkCount}/${info.hunkCount} resolved`],
+				["conflict", conflict.id],
+				["situation", conflict.situation],
+				["ours", `${SOURCE_WORDS[conflict.ours.source]}: what this device has`],
+				["theirs", `${SOURCE_WORDS[conflict.theirs.source]}: what came in`],
+				["blocks", `${decided}/${disagreements.length} decided`],
 			]),
 		];
-		for (const hunk of hunks) {
-			lines.push("", `hunk ${hunk.id}${hunk.resolved ? " (resolved)" : ""}`);
-			lines.push("  ours:   " + JSON.stringify(hunk.ours));
-			lines.push("  theirs: " + JSON.stringify(hunk.theirs));
+		for (const block of blocks) {
+			const state = block.decision ? ` (take=${block.decision})` : "";
+			lines.push("", `block ${block.id} ${block.kind}${state}`);
+			lines.push("  ours:   " + JSON.stringify(block.ours));
+			lines.push("  theirs: " + JSON.stringify(block.theirs));
 		}
+		if (conflict.base !== null) lines.push("", "--- baseline ---", conflict.base);
+		lines.push("", `--- ours: ${SOURCE_WORDS[conflict.ours.source]} ---`, conflict.ours.text);
+		lines.push("", `--- theirs: ${SOURCE_WORDS[conflict.theirs.source]} ---`, conflict.theirs.text);
 		return { data, text: lines.join("\n") };
 	},
 };
 
 const diffResolve: CliCommand = {
 	id: "relay:diff:resolve",
-	description: "Resolve a conflict: one hunk with hunk= and take=, or the whole note with content=",
+	description:
+		"Resolve a conflict: decide one block with block= and take=, or give the whole note with content=. conflict= is the id relay:diff prints",
 	flags: {
 		...NOTE_FLAG,
-		hunk: { value: "<id>", description: "Hunk id from relay:diff" },
-		take: { value: "ours|theirs|both|neither", description: "Which side to keep for the hunk" },
+		conflict: { value: "<id>", description: "Conflict id from relay:diff; a conflict that has since changed is refused" },
+		block: { value: "<id>", description: "Block id from relay:diff" },
+		take: { value: "ours|theirs|both|neither", description: "ours keeps what this device has, theirs takes what came in" },
 		content: { value: "<text>", description: "Replace the whole note; empty text clears it, literal true is reserved for a bare flag" },
 	},
 	async run(params, ctx) {
 		const path = notePath(required(params, "path"));
+		const conflictId = required(params, "conflict");
 		const content = params.content;
-		const hunk = optional(params, "hunk");
+		const block = optional(params, "block");
 		const take = optional(params, "take");
 		const wholeNote = content !== undefined && content !== "true";
-		if (!wholeNote && !(hunk && take)) {
-			throw new CliError("missing_flag", "Give hunk= and take=, or content=");
+		if (!wholeNote && !(block && take)) {
+			throw new CliError("missing_flag", "Give block= and take=, or content=");
 		}
-		if (!wholeNote && !RESOLUTIONS.includes(take as HunkResolution)) {
-			throw new CliError("invalid_value", `take must be one of ${RESOLUTIONS.join(", ")}`);
+		if (!wholeNote && !DECISIONS.includes(take as BlockDecision)) {
+			throw new CliError("invalid_value", `take must be one of ${DECISIONS.join(", ")}`);
 		}
-		// Reading the conflict first materializes a hibernated note's conflict
-		// regions, which the hunk resolver requires; the UI's flow does the same.
+		// Reading the conflict first materializes a hibernated note's conflict,
+		// which a decision requires; the UI's flow does the same.
 		const info = await ctx.notes.conflictInfo(path);
-		if (!info.hasConflict) {
+		if (!info.conflict) {
 			const loading = /loading|recoverLCA/.test(info.statePath);
 			throw new CliError(
 				"no_conflict",
@@ -772,9 +813,17 @@ const diffResolve: CliCommand = {
 					(loading ? "; the note is still loading, try again shortly" : ""),
 			);
 		}
+		if (info.conflict.id !== conflictId) {
+			throw new CliError(
+				"stale_conflict",
+				`The conflict on ${path} is ${info.conflict.id}, not ${conflictId}: it changed since it was read. Run relay:diff again`,
+			);
+		}
 		const state = wholeNote
-			? await ctx.notes.resolveContents(path, content)
-			: await ctx.notes.resolveHunk(path, hunk as string, take as HunkResolution);
+			? await ctx.notes.resolveContents(path, conflictId, content)
+			: await ctx.notes.decideBlock(path, conflictId, block as string, take as BlockDecision);
+		// A decision writes nothing until every disagreement has one.
+		const written = state === "idle.synced" || state === "active.tracking";
 		let convergence = "not-requested";
 		if (state === "idle.synced") {
 			convergence = ctx.backgroundSync.paused() ? "paused" : await convergeWithinDeadline(ctx, path);
@@ -787,6 +836,7 @@ const diffResolve: CliCommand = {
 			conflict: after.hasConflict,
 			lca: after.hasLCA,
 			diskMatchesStore: after.diskMatchesIdb,
+			written,
 			converged,
 			convergence,
 		};
@@ -796,6 +846,7 @@ const diffResolve: CliCommand = {
 				["note", path],
 				["state", after.statePath],
 				["conflict", after.hasConflict],
+				["written", written],
 				["converged with server", converged],
 				["convergence", convergence],
 			]),
