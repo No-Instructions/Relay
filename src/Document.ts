@@ -16,7 +16,7 @@ import { flag } from "./flags";
 import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
 import type { MergeHSM } from "./merge-hsm/MergeHSM";
-import type { ActiveAccessMode, EditorViewRef } from "./merge-hsm/types";
+import type { ActiveAccessMode, EditorViewRef, LCAState } from "./merge-hsm/types";
 import { DiskFileNotFoundError } from "./merge-hsm/DiskFileNotFoundError";
 import {
 	ProviderIntegration,
@@ -171,7 +171,7 @@ export class Document
 			guid: this.guid,
 			getPath: () => this.path,
 			remoteDoc: this.isRemoteDocLoaded ? this.ydoc : null,
-			getDiskContent: () => this.readDiskContent(),
+			getDiskContent: () => this.readDiskContentAfterQueuedWrites(),
 			getCurrentDiskMetadata: () =>
 				this.sharedFolder.getCurrentDiskMetadata(this),
 			isFolderConnected: () => this.sharedFolder.connected,
@@ -1412,8 +1412,24 @@ export class Document
 	// ===========================================================================
 
 	/**
-	 * Read current disk content for the HSM.
-	 * Used as diskLoader callback when creating HSM.
+	 * Disk loader for the merge machine. A load that lands between a queued
+	 * write's truncate and its bytes sees an empty file, which the engine
+	 * would then take for a user wiping the note; let this document's own
+	 * writes settle first and keep later writes behind the read. The write
+	 * path reads the file itself from inside that queue and must not wait on it.
+	 */
+	private async readDiskContentAfterQueuedWrites(): Promise<{
+		content: string;
+		hash: string;
+		mtime: number;
+	}> {
+		const read = this._diskWriteTail.then(() => this.readDiskContent());
+		this._diskWriteTail = read.then(() => undefined, () => undefined);
+		return read;
+	}
+
+	/**
+	 * Read current disk content.
 	 */
 	async readDiskContent(): Promise<{
 		content: string;
@@ -1484,11 +1500,13 @@ export class Document
 	 * a write that never landed as done.
 	 */
 	async writeEngineContents(contents: string): Promise<boolean> {
+		const initialLCA = this._hsm?.state?.lca;
 		let wrote = false;
 		await this.enqueueDiskWrite(async () => {
 			wrote = await this.writeDiskContents(contents, {
 				createIfMissing: true,
 				onlyWhileAcceptingRemoteEnrollment: true,
+				initialLCA,
 			});
 		});
 		return wrote;
@@ -1661,6 +1679,7 @@ export class Document
 			 * the document to start carrying work of its own.
 			 */
 			onlyWhileAcceptingRemoteEnrollment?: boolean;
+			initialLCA?: LCAState | null;
 			mtime?: number;
 		},
 	): Promise<boolean> {
@@ -1678,7 +1697,25 @@ export class Document
 		}
 
 		const encoder = new TextEncoder();
-		const hash = await generateHash(encoder.encode(contents).buffer);
+		// A merge may settle newer text while a download waits in the queue
+		// or hashes its fetched copy. A metadata-only ancestor update must not
+		// supersede a fresh download, so compare content hashes too.
+		const currentDownloadContents = (): string => {
+			if (!options.onlyWhileAcceptingRemoteEnrollment) return contents;
+			const state = this._hsm?.state;
+			return state?.statePath === "idle.synced" &&
+				state.lca !== options.initialLCA &&
+				state.lca?.contents != null &&
+				state.lca.meta.hash !== options.initialLCA?.meta.hash
+				? state.lca.contents
+				: contents;
+		};
+		let hash: string;
+		for (;;) {
+			contents = currentDownloadContents();
+			hash = await generateHash(encoder.encode(contents).buffer);
+			if (currentDownloadContents() === contents) break;
+		}
 		if (this.destroyed) {
 			this.warn("[writeDiskContents] Skipping write for destroyed document", this.path);
 			return false;
