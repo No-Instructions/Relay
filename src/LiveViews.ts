@@ -1,5 +1,6 @@
 import { type Extension } from "@codemirror/state";
 import { conflictSideNames } from "./differ/conflictNames";
+import { type ConflictNoteSession, closeSession, conflictNoteExtension, openSession, sessionOf } from "./conflict-note";
 import { EditorView } from "@codemirror/view";
 import {
 	App,
@@ -566,6 +567,8 @@ export class RelayCanvasView implements S3View {
 /** Per-view CM6 compartment: empty for write access, non-editable for read. */
 export { accessModeCompartment } from "./readOnlyEditorState";
 
+let liveViewCount = 0;
+
 export class LiveView<ViewType extends TextFileView>
 	extends HasLogging
 	implements S3View
@@ -581,6 +584,9 @@ export class LiveView<ViewType extends TextFileView>
 	private offConnectionStatusSubscription?: () => void;
 	private _parent: LiveViewManager;
 	private _banner?: Banner;
+	private _conflictSession?: ConflictNoteSession;
+	/** Tells one live view from another in the log. */
+	private readonly viewSeq = ++liveViewCount;
 	private _forkNotice?: Banner;
 	private _readOnlyBanner?: Banner;
 	private _offAccessStatus?: () => void;
@@ -593,6 +599,7 @@ export class LiveView<ViewType extends TextFileView>
 	_tracking: boolean;
 	private _awarenessPlugin?: AwarenessViewPlugin;
 	private _hsmStateUnsubscribe?: () => void;
+	private _accessModeBannersScheduled = false;
 	private _hasLock = false;
 	private _released = false;
 	private readonly _fallbackViewer = Symbol("live-view-viewer");
@@ -658,7 +665,20 @@ export class LiveView<ViewType extends TextFileView>
 		return statePath === "active.reading" || statePath === "active.reading.repairing";
 	}
 
-	private reconcileAccessModeBanners(statePath: string): void {
+	private reconcileAccessModeBanners(): void {
+		if (this._released || this._leavingMarkdownFile || this._accessModeBannersScheduled) return;
+		this._accessModeBannersScheduled = true;
+		// Machine notifications can arrive inside a CodeMirror update. Session
+		// installation and removal must wait until that update has finished.
+		queueMicrotask(() => {
+			this._accessModeBannersScheduled = false;
+			if (this._released || this._leavingMarkdownFile) return;
+			const hsm = this.document.hsm;
+			if (hsm) this.updateAccessModeBanners(hsm.statePath);
+		});
+	}
+
+	private updateAccessModeBanners(statePath: string): void {
 		const showForkNotice =
 			statePath.startsWith("active.reading") &&
 			(this.document.hsm?.hasFork() ?? false);
@@ -670,13 +690,14 @@ export class LiveView<ViewType extends TextFileView>
 		}
 
 		const isConflict = statePath.includes("conflict");
-		if (isConflict && !this._banner) {
+		if (isConflict && !this._banner && !this._conflictSession?.keepsView) {
 			this.log("[LiveView] HSM entered conflict state, showing merge banner");
 			this.mergeBanner();
-		} else if (!isConflict && this._banner) {
+		} else if (!isConflict && (this._banner || this._conflictSession)) {
 			this.log("[LiveView] HSM exited conflict state, hiding merge banner");
-			this._banner.destroy();
+			this._banner?.destroy();
 			this._banner = undefined;
+			this.closeConflictNote();
 		}
 
 		if (showForkNotice && !this._forkNotice) {
@@ -714,7 +735,60 @@ export class LiveView<ViewType extends TextFileView>
 		}
 	}
 
+	/**
+	 * With conflicts resolved in the note, the conflict opens as a pick
+	 * document in the editor instead of a banner. A member with read access
+	 * keeps the banner and the side-by-side comparison of held edits.
+	 */
+	private openConflictNote(): boolean {
+		if (!flags().enableInNoteConflicts || !(this.view instanceof MarkdownView) || this.reading) return false;
+		const hsm = this.document.hsm;
+		const conflict = hsm?.getConflict();
+		const cm = (this.view.editor as { cm?: EditorView } | undefined)?.cm;
+		if (!hsm || !conflict || !cm) return false;
+		if (this._conflictSession?.keepsView) return true;
+		// A session another owner of this view opened is this view's session too.
+		const existing = sessionOf(this.view);
+		if (existing?.keepsView) {
+			this._conflictSession = existing;
+			return true;
+		}
+		// A session the editor no longer shows, though it did not end, lost its
+		// state to a rebuild of the editor's configuration; it is closed and replaced.
+		const before = this._conflictSession ? (this._conflictSession.endedBy ?? "a rebuilt editor state") : null;
+		this.log(`[LiveView] opening conflict ${conflict.id} in the note (${before ? `after a session ended by ${before}` : "no session yet"}; view ${this.viewSeq})`);
+		this._conflictSession = openSession(this.view, cm, hsm, conflict, {
+			collaborator: this.collaboratorName(),
+			report: () => {
+				(this._parent.app as { commands?: { executeCommandById(id: string): void } }).commands?.executeCommandById("system3-relay:send-bug-report");
+			},
+		});
+		return true;
+	}
+
+	private closeConflictNote(): void {
+		if (!this._conflictSession) return;
+		if (this.view instanceof MarkdownView && sessionOf(this.view) === this._conflictSession) closeSession(this.view);
+		else this._conflictSession.close();
+		this._conflictSession = undefined;
+	}
+
+	/** The name of a collaborator present on the note, when awareness has one who is not this user. */
+	private collaboratorName(): string | null {
+		const awareness = this.document.sharedFolder?._provider?.awareness;
+		if (!awareness) return null;
+		for (const [clientId, raw] of awareness.getStates()) {
+			if (clientId === awareness.clientID) continue;
+			const user = (raw as { user?: { id?: string; name?: string } }).user;
+			if (!user?.id || this.document.sharedFolder.isLocalUserId(user.id)) continue;
+			const name = (user.name ?? this.document.sharedFolder.getUserDisplayName(user.id))?.trim();
+			if (name && name !== ANONYMOUS_PROFILE_NAME) return name;
+		}
+		return null;
+	}
+
 	mergeBanner(): () => void {
+		if (this.openConflictNote()) return () => {};
 		this._banner = new Banner(
 			this.view,
 			{ short: "Merge conflict", long: "Merge conflict -- click to resolve" },
@@ -907,7 +981,7 @@ export class LiveView<ViewType extends TextFileView>
 			// Subscribe to HSM state changes to update tracking icon and conflict banner
 			const hsm = this.document.hsm;
 			if (hsm && !this._hsmStateUnsubscribe) {
-				this._hsmStateUnsubscribe = hsm.stateChanges.subscribe((state) => {
+				this._hsmStateUnsubscribe = hsm.stateChanges.subscribe(() => {
 					if (!this.document.sharedFolder) return;
 					const currentFlags = flags();
 					this._viewActions?.set({
@@ -918,10 +992,10 @@ export class LiveView<ViewType extends TextFileView>
 						pendingOutbound: this.document.hsm?.pendingOutbound ?? 0,
 						pendingInbound: this.document.hsm?.pendingInbound ?? 0,
 					});
-					this.reconcileAccessModeBanners(state.statePath);
+					this.reconcileAccessModeBanners();
 					this.applyEditableState();
 				});
-				this.reconcileAccessModeBanners(hsm.statePath);
+				this.reconcileAccessModeBanners();
 			}
 			this._viewActions.set({
 				view: this,
@@ -1230,6 +1304,7 @@ export class LiveView<ViewType extends TextFileView>
 		this._viewActions = undefined;
 		this._banner?.destroy();
 		this._banner = undefined;
+		this.closeConflictNote();
 		this._forkNotice?.destroy();
 		this._forkNotice = undefined;
 		this._offAccessStatus?.();
@@ -2145,6 +2220,7 @@ export class LiveViewManager {
 			userAttributionPlugin,
 			InvalidLinkPlugin,
 			accessModeCompartment.of([]),
+			conflictNoteExtension,
 		]);
 		this.workspace.updateOptions();
 	}
