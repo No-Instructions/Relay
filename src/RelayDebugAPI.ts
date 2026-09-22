@@ -2035,13 +2035,14 @@ export class RelayDebugAPI {
     return this.hsmInternals(hsm)._statePath || 'unknown';
   }
 
-  /** The session of the note at `path` with a conflict open in it. */
+  /** The session of the note at `path` with a conflict open in it. The path may carry the leading slash the other debug calls take. */
   private conflictNoteSession(path: string) {
+    const vaultPath = path.replace(/^\/+/, '');
     let found: ReturnType<typeof sessionOf> | undefined;
     this.requirePlugin().app.workspace.iterateAllLeaves((leaf) => {
       if (found) return;
       const view = leaf.view;
-      if (view instanceof MarkdownView && view.file?.path === path) found = sessionOf(view);
+      if (view instanceof MarkdownView && view.file?.path === vaultPath) found = sessionOf(view);
     });
     if (!found) throw new Error(`No conflict is open in the note: ${path}`);
     return found;

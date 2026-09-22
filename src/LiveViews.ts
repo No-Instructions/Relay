@@ -567,6 +567,8 @@ export class RelayCanvasView implements S3View {
 /** Per-view CM6 compartment: empty for write access, non-editable for read. */
 export { accessModeCompartment } from "./readOnlyEditorState";
 
+let liveViewCount = 0;
+
 export class LiveView<ViewType extends TextFileView>
 	extends HasLogging
 	implements S3View
@@ -583,6 +585,8 @@ export class LiveView<ViewType extends TextFileView>
 	private _parent: LiveViewManager;
 	private _banner?: Banner;
 	private _conflictSession?: ConflictNoteSession;
+	/** Tells one live view from another in the log. */
+	private readonly viewSeq = ++liveViewCount;
 	private _forkNotice?: Banner;
 	private _readOnlyBanner?: Banner;
 	private _offAccessStatus?: () => void;
@@ -672,7 +676,7 @@ export class LiveView<ViewType extends TextFileView>
 		}
 
 		const isConflict = statePath.includes("conflict");
-		if (isConflict && !this._banner && !this._conflictSession?.shown) {
+		if (isConflict && !this._banner && !this._conflictSession?.keepsView) {
 			this.log("[LiveView] HSM entered conflict state, showing merge banner");
 			this.mergeBanner();
 		} else if (!isConflict && (this._banner || this._conflictSession)) {
@@ -728,7 +732,17 @@ export class LiveView<ViewType extends TextFileView>
 		const conflict = hsm?.getConflict();
 		const cm = (this.view.editor as { cm?: EditorView } | undefined)?.cm;
 		if (!hsm || !conflict || !cm) return false;
-		if (this._conflictSession?.shown) return true;
+		if (this._conflictSession?.keepsView) return true;
+		// A session another owner of this view opened is this view's session too.
+		const existing = sessionOf(this.view);
+		if (existing?.keepsView) {
+			this._conflictSession = existing;
+			return true;
+		}
+		// A session the editor no longer shows, though it did not end, lost its
+		// state to a rebuild of the editor's configuration; it is closed and replaced.
+		const before = this._conflictSession ? (this._conflictSession.endedBy ?? "a rebuilt editor state") : null;
+		this.log(`[LiveView] opening conflict ${conflict.id} in the note (${before ? `after a session ended by ${before}` : "no session yet"}; view ${this.viewSeq})`);
 		this._conflictSession = openSession(this.view, cm, hsm, conflict, {
 			collaborator: this.collaboratorName(),
 			report: () => {

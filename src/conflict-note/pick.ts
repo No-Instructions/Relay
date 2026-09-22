@@ -91,13 +91,18 @@ function split(text: string, prevOpen: boolean): { rows: string[]; before: boole
 	return { rows: t.split("\n"), before, after };
 }
 
+/** How the rows of a block are ordered: a pick shows what a merged edit did before the lines as they were; a diff shows the note's lines before the change's in every block. */
+export type Layout = "pick" | "diff";
+
 /**
  * Lay the conflict out as a document. Every row of every candidate is a real
- * line, so the note renders them as it renders any line. A removal, a side
- * with no text, shows the lines it removes: the block's base, or where there
- * is no base the other side's lines.
+ * line, so the note renders them as it renders any line. A disagreement shows
+ * ours's rows then theirs's; a merged edit shows what the edit did, then the
+ * lines as they were, except in a diff, where the note's lines come first in
+ * every block. A removal, a side with no text, shows the lines it removes:
+ * the block's base, or where there is no base the other side's lines.
  */
-export function buildPickDocument(conflict: ConflictValue): PickDocument {
+export function buildPickDocument(conflict: ConflictValue, layout: Layout = "pick"): PickDocument {
 	const out: string[] = [];
 	const blocks: NoteBlock[] = [];
 	const pos = () => out.reduce((n, l) => n + l.length + 1, 0);
@@ -134,18 +139,20 @@ export function buildPickDocument(conflict: ConflictValue): PickDocument {
 			const rows = put(own === "" ? fallbacks[s] : own, prevOpen);
 			return own === "" ? { ...rows, before: false, after: false, removal: true } : { ...rows, removal: false };
 		};
-		const ours = candidate("ours");
-		const theirs = candidate("theirs");
-		const shown = texts.ours === "" ? theirs : ours;
-		prevOpen = !shown.after;
 		const side = block.kind === "ours-only" ? "ours" : block.kind === "theirs-only" ? "theirs" : null;
+		const first: Side = layout === "diff" ? "ours" : (side ?? "ours");
+		const upper = candidate(first);
+		const lower = candidate(otherSide(first));
+		const rows = first === "ours" ? { ours: upper, theirs: lower } : { ours: lower, theirs: upper };
+		const shown = texts.ours === "" ? rows.theirs : rows.ours;
+		prevOpen = !shown.after;
 		blocks.push({
 			id: block.id,
 			kind: block.kind,
-			from: ours.from,
-			to: theirs.to,
+			from: upper.from,
+			to: lower.to,
 			text: null,
-			rows: { ours, theirs },
+			rows,
 			resolved: false,
 			take: { ours: side === "ours", theirs: side === "theirs" },
 		});

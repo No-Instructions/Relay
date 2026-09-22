@@ -46,6 +46,8 @@ export class ConflictNoteSession {
 	private original: string | null = null;
 	private conflictId: string;
 	private closed = false;
+	/** How the session ended, once it has. */
+	endedBy: "done" | "close" | "unload" | "lost" | null = null;
 
 	constructor(
 		private readonly view: MarkdownView,
@@ -62,6 +64,16 @@ export class ConflictNoteSession {
 		return !this.closed && this.cm.state.field(conflictField, false) !== null && this.cm.state.field(conflictField, false)?.conflictId === this.conflictId;
 	}
 
+	/**
+	 * Whether the view is this session's for the conflict it opened on: while
+	 * the pick document is shown, and after Done or an unload, when the machine
+	 * is still settling and no second session should open on the same conflict.
+	 * A session whose layout was replaced under it leaves the view free.
+	 */
+	get keepsView(): boolean {
+		return this.shown || (this.closed && this.endedBy !== "lost");
+	}
+
 	/** Every dispatch of the session is sync-origin and out of the editor's history. */
 	private static annotations(view: EditorView) {
 		return [ySyncAnnotation.of(view), Transaction.addToHistory.of(false), Transaction.remote.of(true)];
@@ -69,8 +81,8 @@ export class ConflictNoteSession {
 
 	/** Build the pick document for the conflict and put it in the editor, carrying over the decisions given. */
 	private install(conflict: ConflictValue, carried: ReadonlyMap<string, BlockDecision>) {
-		const pick = buildPickDocument(conflict);
 		const { view, copy } = situationCopy(conflict.situation, { ours: conflict.ours.source, theirs: conflict.theirs.source }, this.options.collaborator);
+		const pick = buildPickDocument(conflict, view);
 		const state: NoteState = {
 			conflictId: conflict.id,
 			situation: conflict.situation,
@@ -90,7 +102,8 @@ export class ConflictNoteSession {
 			this.holdSaves();
 		}
 		this.cm.dispatch({
-			changes: { from: 0, to: current.length, insert: pick.doc },
+			// Keep history positions attached to surviving text in the layout.
+			changes: this.hsm.computeDiffChanges(current, pick.doc),
 			effects: setConflict.of(state),
 			annotations: ConflictNoteSession.annotations(this.cm),
 		});
@@ -178,9 +191,12 @@ export class ConflictNoteSession {
 			this.install(current, decisions);
 			return;
 		}
+		this.endedBy = "done";
 		this.leave(text);
 		void this.hsm.resolveConflict(current.id, text).catch((error: unknown) => {
 			log(`${this.view.file?.path ?? "?"}: resolve refused: ${error instanceof Error ? error.message : String(error)}`);
+			// The conflict is still held: the view is free for a session on it.
+			this.endedBy = "lost";
 		});
 	}
 
@@ -191,6 +207,7 @@ export class ConflictNoteSession {
 	private lost() {
 		if (this.closed) return;
 		log(`${this.view.file?.path ?? "?"}: the document was replaced under the conflict`);
+		this.endedBy = "lost";
 		this.closed = true;
 		this.releaseSaves();
 		if (sessions.get(this.view) === this) sessions.delete(this.view);
@@ -202,6 +219,7 @@ export class ConflictNoteSession {
 	 */
 	close() {
 		if (this.closed) return;
+		this.endedBy = "close";
 		const text = this.hsm.getLocalDoc()?.getText("contents").toString() ?? this.original ?? this.cm.state.doc.toString();
 		this.leave(text);
 	}
@@ -213,6 +231,7 @@ export class ConflictNoteSession {
 	 */
 	restoreForUnload() {
 		if (this.closed) return;
+		this.endedBy = "unload";
 		this.leave(this.original ?? this.cm.state.doc.toString());
 	}
 
@@ -225,7 +244,8 @@ export class ConflictNoteSession {
 		// A change of text is an editor change like any other: Obsidian asks for a save as it does for every edit.
 		if (current !== text || shown) {
 			this.cm.dispatch({
-				changes: current !== text ? { from: 0, to: current.length, insert: text } : undefined,
+				// Undo of an edit within a kept row must still target that row.
+				changes: this.hsm.computeDiffChanges(current, text),
 				effects: setConflict.of(null),
 				annotations: ConflictNoteSession.annotations(this.cm),
 			});
