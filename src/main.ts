@@ -77,6 +77,7 @@ import {
 	openSyncStatusView,
 } from "./ui/SyncStatusView";
 import { type SettingsTree, NamespacedSettings, Settings } from "./SettingsStorage";
+import { ensureLinkUpdatesOn } from "./linkUpdates";
 import { ObsidianFileAdapter, ObsidianNotifier } from "./debugObsididan";
 import { BugReportModal } from "./ui/BugReportModal";
 import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
@@ -601,6 +602,11 @@ export default class Live extends Plugin {
 
 		this.settings = new Settings<RelaySettings>(this, DEFAULT_SETTINGS);
 		await this.settings.load();
+
+		// Enable the stored link-update preference only when the vault never
+		// chose. An explicit opt-out still governs this user's own renames;
+		// peer renames temporarily answer the preference as on to repair links.
+		await ensureLinkUpdatesOn(this.app.vault);
 
 		const settingsTree = this.settings as unknown as SettingsTree;
 		this.featureSettings = new NamespacedSettings(settingsTree, "(enable*)");
