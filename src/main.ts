@@ -32,6 +32,9 @@ import {
 import { SharedFolders } from "./SharedFolder";
 import { FolderNavigationDecorations } from "./ui/FolderNav";
 import { MetadataHealthSidebarNoticeMount } from "./ui/MetadataHealthSidebarNotice";
+import { SidebarNoticeMount } from "./ui/SidebarNoticeMount";
+import { mountComponent } from "./ui/svelteHost.svelte";
+import NetworkHealthNotice from "./components/NetworkHealthNotice.svelte";
 import { ResourceMeterMount } from "./ui/ResourceMeter";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager, type LoginSettings } from "./LoginManager";
@@ -173,6 +176,7 @@ export default class Live extends Plugin {
 	backgroundSync!: BackgroundSync;
 	folderNavDecorations!: FolderNavigationDecorations;
 	private metadataHealthSidebarNotice: MetadataHealthSidebarNoticeMount | null = null;
+	private networkHealthSidebarNotice: SidebarNoticeMount | null = null;
 	private resourceMeter: ResourceMeterMount | null = null;
 	relayManager!: RelayManager;
 	deviceManager!: DeviceManager;
@@ -923,6 +927,13 @@ export default class Live extends Plugin {
 		);
 
 		this.networkStatus = new NetworkStatus(this.timeProvider, HEALTH_URL);
+		if (!Platform.isIosApp) {
+			this.networkHealthSidebarNotice = new SidebarNoticeMount(
+				this.app.workspace,
+				"system3-network-health-slot",
+				(target, anchor) => mountComponent(NetworkHealthNotice, { target, anchor, props: { networkStatus: this.networkStatus } }),
+			);
+		}
 
 		this.backgroundSync = new BackgroundSync(
 			this.loginManager,
@@ -1958,6 +1969,10 @@ export default class Live extends Plugin {
 		teardownStep("metadataHealthFeature.destroy", () => {
 			this.destroyMetadataHealthFeature();
 		});
+		teardownStep("networkHealthSidebarNotice.destroy", () => {
+			this.networkHealthSidebarNotice?.destroy();
+		});
+		this.networkHealthSidebarNotice = null;
 
 		teardownStep("folderNavDecorations.destroy", () => {
 			this.folderNavDecorations?.destroy();
