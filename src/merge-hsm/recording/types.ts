@@ -152,8 +152,8 @@ export type SerializableEvent =
   | { type: 'PROVIDER_SYNCED' }
   | { type: 'CONNECTED' }
   | { type: 'DISCONNECTED' }
-  | { type: 'RESOLVE'; contents: string }
-  | { type: 'RESOLVE_HUNK'; hunkId: string; resolution: 'ours' | 'theirs' | 'both' | 'neither' }
+  | { type: 'RESOLVE'; conflictId?: string; contents: string }
+  | { type: 'DECIDE_BLOCK'; blockId: string; decision: 'ours' | 'theirs' | 'both' | 'neither' }
   | { type: 'DISMISS_CONFLICT' }
   | { type: 'OPEN_DIFF_VIEW' }
   | { type: 'CANCEL' }
@@ -173,7 +173,7 @@ export type SerializableEvent =
     }
   | { type: 'PERSISTENCE_SYNCED'; hasContent: boolean }
   | { type: 'MERGE_SUCCESS'; newLCA: SerializableLCA }
-  | { type: 'MERGE_CONFLICT'; base: string; ours: string; theirs: string }
+  | { type: 'MERGE_CONFLICT'; situation: 'both-edited' | 'no-baseline' | 'drift' | 'merge-failed'; base: string | null; ours: { source: 'editor' | 'file' | 'record' | 'remote'; text: string }; theirs: { source: 'editor' | 'file' | 'record' | 'remote'; text: string } }
   | { type: 'REMOTE_DOC_UPDATED' }
   | { type: 'ERROR'; error: string } // error message
   | { type: 'IDLE_MERGE_COMPLETE'; success: true; source: string; newLCA: SerializableLCA }
