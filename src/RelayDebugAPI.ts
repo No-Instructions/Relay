@@ -499,8 +499,8 @@ export interface RelayDebugGlobal {
   conflictNote: (path: string) => SessionSnapshot;
   /** Decide one block of the conflict shown in the note; `blockId` may be any prefix that names one block. */
   conflictNoteDecide: (path: string, blockId: string, decision: BlockDecision) => SessionSnapshot;
-  /** Press Done on the conflict shown in the note: the outcome is applied and the conflict resolved. */
-  conflictNoteDone: (path: string) => Promise<string>;
+  /** Press Done; return the settled state or the session when the conflict was rebuilt or closed. */
+  conflictNoteDone: (path: string) => Promise<string | { status: 'rebuilt' | 'closed'; session: SessionSnapshot }>;
   /**
    * Dispatch an `OPEN_DIFF_VIEW` event — the state-machine-level
    * equivalent of the user clicking the conflict banner. Transitions
@@ -756,7 +756,8 @@ export class RelayDebugAPI {
       },
       conflictNoteDone: async (path) => {
         const session = this.conflictNoteSession(path);
-        session.done();
+        const status = session.done();
+        if (status !== 'resolving') return { status, session: session.snapshot() };
         return this.awaitHsmState(path, 'active.tracking', 5000);
       },
       openDiffView: async (path) => this.sendConflictEvent(path, { type: 'OPEN_DIFF_VIEW' }),

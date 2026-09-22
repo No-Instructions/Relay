@@ -93,22 +93,22 @@ export function situationCopy(
 
 const STORE = "relay-conflict-box-collapsed";
 
-const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: string) => {
-	const e = document.createElement(tag);
+const el = <K extends keyof HTMLElementTagNameMap>(doc: Document, tag: K, cls: string, text?: string) => {
+	const e = doc.createElement(tag);
 	e.className = cls;
 	if (text !== undefined) e.textContent = text;
 	return e;
 };
 
 /** The box's text, with a phrase in double square brackets as a link: the offer to send a bug report, which says so once sent. */
-function linked(text: string, report: (() => void) | undefined) {
-	const p = el("p", "relay-conflict-text");
+function linked(doc: Document, text: string, report: (() => void) | undefined) {
+	const p = el(doc, "p", "relay-conflict-text");
 	for (const part of text.split(/(\[\[[^\]]+\]\])/)) {
 		if (!part.startsWith("[[")) {
 			p.append(part);
 			continue;
 		}
-		const a = el("a", "relay-conflict-link", part.slice(2, -2));
+		const a = el(doc, "a", "relay-conflict-link", part.slice(2, -2));
 		a.setAttribute("role", "button");
 		a.tabIndex = 0;
 		a.addEventListener("click", () => {
@@ -122,15 +122,15 @@ function linked(text: string, report: (() => void) | undefined) {
 }
 
 /** Obsidian's toggle switch with its label beside it. */
-function toggle(label: string, on: boolean, onChange: (on: boolean) => void) {
-	const wrap = el("label", "relay-conflict-toggle");
-	const box = el("div", "checkbox-container");
+function toggle(doc: Document, label: string, on: boolean, onChange: (on: boolean) => void) {
+	const wrap = el(doc, "label", "relay-conflict-toggle");
+	const box = el(doc, "div", "checkbox-container");
 	box.classList.toggle("is-enabled", on);
-	const input = document.createElement("input");
+	const input = doc.createElement("input");
 	input.type = "checkbox";
 	input.checked = on;
 	box.append(input);
-	wrap.append(box, el("span", "", label));
+	wrap.append(box, el(doc, "span", "", label));
 	input.addEventListener("change", () => {
 		box.classList.toggle("is-enabled", input.checked);
 		onChange(input.checked);
@@ -140,20 +140,25 @@ function toggle(label: string, on: boolean, onChange: (on: boolean) => void) {
 
 export const situationBox = ViewPlugin.fromClass(
 	class {
-		box = el("div", "relay-conflict-box");
-		head = el("div", "relay-conflict-head");
-		body = el("div", "relay-conflict-body");
+		box: HTMLDivElement;
+		head: HTMLDivElement;
+		body: HTMLDivElement;
 		total = 0;
+		conflictId: string | null = null;
 		host: HTMLElement | null = null;
 		/** The last decision was a whole-file choice: that document is the answer, and Done is the next step. */
 		whole: Side | null = null;
 		deciding = false;
 		constructor(readonly view: EditorView) {
+			const doc = view.dom.ownerDocument;
+			this.box = el(doc, "div", "relay-conflict-box");
+			this.head = el(doc, "div", "relay-conflict-head");
+			this.body = el(doc, "div", "relay-conflict-body");
 			this.box.setAttribute("role", "status");
-			const chevron = el("span", "relay-conflict-chevron");
+			const chevron = el(doc, "span", "relay-conflict-chevron");
 			chevron.innerHTML =
 				'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
-			this.head.append(chevron, el("div", "relay-conflict-title"), el("span", "relay-conflict-status"));
+			this.head.append(chevron, el(doc, "div", "relay-conflict-title"), el(doc, "span", "relay-conflict-status"));
 			this.head.addEventListener("click", () => {
 				const on = this.box.classList.toggle("is-collapsed");
 				localStorage.setItem(STORE, on ? "1" : "0");
@@ -184,7 +189,14 @@ export const situationBox = ViewPlugin.fromClass(
 			this.render(u.state);
 		}
 		render(state: EditorState) {
+			const doc = this.view.dom.ownerDocument;
 			const s = state.field(conflictField, false) ?? null;
+			const conflictId = s?.conflictId ?? null;
+			if (conflictId !== this.conflictId) {
+				this.conflictId = conflictId;
+				this.total = 0;
+				this.whole = null;
+			}
 			this.mount(!!s);
 			if (!s) {
 				this.total = 0;
@@ -201,13 +213,13 @@ export const situationBox = ViewPlugin.fromClass(
 			title.textContent = s.copy.title;
 			const changes = diffBlocks(s).length;
 			status.textContent = diff ? `${changes} change${changes === 1 ? "" : "s"}` : `${left} of ${this.total} conflict${this.total === 1 ? "" : "s"} to resolve`;
-			this.body.append(linked(s.copy.text, s.session.report));
-			if (!diff) this.body.append(el("p", "relay-conflict-hint", "Choose for each conflict below, or for the whole file:"));
-			const options = el("div", "relay-conflict-options");
+			this.body.append(linked(doc, s.copy.text, s.session.report));
+			if (!diff) this.body.append(el(doc, "p", "relay-conflict-hint", "Choose for each conflict below, or for the whole file:"));
+			const options = el(doc, "div", "relay-conflict-options");
 			for (const side of ["ours", "theirs"] as const) {
 				// Taking what came in is the expected answer, so until something is decided that button carries the call to action.
 				const cta = side === "theirs" && !settled && s.situation !== "drift" && s.situation !== "merge-failed";
-				const b = el("button", `${this.whole === side ? "is-chosen" : ""}${cta || (diff && side === "theirs") ? " mod-cta" : ""}`.trim(), s.copy[side]);
+				const b = el(doc, "button", `${this.whole === side ? "is-chosen" : ""}${cta || (diff && side === "theirs") ? " mod-cta" : ""}`.trim(), s.copy[side]);
 				b.type = "button";
 				if (diff) {
 					b.addEventListener("click", () => {
@@ -240,7 +252,7 @@ export const situationBox = ViewPlugin.fromClass(
 			}
 			if (settled && !diff) {
 				// Nothing left to decide: Done writes the note as decided.
-				const done = el("button", "mod-cta", "Done");
+				const done = el(doc, "button", "mod-cta", "Done");
 				done.type = "button";
 				done.addEventListener("click", () => this.view.state.field(conflictField)?.session.done());
 				options.append(done);
@@ -248,7 +260,7 @@ export const situationBox = ViewPlugin.fromClass(
 			this.body.append(options);
 			// Off, a merged edit is just the note's text; on, it is a candidate like any other.
 			if (!diff && s.blocks.some(isMerged)) {
-				this.body.append(toggle("Review automatically merged lines", s.review, (on) => this.view.dispatch({ effects: setReview.of(on) })));
+				this.body.append(toggle(doc, "Review automatically merged lines", s.review, (on) => this.view.dispatch({ effects: setReview.of(on) })));
 			}
 		}
 		destroy() {

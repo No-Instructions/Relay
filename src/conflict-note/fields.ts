@@ -6,7 +6,7 @@
  * decision can still be changed, and undo takes decisions back like edits.
  */
 
-import { StateEffect, StateField, type Transaction } from "@codemirror/state";
+import { StateEffect, StateField, type Text, type Transaction } from "@codemirror/state";
 import { invertedEffects } from "@codemirror/commands";
 import type { ConflictSituation, ConflictSource } from "../merge-hsm/conflictValue";
 import { type Candidate, type Decision, type NoteBlock, type Rows, type Side, editingSide, isDisagreement, isMerged, undecided } from "./pick";
@@ -29,7 +29,9 @@ export interface Copy {
 export interface Session {
 	done(): void;
 	/** The document was replaced under the conflict by something other than the session. */
-	lost(): void;
+	lost(replacement?: Text): void;
+	/** Track the current layout text without serializing it on every edit. */
+	changed?(doc: Text): void;
 	report?(): void;
 }
 

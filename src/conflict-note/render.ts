@@ -127,8 +127,8 @@ function diffRows(b: NoteBlock, s: NoteState, doc: EditorState["doc"], items: It
 	}
 }
 
-const el = (cls: string, text = "") => {
-	const e = document.createElement("div");
+const el = (doc: Document, cls: string, text = "") => {
+	const e = doc.createElement("div");
 	e.className = cls;
 	e.textContent = text;
 	return e;
@@ -184,7 +184,7 @@ const pills = ViewPlugin.fromClass(
 		layer: HTMLElement;
 		pills = new Map<string, HTMLElement>();
 		constructor(readonly view: EditorView) {
-			this.layer = el("relay-conflict-marks");
+			this.layer = el(this.view.dom.ownerDocument, "relay-conflict-marks");
 			view.scrollDOM.append(this.layer);
 			this.schedule();
 		}
@@ -246,7 +246,7 @@ const pills = ViewPlugin.fromClass(
 				seen.add(p.b.id);
 				let pill = this.pills.get(p.b.id);
 				if (!pill) {
-					pill = el("relay-conflict-pill");
+					pill = el(this.view.dom.ownerDocument, "relay-conflict-pill");
 					this.layer.append(pill);
 					this.pills.set(p.b.id, pill);
 					this.wire(pill, p.b.id);
@@ -254,17 +254,17 @@ const pills = ViewPlugin.fromClass(
 				const { near, tone, solid, far, plus } = p.state;
 				pill.className = `relay-conflict-pill is-${tone}${solid ? " is-solid" : ""}${far ? " is-both" : ""}`;
 				pill.replaceChildren();
-				const mark = el("relay-conflict-pill-mark");
+				const mark = el(this.view.dom.ownerDocument, "relay-conflict-pill-mark");
 				mark.innerHTML = signFor(p.b, near);
 				mark.dataset.side = near;
 				pill.append(mark);
 				if (far) {
-					const f = el("relay-conflict-pill-mark is-far");
+					const f = el(this.view.dom.ownerDocument, "relay-conflict-pill-mark is-far");
 					f.innerHTML = signFor(p.b, "theirs");
 					f.dataset.side = "theirs";
 					pill.append(f);
 				} else if (plus) {
-					const pl = el(`relay-conflict-pill-plus is-${plus}`, "+");
+					const pl = el(this.view.dom.ownerDocument, `relay-conflict-pill-plus is-${plus}`, "+");
 					pl.dataset.side = plus;
 					pl.setAttribute("aria-label", plus === "ours" ? "Also take mine" : "Also take theirs");
 					pill.append(pl);

@@ -599,6 +599,7 @@ export class LiveView<ViewType extends TextFileView>
 	_tracking: boolean;
 	private _awarenessPlugin?: AwarenessViewPlugin;
 	private _hsmStateUnsubscribe?: () => void;
+	private _accessModeBannersScheduled = false;
 	private _hasLock = false;
 	private _released = false;
 	private readonly _fallbackViewer = Symbol("live-view-viewer");
@@ -664,7 +665,20 @@ export class LiveView<ViewType extends TextFileView>
 		return statePath === "active.reading" || statePath === "active.reading.repairing";
 	}
 
-	private reconcileAccessModeBanners(statePath: string): void {
+	private reconcileAccessModeBanners(): void {
+		if (this._released || this._leavingMarkdownFile || this._accessModeBannersScheduled) return;
+		this._accessModeBannersScheduled = true;
+		// Machine notifications can arrive inside a CodeMirror update. Session
+		// installation and removal must wait until that update has finished.
+		queueMicrotask(() => {
+			this._accessModeBannersScheduled = false;
+			if (this._released || this._leavingMarkdownFile) return;
+			const hsm = this.document.hsm;
+			if (hsm) this.updateAccessModeBanners(hsm.statePath);
+		});
+	}
+
+	private updateAccessModeBanners(statePath: string): void {
 		const showForkNotice =
 			statePath.startsWith("active.reading") &&
 			(this.document.hsm?.hasFork() ?? false);
@@ -728,6 +742,7 @@ export class LiveView<ViewType extends TextFileView>
 	 */
 	private openConflictNote(): boolean {
 		if (!flags().enableInNoteConflicts || !(this.view instanceof MarkdownView) || this.reading) return false;
+		if (this.view.getMode() !== "source") return false;
 		const hsm = this.document.hsm;
 		const conflict = hsm?.getConflict();
 		const cm = (this.view.editor as { cm?: EditorView } | undefined)?.cm;
@@ -967,7 +982,7 @@ export class LiveView<ViewType extends TextFileView>
 			// Subscribe to HSM state changes to update tracking icon and conflict banner
 			const hsm = this.document.hsm;
 			if (hsm && !this._hsmStateUnsubscribe) {
-				this._hsmStateUnsubscribe = hsm.stateChanges.subscribe((state) => {
+				this._hsmStateUnsubscribe = hsm.stateChanges.subscribe(() => {
 					if (!this.document.sharedFolder) return;
 					const currentFlags = flags();
 					this._viewActions?.set({
@@ -978,10 +993,10 @@ export class LiveView<ViewType extends TextFileView>
 						pendingOutbound: this.document.hsm?.pendingOutbound ?? 0,
 						pendingInbound: this.document.hsm?.pendingInbound ?? 0,
 					});
-					this.reconcileAccessModeBanners(state.statePath);
+					this.reconcileAccessModeBanners();
 					this.applyEditableState();
 				});
-				this.reconcileAccessModeBanners(hsm.statePath);
+				this.reconcileAccessModeBanners();
 			}
 			this._viewActions.set({
 				view: this,

@@ -5,7 +5,7 @@
  * conflict is open: it never reaches the disk or the record.
  */
 
-import { Transaction, type EditorState } from "@codemirror/state";
+import { Transaction, type EditorState, type Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import type { MarkdownView } from "obsidian";
 import type { MergeHSM } from "../merge-hsm/MergeHSM";
@@ -39,11 +39,16 @@ export interface SessionSnapshot {
 }
 
 const log = curryLog("[ConflictNote]", "log");
+const editorSessions = new WeakMap<EditorView, ConflictNoteSession>();
 
 export class ConflictNoteSession {
+	/** Open pick documents that must leave together before the machine resolves. */
+	private static readonly active = new WeakMap<MergeHSM, Set<ConflictNoteSession>>();
 	private unpatch: (() => void) | null = null;
 	/** The text the editor held before the pick document, restored when the note unloads. */
 	private original: string | null = null;
+	/** Latest pick text, including edits, recognizable after a state rebuild. */
+	private installed: Text | null = null;
 	private conflictId: string;
 	private closed = false;
 	/** How the session ended, once it has. */
@@ -55,9 +60,20 @@ export class ConflictNoteSession {
 		private readonly hsm: MergeHSM,
 		conflict: ConflictValue,
 		private readonly options: SessionOptions,
+		previous?: ConflictNoteSession,
 	) {
 		this.conflictId = conflict.id;
+		if (previous?.endedBy === "lost" && previous.hsm === hsm && previous.conflictId === conflict.id) {
+			this.original = previous.original;
+		}
 		this.install(conflict, new Map());
+		let active = ConflictNoteSession.active.get(hsm);
+		if (!active) {
+			active = new Set();
+			ConflictNoteSession.active.set(hsm, active);
+		}
+		active.add(this);
+		editorSessions.set(cm, this);
 	}
 
 	get shown(): boolean {
@@ -94,19 +110,23 @@ export class ConflictNoteSession {
 				return d ? { ...b, ...wholeDecision(d) } : b;
 			}),
 			review: false,
-			session: { done: () => this.done(), lost: () => this.lost(), report: this.options.report },
+			session: {
+				done: () => this.done(), lost: (replacement) => this.lost(replacement),
+				changed: (doc) => { this.installed = doc; }, report: this.options.report,
+			},
 		};
 		const current = this.cm.state.doc.toString();
 		if (this.original === null) {
 			this.original = current;
-			this.holdSaves();
 		}
+		if (!this.unpatch) this.holdSaves();
 		this.cm.dispatch({
 			// Keep history positions attached to surviving text in the layout.
 			changes: this.hsm.computeDiffChanges(current, pick.doc),
 			effects: setConflict.of(state),
 			annotations: ConflictNoteSession.annotations(this.cm),
 		});
+		this.installed = this.cm.state.doc;
 		log(`${this.view.file?.path ?? "?"}: pick document shown for ${conflict.id} (${view}, ${pick.blocks.length} blocks)`);
 	}
 
@@ -163,16 +183,16 @@ export class ConflictNoteSession {
 	}
 
 	/**
-	 * Done: the outcome replaces the pick document in the editor, saves are
-	 * let through again, and the machine is told. The editor then holds the
-	 * outcome as any edit, and Obsidian saves it as it saves any edit. A
+	 * Done: the outcome replaces this machine's pick documents in every pane,
+	 * saves are let through again, and the machine is told. Each editor holds
+	 * the same outcome before the machine computes its shared editor diff. A
 	 * conflict the machine no longer holds is refused: the note is rebuilt
 	 * from the conflict it holds now, keeping the decisions whose blocks survive.
 	 */
-	done() {
-		if (this.closed) return;
+	done(): "resolving" | "rebuilt" | "closed" {
+		if (this.closed) return "closed";
 		const s = this.cm.state.field(conflictField, false);
-		if (!s) return;
+		if (!s) return "closed";
 		const text = this.outcome();
 		const decisions = new Map<string, BlockDecision>();
 		for (const b of s.blocks) {
@@ -184,43 +204,62 @@ export class ConflictNoteSession {
 			if (!current) {
 				log(`${this.view.file?.path ?? "?"}: the conflict is gone; leaving the note as the machine has it`);
 				this.close();
-				return;
+				return "closed";
 			}
 			log(`${this.view.file?.path ?? "?"}: conflict ${this.conflictId} is stale, rebuilding from ${current.id}`);
 			this.conflictId = current.id;
 			this.install(current, decisions);
-			return;
+			return "rebuilt";
 		}
-		this.endedBy = "done";
-		this.leave(text);
+		const active = [...(ConflictNoteSession.active.get(this.hsm) ?? [this])];
+		for (const session of active) {
+			session.endedBy = "done";
+			session.leave(text);
+		}
+		// Sync-origin dispatches do not update the machine's editor cache. Its
+		// reader may belong to a closed or reused pane, so record what we installed.
+		this.hsm.captureEditorText(text);
 		void this.hsm.resolveConflict(current.id, text).catch((error: unknown) => {
 			log(`${this.view.file?.path ?? "?"}: resolve refused: ${error instanceof Error ? error.message : String(error)}`);
 			// The conflict is still held: the view is free for a session on it.
-			this.endedBy = "lost";
+			for (const session of active) session.endedBy = "lost";
 		});
+		return "resolving";
 	}
 
 	/**
 	 * Something other than the session replaced the document: the layout is
 	 * gone, so the session ends and the editor keeps what it was given.
 	 */
-	private lost() {
+	private lost(replacement?: Text) {
 		if (this.closed) return;
+		if (replacement) this.original = replacement.toString();
 		log(`${this.view.file?.path ?? "?"}: the document was replaced under the conflict`);
 		this.endedBy = "lost";
 		this.closed = true;
+		ConflictNoteSession.active.get(this.hsm)?.delete(this);
+		if (editorSessions.get(this.cm) === this) editorSessions.delete(this.cm);
 		this.releaseSaves();
-		if (sessions.get(this.view) === this) sessions.delete(this.view);
+		// Retain the saved baseline for a new layout of the same conflict:
+		// a whole-document edit may still contain the temporary pick text.
+	}
+
+	/** Follow edits made after a configuration rebuild, before the layout reopens. */
+	updateAfterRebuild(before: Text, after: Text, populated: boolean) {
+		if (this.closed) return;
+		if (populated) this.lost(after);
+		else if (this.installed?.eq(before)) this.installed = after;
 	}
 
 	/**
-	 * The conflict went away without Done: the note takes the text the machine
-	 * has for it, so the editor and the record agree again.
+	 * A released view must preserve its editor text while the conflict is
+	 * still held. Once the conflict is gone, it takes the settled record text.
 	 */
 	close() {
 		if (this.closed) return;
 		this.endedBy = "close";
-		const text = this.hsm.getLocalDoc()?.getText("contents").toString() ?? this.original ?? this.cm.state.doc.toString();
+		const text = (this.hsm.getConflict() ? this.original : this.hsm.getLocalDoc()?.getText("contents").toString())
+			?? this.original ?? this.cm.state.doc.toString();
 		this.leave(text);
 	}
 
@@ -237,19 +276,22 @@ export class ConflictNoteSession {
 
 	/** Put `text` in the editor as an ordinary document, saves allowed, and end the session. */
 	private leave(text: string) {
+		const shown = this.shown;
 		this.closed = true;
+		ConflictNoteSession.active.get(this.hsm)?.delete(this);
+		if (editorSessions.get(this.cm) === this) editorSessions.delete(this.cm);
 		this.releaseSaves();
+		// A configuration rebuild drops the field but keeps the layout text.
+		// A host load replaces that text and must survive this session's retirement.
+		if (!shown && !this.installed?.eq(this.cm.state.doc)) return;
 		const current = this.cm.state.doc.toString();
-		const shown = this.cm.state.field(conflictField, false) !== null;
 		// A change of text is an editor change like any other: Obsidian asks for a save as it does for every edit.
-		if (current !== text || shown) {
-			this.cm.dispatch({
-				// Undo of an edit within a kept row must still target that row.
-				changes: this.hsm.computeDiffChanges(current, text),
-				effects: setConflict.of(null),
-				annotations: ConflictNoteSession.annotations(this.cm),
-			});
-		}
+		this.cm.dispatch({
+			// Undo of an edit within a kept row must still target that row.
+			changes: this.hsm.computeDiffChanges(current, text),
+			effects: setConflict.of(null),
+			annotations: ConflictNoteSession.annotations(this.cm),
+		});
 	}
 
 	/** Whether the document the session laid out is still the one in the editor. */
@@ -258,16 +300,22 @@ export class ConflictNoteSession {
 	}
 }
 
-/** The open sessions, by view, so the unload hook can restore a note before Obsidian reads it. */
+/** The latest sessions, by view, retaining the saved text across a lost layout. */
 const sessions = new WeakMap<MarkdownView, ConflictNoteSession>();
+
+/** A session survives replacement of the editor's state until it is retired. */
+export function sessionOfEditor(view: EditorView): ConflictNoteSession | undefined {
+	return editorSessions.get(view);
+}
 
 export function sessionOf(view: MarkdownView): ConflictNoteSession | undefined {
 	return sessions.get(view);
 }
 
 export function openSession(view: MarkdownView, cm: EditorView, hsm: MergeHSM, conflict: ConflictValue, options: SessionOptions): ConflictNoteSession {
-	sessions.get(view)?.close();
-	const session = new ConflictNoteSession(view, cm, hsm, conflict, options);
+	const previous = sessions.get(view);
+	previous?.close();
+	const session = new ConflictNoteSession(view, cm, hsm, conflict, options, previous);
 	sessions.set(view, session);
 	return session;
 }
