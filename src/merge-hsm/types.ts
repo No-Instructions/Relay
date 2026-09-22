@@ -447,13 +447,16 @@ export interface SetModeIdleColdEvent {
 // User Events
 export interface ResolveEvent {
 	type: "RESOLVE";
+	/** The conflict the contents answer. An id that is not the held conflict's is refused. */
+	conflictId?: string;
 	contents: string;
 }
 
-export interface ResolveHunkEvent {
-	type: "RESOLVE_HUNK";
-	hunkId: string;
-	resolution: "ours" | "theirs" | "both" | "neither";
+/** One decision on a block of the held conflict. Nothing is written by it. */
+export interface DecideBlockEvent {
+	type: "DECIDE_BLOCK";
+	blockId: string;
+	decision: BlockDecision;
 }
 
 export interface DismissConflictEvent {
@@ -516,15 +519,17 @@ export interface MergeSuccessEvent {
 	newLCA: LCAState;
 }
 
+/**
+ * A conflict raised by event. It carries what each side is and the situation;
+ * the handler fills in nothing that is missing.
+ */
 export interface MergeConflictEvent {
 	type: "MERGE_CONFLICT";
 	origin?: string;
-	base: string;
-	ours: string;
-	theirs: string;
-	oursLabel?: string;
-	theirsLabel?: string;
-	conflictRegions?: ConflictRegion[];
+	situation: ConflictSituation;
+	base: string | null;
+	ours: ConflictSide;
+	theirs: ConflictSide;
 }
 
 export interface DriftCheckEvent {
@@ -672,7 +677,7 @@ export type MergeEvent =
 	| SetModeIdleColdEvent
 	// User
 	| ResolveEvent
-	| ResolveHunkEvent
+	| DecideBlockEvent
 	| DismissConflictEvent
 	| OpenDiffViewEvent
 	| CancelEvent
@@ -763,20 +768,6 @@ export interface StatusChangedEffect {
 	type: "STATUS_CHANGED";
 	guid: string;
 	status: SyncStatus;
-}
-
-/**
- * Positioned conflict region with character offsets for CM6 decorations.
- */
-export interface PositionedConflict {
-	/** Character position where conflict starts in editor */
-	localStart: number;
-	/** Character position where conflict ends in editor */
-	localEnd: number;
-	/** Content from ours (editor/CRDT) version */
-	oursContent: string;
-	/** Content from theirs (disk/remote) version */
-	theirsContent: string;
 }
 
 /**
@@ -919,10 +910,16 @@ export interface ManagedFile {
 export interface ConflictProvider {
 	/** Wake and prepare state, then snapshot the conflict for UI/debug. */
 	getConflictInfo(): Promise<unknown>;
-	/** Apply fully resolved content; resolves to the resulting state label. */
-	resolveConflict(contents: string): Promise<string>;
-	/** Resolve one conflict region. */
-	resolveConflictHunk(hunkId: string, resolution: unknown): Promise<string>;
+	/**
+	 * Apply fully resolved content to the conflict with this id; resolves to
+	 * the resulting state label. An id that is not the current conflict's is refused.
+	 */
+	resolveConflict(conflictId: string, contents: string): Promise<string>;
+	/**
+	 * Record one decision on a part of the conflict with this id. Nothing is
+	 * written until every disagreement has an answer.
+	 */
+	decideConflictBlock(conflictId: string, blockId: string, decision: unknown): Promise<string>;
 }
 
 /** Lightweight projection of PersistedMergeState without heavy fields (lca.contents, fork body). */
@@ -950,6 +947,7 @@ export interface PersistedStateMeta {
 // =============================================================================
 
 // Re-export TimeProvider from existing module for consistency
+import type { BlockDecision, ConflictSide, ConflictSituation } from "./conflictValue";
 import type { TimeProvider } from "../TimeProvider";
 export type { TimeProvider };
 
