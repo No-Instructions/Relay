@@ -4436,6 +4436,7 @@ export class SharedFolder extends HasProvider {
 		if (!this.downloadMayProceed(doc, vpath, "before enrolling")) {
 			return undefined;
 		}
+		const initialLCA = doc.hsm?.state.lca;
 		await doc.hsm?.initializeFromRemote(updateBytes);
 		const remoteDoc = doc.ensureRemoteDoc();
 		doc.hsm?.setRemoteDoc(remoteDoc);
@@ -4455,7 +4456,15 @@ export class SharedFolder extends HasProvider {
 		}
 
 		this.files.set(guid, doc);
-		const wrote = await this.flush(doc, contents);
+		// Enrollment can stand down because a live merge already settled a
+		// newer ancestor. Do not queue the older fetched text behind its write.
+		const settled = doc.hsm?.state;
+		const writeContents = settled?.statePath === "idle.synced" &&
+			settled.lca !== initialLCA && settled.lca?.contents != null &&
+			settled.lca.meta.hash !== initialLCA?.meta.hash
+			? settled.lca.contents
+			: contents;
+		const wrote = await this.flush(doc, writeContents);
 		if (!wrote) {
 			// The write is the one refusal downstream of the decision to call
 			// the download done, and it is the only one the download cannot
