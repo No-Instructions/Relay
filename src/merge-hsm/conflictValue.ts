@@ -144,6 +144,64 @@ const ABSENT = String.fromCharCode(1);
 const tokenize = (s: string): string[] => s.split(/(\n)/);
 
 /**
+ * Slide every block edge onto a line boundary. Tokens alternate line, newline,
+ * line in every text, so a block edge sits either after a newline or after a
+ * line. Where a block starts after a line, its sides begin with the newline
+ * that ends that line: that newline moves to the block before, and the
+ * newline that begins the block after moves onto the end of every side that
+ * has text. A side with no text has neither newline, so for a block with such
+ * a side the two moves go together or not at all; where they cannot go and
+ * the line before is empty, the empty line moves into the block instead. The
+ * texts are unchanged; only where the edges fall between them moves.
+ * Afterwards every block boundary follows a newline, except before a last
+ * block that adds or removes lines after an unfinished line.
+ */
+export function alignToLines(blocks: Diff3Block[]): Diff3Block[] {
+	const out: Diff3Block[] = blocks.map((b) =>
+		b.kind === "same"
+			? { kind: "same", tokens: b.tokens.slice() }
+			: b.kind === "conflict"
+				? { kind: "conflict", a: b.a.slice(), o: b.o.slice(), b: b.b.slice() }
+				: { kind: b.kind, o: b.o.slice(), tokens: b.tokens.slice() },
+	);
+	const sidesOf = (b: Diff3Block): string[][] =>
+		b.kind === "same" ? [b.tokens] : b.kind === "conflict" ? [b.a, b.o, b.b] : [b.o, b.tokens];
+	const last = (t: string[]) => t[t.length - 1];
+	for (let i = 0; i < out.length; i++) {
+		const cur = out[i];
+		if (cur.kind === "same") continue;
+		const all = sidesOf(cur);
+		const sides = all.filter((t) => t.length > 0);
+		if (sides.length === 0) continue;
+		const hasEmpty = sides.length < all.length;
+		const prev = i > 0 && out[i - 1].kind === "same" ? (out[i - 1] as { tokens: string[] }) : null;
+		const next = i + 1 < out.length && out[i + 1].kind === "same" ? (out[i + 1] as { tokens: string[] }) : null;
+		const prefixOpen = !!prev && prev.tokens.length > 0 && last(prev.tokens) !== "\n";
+		const curOpen = sides.some((t) => last(t) !== "\n");
+		const nextSep = !!next && next.tokens[0] === "\n" && curOpen;
+		const front = () => {
+			for (const t of sides) if (t[0] === "\n") t.shift();
+			prev!.tokens.push("\n");
+		};
+		const back = () => {
+			next!.tokens.shift();
+			for (const t of sides) if (last(t) !== "\n") t.push("\n");
+		};
+		if (!hasEmpty) {
+			if (prefixOpen) front();
+			if (nextSep) back();
+		} else if (prefixOpen && nextSep) {
+			front();
+			back();
+		} else if (prefixOpen && last(prev!.tokens) === "") {
+			prev!.tokens.pop();
+			for (const t of sides) t.unshift("");
+		}
+	}
+	return out.filter((b) => b.kind !== "same" || b.tokens.length > 0);
+}
+
+/**
  * Build the conflict value. Blocks come from Relay's own three-way merge when
  * there is a baseline, and from a line-aligned two-way comparison when there
  * is none. A merge that failed has no computed blocks: both whole texts are
@@ -164,9 +222,9 @@ export function buildConflict(args: {
 	if (situation === "merge-failed") {
 		raw = [{ kind: "conflict", a: [ours.text], o: [], b: [theirs.text] }];
 	} else if (base !== null) {
-		raw = adaptiveDiff3Blocks(tokenize(ours.text), tokenize(base), tokenize(theirs.text));
+		raw = alignToLines(adaptiveDiff3Blocks(tokenize(ours.text), tokenize(base), tokenize(theirs.text)));
 	} else {
-		raw = twoWayBlocks(tokenize(ours.text), tokenize(theirs.text));
+		raw = alignToLines(twoWayBlocks(tokenize(ours.text), tokenize(theirs.text)));
 	}
 
 	const used = new Set<string>();
