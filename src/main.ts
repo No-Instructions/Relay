@@ -84,6 +84,7 @@ import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
 import { UpdateManager } from "./UpdateManager";
 import type { Release } from "./UpdateManager";
 import { ReleaseManager } from "./ui/ReleaseManager";
+import { openPluginPage } from "./PluginPage";
 import type { ReleaseSettings } from "./UpdateManager";
 import { SyncSettingsManager } from "./SyncSettings";
 import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
@@ -1254,6 +1255,10 @@ export default class Live extends Plugin {
 		modal.open();
 	}
 
+	openPluginPage(): void {
+		openPluginPage(this.app, this.manifest.id);
+	}
+
 	openGithubRelease(release?: Release | string): void {
 		let target: Release | string | undefined = release;
 		if (typeof release === "string" && release.trim()) {
@@ -1811,7 +1816,6 @@ export default class Live extends Plugin {
 			action: string;
 			relay?: string;
 			id?: string;
-			version?: string;
 		}
 
 		this.registerObsidianProtocolHandler("relay/settings/relays", async (e) => {
@@ -1831,10 +1835,12 @@ export default class Live extends Plugin {
 			},
 		);
 
-		this.registerObsidianProtocolHandler("relay/upgrade", async (e) => {
-			const parameters = e as unknown as Parameters;
-			const version = parameters.version?.trim();
-			this.openReleaseManager(version);
+		this.registerObsidianProtocolHandler("relay/upgrade", (parameters) => {
+			if (this.releaseSettings.get().channel === "beta") {
+				this.openReleaseManager(parameters.version?.trim());
+			} else {
+				this.openPluginPage();
+			}
 		});
 
 		this.backgroundSync.start();
