@@ -170,9 +170,9 @@ export function clickDecision(b: NoteBlock, s: Side, also: boolean): Decision {
 	return one;
 }
 
-/** A whole-file choice on a block: that side, or both. */
-export function wholeDecision(side: Side | "both"): Decision {
-	return { resolved: true, take: { ours: side === "ours" || side === "both", theirs: side === "theirs" || side === "both" } };
+/** A decision in the engine's words: that side, both, or neither. */
+export function wholeDecision(d: BlockDecision): Decision {
+	return { resolved: true, take: { ours: d === "ours" || d === "both", theirs: d === "theirs" || d === "both" } };
 }
 
 /** The engine's word for a block's decision, so a debug reader and the CLI name the same thing. */

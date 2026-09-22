@@ -609,3 +609,335 @@ canvas.relay-canvas-presence {
 .canvas-edges g.relay-presence-edge * {
 	pointer-events: none !important;
 }
+
+/* A conflict resolved in the note. Mine is green, the collaborator's blue, a
+ * deletion red whoever made it, and the lines as they were before a merged
+ * edit grey. The rows are the document's own lines: nothing is added to
+ * their text, and the signals are tint, a mark beside the rows, and position. */
+.markdown-source-view.mod-cm6,
+.relay-conflict-marks {
+	--relay-conflict-ours: var(--color-green);
+	--relay-conflict-theirs: var(--color-blue);
+	--relay-conflict-remove: var(--color-red);
+	--relay-conflict-neutral: var(--text-muted);
+	--relay-conflict-reach: 28px;
+}
+
+.cm-line.relay-conflict-line {
+	position: relative;
+}
+
+/* A candidate's rows take their side's tint; the hovered candidate lifts; the unchosen dims. */
+.cm-line.relay-conflict-line.is-candidate {
+	cursor: pointer;
+	--relay-conflict-colour: var(--relay-conflict-neutral);
+	--relay-conflict-tint: color-mix(in srgb, var(--relay-conflict-colour) 10%, var(--background-primary));
+	background-color: var(--relay-conflict-tint);
+}
+
+.cm-line.relay-conflict-line.is-candidate.is-ours {
+	--relay-conflict-colour: var(--relay-conflict-ours);
+}
+
+.cm-line.relay-conflict-line.is-candidate.is-theirs {
+	--relay-conflict-colour: var(--relay-conflict-theirs);
+}
+
+.cm-line.relay-conflict-line.is-candidate.is-removal {
+	--relay-conflict-colour: var(--relay-conflict-remove);
+}
+
+.cm-line.relay-conflict-line.is-candidate.is-neutral {
+	--relay-conflict-colour: var(--relay-conflict-neutral);
+}
+
+.cm-line.relay-conflict-line.is-candidate.is-lit {
+	--relay-conflict-tint: color-mix(in srgb, var(--relay-conflict-colour) 22%, var(--background-primary));
+}
+
+/* A candidate's tint reaches a little way toward the side whose change it is: mine to the left, the collaborator's to the right. The lines as they were are nobody's change and reach toward neither. */
+.cm-line.relay-conflict-line.is-candidate.is-ours:not(.is-neutral) {
+	box-shadow: calc(-1 * var(--relay-conflict-reach)) 0 0 var(--relay-conflict-tint);
+}
+
+.cm-line.relay-conflict-line.is-candidate.is-theirs:not(.is-neutral) {
+	box-shadow: var(--relay-conflict-reach) 0 0 var(--relay-conflict-tint);
+}
+
+/* The candidate not taken dims and loses its tint; under a whole-file preview the other side greys. */
+.cm-line.relay-conflict-line.is-candidate.is-out {
+	--relay-conflict-tint: transparent;
+	opacity: 0.38;
+}
+
+.cm-line.relay-conflict-line.is-candidate.is-fade {
+	--relay-conflict-tint: transparent;
+	color: var(--text-faint);
+}
+
+/* The pill beside a block: the mark of what taking the candidate does, and the plus for taking the other as well. */
+.relay-conflict-marks {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 0;
+	height: 0;
+	overflow: visible;
+	z-index: 3;
+	pointer-events: none;
+}
+
+.relay-conflict-pill {
+	position: absolute;
+	display: flex;
+	flex-direction: column;
+	justify-content: space-between;
+	box-sizing: border-box;
+	width: 18px;
+	border-radius: 9px;
+	border: 1px solid var(--relay-conflict-side);
+	background: color-mix(in srgb, var(--background-secondary) 85%, transparent);
+	color: var(--relay-conflict-side);
+	font-family: var(--font-interface);
+	font-size: 13px;
+	line-height: 1;
+	cursor: pointer;
+	pointer-events: auto;
+	transition: top 120ms ease;
+}
+
+.relay-conflict-pill.is-reversed {
+	flex-direction: column-reverse;
+}
+
+.relay-conflict-pill.is-ours {
+	--relay-conflict-side: var(--relay-conflict-ours);
+}
+
+.relay-conflict-pill.is-theirs {
+	--relay-conflict-side: var(--relay-conflict-theirs);
+}
+
+.relay-conflict-pill.is-neutral {
+	--relay-conflict-side: var(--relay-conflict-neutral);
+}
+
+.relay-conflict-pill-mark,
+.relay-conflict-pill-plus {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+	width: 16px;
+	height: 16px;
+	border-radius: 50%;
+}
+
+.relay-conflict-pill-mark svg {
+	width: 11px;
+	height: 11px;
+}
+
+.relay-conflict-pill.is-solid .relay-conflict-pill-mark {
+	background: var(--relay-conflict-side);
+	color: var(--background-primary);
+}
+
+.relay-conflict-pill.is-both {
+	--relay-conflict-side: color-mix(in srgb, var(--text-muted) 70%, transparent);
+}
+
+.relay-conflict-pill.is-both .relay-conflict-pill-mark {
+	background: var(--relay-conflict-ours);
+	color: var(--background-primary);
+}
+
+.relay-conflict-pill.is-both .relay-conflict-pill-mark.is-far {
+	background: var(--relay-conflict-theirs);
+}
+
+.relay-conflict-pill.is-both .relay-conflict-pill-mark:hover {
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--relay-conflict-ours) 35%, transparent);
+}
+
+.relay-conflict-pill.is-both .relay-conflict-pill-mark.is-far:hover {
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--relay-conflict-theirs) 35%, transparent);
+}
+
+.relay-conflict-pill-plus.is-ours {
+	color: var(--relay-conflict-ours);
+}
+
+.relay-conflict-pill-plus.is-theirs {
+	color: var(--relay-conflict-theirs);
+}
+
+.relay-conflict-pill-plus:hover {
+	background: color-mix(in srgb, var(--relay-conflict-side) 25%, transparent);
+}
+
+/* A change as a pull request shows it: red for the note's lines that would go, green for the lines that would come, the words that differ marked in both, a sign in the margin. */
+.cm-line.relay-conflict-diff {
+	position: relative;
+}
+
+.cm-line.relay-conflict-diff.is-del {
+	background-color: color-mix(in srgb, var(--relay-conflict-remove) 12%, var(--background-primary));
+}
+
+.cm-line.relay-conflict-diff.is-add {
+	background-color: color-mix(in srgb, var(--relay-conflict-ours) 12%, var(--background-primary));
+}
+
+.cm-line.relay-conflict-diff::before {
+	position: absolute;
+	left: -16px;
+	width: 12px;
+	text-align: center;
+	font-family: var(--font-monospace);
+	font-size: 0.85em;
+	text-indent: 0;
+}
+
+.cm-line.relay-conflict-diff.is-del::before {
+	content: "−";
+	color: var(--relay-conflict-remove);
+}
+
+.cm-line.relay-conflict-diff.is-add::before {
+	content: "+";
+	color: var(--relay-conflict-ours);
+}
+
+.relay-conflict-word.is-del {
+	background-color: color-mix(in srgb, var(--relay-conflict-remove) 30%, transparent);
+	border-radius: 2px;
+}
+
+.relay-conflict-word.is-add {
+	background-color: color-mix(in srgb, var(--relay-conflict-ours) 30%, transparent);
+	border-radius: 2px;
+}
+
+/* The situation box above the note: what happened, how much is left, the whole-file choices. It stays while the note scrolls and folds to its title. */
+.view-content.relay-has-conflict-box {
+	display: flex;
+	flex-direction: column;
+}
+
+.view-content.relay-has-conflict-box > .markdown-source-view,
+.view-content.relay-has-conflict-box > .markdown-reading-view {
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+.relay-conflict-box {
+	flex: 0 0 auto;
+	margin: 10px 16px 4px;
+	padding: 8px 12px 10px;
+	border: 1px solid var(--background-modifier-border);
+	border-left: 3px solid var(--interactive-accent);
+	border-radius: var(--radius-m, 8px);
+	background: var(--background-secondary);
+	font-family: var(--font-interface);
+}
+
+.relay-conflict-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	cursor: pointer;
+	user-select: none;
+}
+
+.relay-conflict-chevron {
+	display: inline-flex;
+	color: var(--text-muted);
+	transition: transform 120ms ease;
+}
+
+.relay-conflict-box.is-collapsed .relay-conflict-chevron {
+	transform: rotate(-90deg);
+}
+
+.relay-conflict-title {
+	flex: 1 1 auto;
+	font-weight: 600;
+	font-size: var(--font-ui-medium, 15px);
+}
+
+.relay-conflict-status {
+	flex: 0 0 auto;
+	padding: 2px 8px;
+	border-radius: 999px;
+	font-size: var(--font-ui-smaller, 12px);
+	font-variant-numeric: tabular-nums;
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.relay-conflict-status:empty {
+	display: none;
+}
+
+.relay-conflict-body {
+	padding: 6px 0 0 22px;
+}
+
+.relay-conflict-box.is-collapsed .relay-conflict-body {
+	display: none;
+}
+
+.relay-conflict-box.is-collapsed {
+	padding-bottom: 8px;
+}
+
+.relay-conflict-text {
+	margin: 0 0 8px;
+	font-size: var(--font-ui-small, 13px);
+	color: var(--text-muted);
+	line-height: 1.5;
+	max-width: 72ch;
+}
+
+.relay-conflict-link {
+	color: var(--text-accent);
+	text-decoration: underline;
+	cursor: pointer;
+}
+
+.relay-conflict-link.is-sent {
+	color: var(--text-muted);
+	text-decoration: none;
+	cursor: default;
+}
+
+.relay-conflict-hint {
+	margin: 0 0 6px;
+	font-size: var(--font-ui-small, 13px);
+	color: var(--text-normal);
+}
+
+.relay-conflict-options {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.relay-conflict-options button.is-chosen {
+	box-shadow: inset 0 0 0 1px var(--interactive-accent);
+}
+
+.relay-conflict-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	margin-top: 10px;
+	font-size: var(--font-ui-small, 13px);
+	color: var(--text-muted);
+	cursor: pointer;
+}
+
+.relay-conflict-toggle .checkbox-container {
+	transform: none;
+}

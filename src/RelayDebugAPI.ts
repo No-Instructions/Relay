@@ -8,7 +8,7 @@
  */
 
 import * as Y from 'yjs';
-import { TFile, View } from 'obsidian';
+import { MarkdownView, TFile, View } from 'obsidian';
 import type { WorkspaceLeaf } from 'obsidian';
 import type { EditorView } from '@codemirror/view';
 import { diff_match_patch } from 'diff-match-patch';
@@ -34,6 +34,7 @@ import { readCanvasPresence, readCanvasPresenceUser, type CanvasPresenceState, t
 import type { CanvasHSM } from './canvas-hsm/CanvasHSM';
 import type { CanvasData } from './CanvasView';
 import type { BlockDecision, ConflictValue } from './merge-hsm/conflictValue';
+import { sessionOf, type SessionSnapshot } from './conflict-note';
 import type Live from './main';
 import type { RelayCanvasView } from './LiveViews';
 import type { SharedFolder } from './SharedFolder';
@@ -491,6 +492,16 @@ export interface RelayDebugGlobal {
     decision: BlockDecision,
   ) => Promise<string>;
   /**
+   * The conflict as shown in the note: whether the pick document is shown,
+   * every block with its decision so far, and the outcome Done would apply.
+   * Throws when no note at `path` has a conflict open in it.
+   */
+  conflictNote: (path: string) => SessionSnapshot;
+  /** Decide one block of the conflict shown in the note; `blockId` may be any prefix that names one block. */
+  conflictNoteDecide: (path: string, blockId: string, decision: BlockDecision) => SessionSnapshot;
+  /** Press Done on the conflict shown in the note: the outcome is applied and the conflict resolved. */
+  conflictNoteDone: (path: string) => Promise<string>;
+  /**
    * Dispatch an `OPEN_DIFF_VIEW` event — the state-machine-level
    * equivalent of the user clicking the conflict banner. Transitions
    * `active.conflict.bannerShown` → `active.conflict.resolving`. This
@@ -737,6 +748,17 @@ export class RelayDebugAPI {
         this.resolveConflict(path, conflictId, contents),
       decideConflictBlock: async (path, conflictId, blockId, decision) =>
         this.decideConflictBlock(path, conflictId, blockId, decision),
+      conflictNote: (path) => this.conflictNoteSession(path).snapshot(),
+      conflictNoteDecide: (path, blockId, decision) => {
+        const session = this.conflictNoteSession(path);
+        session.decide(blockId, decision);
+        return session.snapshot();
+      },
+      conflictNoteDone: async (path) => {
+        const session = this.conflictNoteSession(path);
+        session.done();
+        return this.awaitHsmState(path, 'active.tracking', 5000);
+      },
       openDiffView: async (path) => this.sendConflictEvent(path, { type: 'OPEN_DIFF_VIEW' }),
       cancelDiffView: async (path) => this.sendConflictEvent(path, { type: 'CANCEL' }),
       clearLca: async (path) => this.clearLca(path),
@@ -2011,6 +2033,18 @@ export class RelayDebugAPI {
     const hsm = lookup.hsm;
     hsm.send(event as Parameters<MergeHSM['send']>[0]);
     return this.hsmInternals(hsm)._statePath || 'unknown';
+  }
+
+  /** The session of the note at `path` with a conflict open in it. */
+  private conflictNoteSession(path: string) {
+    let found: ReturnType<typeof sessionOf> | undefined;
+    this.requirePlugin().app.workspace.iterateAllLeaves((leaf) => {
+      if (found) return;
+      const view = leaf.view;
+      if (view instanceof MarkdownView && view.file?.path === path) found = sessionOf(view);
+    });
+    if (!found) throw new Error(`No conflict is open in the note: ${path}`);
+    return found;
   }
 
   async decideConflictBlock(
