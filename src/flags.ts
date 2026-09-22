@@ -25,6 +25,7 @@ export interface FeatureFlags {
 	enableCanvasPresence: boolean;
 	enableReaderRole: boolean;
 	enableRelayReaderRole: boolean;
+	enableInNoteConflicts: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -230,6 +231,13 @@ export const FeatureFlagSchema: {
 		title: "Relay Reader role",
 		description:
 			"Offer the Reader role for relay membership. Requires relay Reader support on the server.",
+	},
+	enableInNoteConflicts: {
+		default: false,
+		category: "labs",
+		title: "Resolve conflicts in the note",
+		description:
+			"Show a merge conflict inside the note, with each side's lines to pick between, instead of the banner and the side-by-side view.",
 	},
 };
 
