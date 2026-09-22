@@ -7,6 +7,7 @@ export interface FeatureFlags {
 	enableDiffLinkStatus: boolean;
 	enableDeltaLogging: boolean;
 	enableNativeNetworking: boolean;
+	enableBackupNetworkProbe: boolean;
 	enableNetworkLogging: boolean;
 	enableVerifyUploads: boolean;
 	enableDiscordLogin: boolean;
@@ -124,6 +125,13 @@ export const FeatureFlagSchema: {
 		category: "labs",
 		title: "Native networking",
 		description: "Use Node's HTTP stack for Relay requests on desktop. Responses are uncompressed. May not work with system proxies or private certificates. Has no effect on mobile.",
+	},
+	enableBackupNetworkProbe: {
+		default: true,
+		category: "debugging",
+		title: "Probe failed status requests",
+		description: "Send a browser request to the status endpoint after the selected transport fails, so server access logs can identify failures.",
+		requiresReload: false,
 	},
 	enableNetworkLogging: {
 		default: false,
