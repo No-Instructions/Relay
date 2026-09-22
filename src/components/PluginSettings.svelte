@@ -273,68 +273,82 @@
 	}
 </script>
 
-{#if currentRelay || sharedFolder || remoteFolder}
-	<ModalSettingsNav on:goBack={handleGoBack}></ModalSettingsNav>
-{:else if !Platform.isMobile}
-	<Announcement {plugin} />
-{/if}
-<div class="vertical-tab-content">
-	{#if remoteFolder}
-		<ManageRemoteFolder
-			{plugin}
-			{remoteFolder}
-			{sharedFolders}
-			{relayRoles}
-			folderRoles={relayManager.folderRoles}
-			on:goBack={handleGoBack}
-			on:close={handleClose}
-			on:manageRelay={handleManageRelayEvent}
-			on:manageSharedFolder={handleManageSharedFolderEvent}
-		></ManageRemoteFolder>
-	{:else if sharedFolder}
-		<ManageSharedFolder
-			{plugin}
-			{sharedFolder}
-			on:goBack={handleGoBack}
-			on:close={handleClose}
-		></ManageSharedFolder>
-	{:else if currentRelay}
-		<ManageRelay
-			{plugin}
-			{relayRoles}
-			relay={currentRelay}
-			{sharedFolders}
-			on:goBack={handleGoBack}
-			on:close={handleClose}
-			on:manageSharedFolder={handleManageSharedFolderEvent}
-			on:manageRemoteFolder={handleManageRemoteFolderEvent}
-		></ManageRelay>
-	{:else}
-		<LoggedIn {plugin}>
-			<Relays
-				{relays}
-				{subscriptions}
-				{providers}
+<div class="relay-settings">
+	{#if currentRelay || sharedFolder || remoteFolder}
+		<ModalSettingsNav on:goBack={handleGoBack}></ModalSettingsNav>
+	{:else if !Platform.isMobile}
+		<Announcement {plugin} />
+	{/if}
+	<div class="vertical-tab-content">
+		{#if remoteFolder}
+			<ManageRemoteFolder
 				{plugin}
+				{remoteFolder}
+				{sharedFolders}
+				{relayRoles}
+				folderRoles={relayManager.folderRoles}
+				on:goBack={handleGoBack}
+				on:close={handleClose}
 				on:manageRelay={handleManageRelayEvent}
 				on:manageSharedFolder={handleManageSharedFolderEvent}
+			></ManageRemoteFolder>
+		{:else if sharedFolder}
+			<ManageSharedFolder
+				{plugin}
+				{sharedFolder}
+				on:goBack={handleGoBack}
+				on:close={handleClose}
+			></ManageSharedFolder>
+		{:else if currentRelay}
+			<ManageRelay
+				{plugin}
+				{relayRoles}
+				relay={currentRelay}
+				{sharedFolders}
+				on:goBack={handleGoBack}
+				on:close={handleClose}
+				on:manageSharedFolder={handleManageSharedFolderEvent}
 				on:manageRemoteFolder={handleManageRemoteFolderEvent}
-				on:createRelay={handleCreateRelayEvent}
-				on:joinRelay={handleJoinRelay}
-			></Relays>
-		</LoggedIn>
+			></ManageRelay>
+		{:else}
+			<LoggedIn {plugin}>
+				<Relays
+					{relays}
+					{subscriptions}
+					{providers}
+					{plugin}
+					on:manageRelay={handleManageRelayEvent}
+					on:manageSharedFolder={handleManageSharedFolderEvent}
+					on:manageRemoteFolder={handleManageRemoteFolderEvent}
+					on:createRelay={handleCreateRelayEvent}
+					on:joinRelay={handleJoinRelay}
+				></Relays>
+			</LoggedIn>
+		{/if}
+	</div>
+
+	<ToastManager />
+
+	{#if plugin.manifest.version !== plugin.version}
+		<span class="relay-version">
+			{plugin.version}
+		</span>
 	{/if}
 </div>
 
-<ToastManager />
-
-{#if plugin.manifest.version !== plugin.version}
-	<span class="relay-version">
-		{plugin.version}
-	</span>
-{/if}
-
 <style>
+	:global(.modal.mod-settings:has(.relay-settings) > .modal-close-button) {
+		z-index: 1;
+	}
+
+	.relay-settings {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+		min-height: 0;
+		position: relative;
+	}
+
 	.relay-version {
 		user-select: auto;
 		background: var(--color-base-10);
@@ -349,13 +363,9 @@
 		border-top-left-radius: 1em;
 	}
 	.vertical-tab-content {
-		max-height: var(--modal-max-height);
+		flex: 1 1 auto;
+		height: auto;
+		min-height: 0;
 		position: relative;
-	}
-	:global(.system3-announcement-banner) {
-		padding-left: 48px !important;
-	}
-	:global(.system3-announcement) {
-		color: var(--text-on-accent);
 	}
 </style>
