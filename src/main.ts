@@ -80,6 +80,7 @@ import { type SettingsTree, NamespacedSettings, Settings } from "./SettingsStora
 import { ensureLinkUpdatesOn } from "./linkUpdates";
 import { ObsidianFileAdapter, ObsidianNotifier } from "./debugObsididan";
 import { BugReportModal } from "./ui/BugReportModal";
+import { restoreBeforeUnload } from "./conflict-note";
 import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
 
 import { UpdateManager } from "./UpdateManager";
@@ -1579,6 +1580,10 @@ export default class Live extends Plugin {
 			onUnloadFile(old: (...args: unknown[]) => unknown) {
 				return function (this: MarkdownView, file: TFile) {
 					if (file instanceof TFile) {
+						// A conflict open in the note gets back the note's text
+						// first, so what Obsidian saves and what Relay captures is
+						// the text the note held before.
+						restoreBeforeUnload(this);
 						try {
 							if (typeof this.getViewData === 'function') {
 								captureEditorContentForHSM(file, this.getViewData());
