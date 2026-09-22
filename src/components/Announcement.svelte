@@ -3,13 +3,17 @@
 	import type Live from "src/main";
 	export let plugin: Live;
 
-	function showRelease() {
+	function openAnnouncement() {
 		if (plugin.networkStatus.status?.versions) {
-			if (plugin.releaseSettings.get().channel === "stable") {
-				plugin.openReleaseManager(plugin.networkStatus.status.versions.stable);
-			} else if (plugin.releaseSettings.get().channel === "beta") {
+			if (plugin.releaseSettings.get().channel === "beta") {
 				plugin.openReleaseManager(plugin.networkStatus.status.versions.beta);
+			} else {
+				plugin.openPluginPage();
 			}
+			return;
+		}
+		if (plugin.networkStatus.status?.link) {
+			window.open(plugin.networkStatus.status.link);
 		}
 	}
 </script>
@@ -17,22 +21,10 @@
 {#if plugin.networkStatus.status}
 	<div
 		class="modal-setting-nav-bar system3-announcement-banner"
-		on:click={() => {
-			if (plugin.networkStatus.status?.versions) {
-				showRelease();
-			} else if (plugin.networkStatus.status?.link) {
-				window.open(plugin.networkStatus.status.link);
-			}
-		}}
+		on:click={openAnnouncement}
 		role="button"
 		tabindex="0"
-		on:keypress={() => {
-			if (plugin.networkStatus.status?.versions) {
-				showRelease();
-			} else if (plugin.networkStatus.status?.link) {
-				window.open(plugin.networkStatus.status.link);
-			}
-		}}
+		on:keypress={openAnnouncement}
 		style="background-color: {plugin.networkStatus.status.backgroundColor
 			? plugin.networkStatus.status.backgroundColor
 			: 'var(--color-accent)'} !important"
