@@ -214,6 +214,11 @@ button.system3-login-button {
 	--icon-size: 1em;
 }
 
+/* A banner that renders its own content handles its own clicks. */
+.relay-banner-rendered {
+	cursor: default;
+}
+
 .relay-read-only-header-label,
 .relay-not-synced-header-label {
 	padding: 2px 8px;
