@@ -247,11 +247,13 @@ export class LoggedOutView implements S3View {
 	}
 
 	attach(): Promise<S3View> {
-		this.banner = new Banner(
+		this.banner ??= new Banner(
 			this.view,
 			{ short: "Login to Relay", long: "Login to enable Live edits" },
 			async () => {
-				return await this.login();
+				const loggedIn = await this.login();
+				if (loggedIn) this.release();
+				return loggedIn;
 			},
 		);
 		return Promise.resolve(this);
@@ -259,11 +261,11 @@ export class LoggedOutView implements S3View {
 
 	release() {
 		this.banner?.destroy();
+		this.banner = undefined;
 	}
 
 	destroy() {
-		this.banner?.destroy();
-		this.banner = undefined;
+		this.release();
 		this.view = null as unknown as typeof this.view;
 	}
 }
@@ -301,6 +303,8 @@ export class RelayCanvasView implements S3View {
 	private offConnectionStatusSubscription?: () => void;
 	private _parent: LiveViewManager;
 	private _banner?: Banner;
+	private _offlineBanner?: Banner;
+	private _offOfflineOnline?: () => void;
 	private _awarenessPlugin?: AwarenessViewPlugin;
 	private _presencePlugin?: CanvasPresencePlugin;
 	private _lockViewer?: DocumentViewer;
@@ -345,22 +349,33 @@ export class RelayCanvasView implements S3View {
 	}
 
 	offlineBanner(): () => void {
-		if (this.shouldConnect) {
-			const banner = new Banner(
+		if (!this.shouldConnect) return () => {};
+		if (!this._offlineBanner) {
+			this._offlineBanner = new Banner(
 				this.view,
 				{ short: "Offline", long: "You're offline -- click to reconnect" },
 				async () => {
 					void this._parent.networkStatus.checkStatus();
 					this.connect();
-					return this._parent.networkStatus.online;
+					const online = this._parent.networkStatus.online;
+					if (online) this.clearOfflineBanner();
+					return online;
 				},
+				{ priority: 0 },
 			);
-			this._parent.networkStatus.onceOnline(() => {
+			this._offOfflineOnline = this._parent.networkStatus.onceOnline(() => {
+				this.clearOfflineBanner();
 				this.connect();
-				banner.destroy();
 			});
 		}
-		return () => {};
+		return () => this.clearOfflineBanner();
+	}
+
+	private clearOfflineBanner(): void {
+		this._offOfflineOnline?.();
+		this._offOfflineOnline = undefined;
+		this._offlineBanner?.destroy();
+		this._offlineBanner = undefined;
 	}
 
 	setConnectionDot(): void {
@@ -531,6 +546,7 @@ export class RelayCanvasView implements S3View {
 		this._awarenessPlugin = undefined;
 		this._viewActions?.destroy();
 		this._viewActions = undefined;
+		this.clearOfflineBanner();
 		this._banner?.destroy();
 		this._banner = undefined;
 		if (this.offConnectionStatusSubscription) {
@@ -581,6 +597,8 @@ export class LiveView<ViewType extends TextFileView>
 	private offConnectionStatusSubscription?: () => void;
 	private _parent: LiveViewManager;
 	private _banner?: Banner;
+	private _offlineBanner?: Banner;
+	private _offOfflineOnline?: () => void;
 	private _forkNotice?: Banner;
 	private _readOnlyBanner?: Banner;
 	private _offAccessStatus?: () => void;
@@ -715,6 +733,7 @@ export class LiveView<ViewType extends TextFileView>
 	}
 
 	mergeBanner(): () => void {
+		if (this._banner) return () => {};
 		this._banner = new Banner(
 			this.view,
 			{ short: "Merge conflict", long: "Merge conflict -- click to resolve" },
@@ -796,6 +815,7 @@ export class LiveView<ViewType extends TextFileView>
 	}
 
 	preservedEditsBanner(): void {
+		if (this._forkNotice) return;
 		this._forkNotice = new Banner(
 			this.view,
 			{
@@ -845,22 +865,33 @@ export class LiveView<ViewType extends TextFileView>
 	}
 
 	offlineBanner(): () => void {
-		if (this.shouldConnect) {
-			const banner = new Banner(
+		if (!this.shouldConnect) return () => {};
+		if (!this._offlineBanner) {
+			this._offlineBanner = new Banner(
 				this.view,
 				{ short: "Offline", long: "You're offline -- click to reconnect" },
 				async () => {
 					void this._parent.networkStatus.checkStatus();
 					this.connect();
-					return this._parent.networkStatus.online;
+					const online = this._parent.networkStatus.online;
+					if (online) this.clearOfflineBanner();
+					return online;
 				},
+				{ priority: 0 },
 			);
-			this._parent.networkStatus.onceOnline(() => {
+			this._offOfflineOnline = this._parent.networkStatus.onceOnline(() => {
+				this.clearOfflineBanner();
 				this.connect();
-				banner.destroy();
 			});
 		}
-		return () => {};
+		return () => this.clearOfflineBanner();
+	}
+
+	private clearOfflineBanner(): void {
+		this._offOfflineOnline?.();
+		this._offOfflineOnline = undefined;
+		this._offlineBanner?.destroy();
+		this._offlineBanner = undefined;
 	}
 
 	setConnectionDot(): void {
@@ -1228,6 +1259,7 @@ export class LiveView<ViewType extends TextFileView>
 
 		this._viewActions?.destroy();
 		this._viewActions = undefined;
+		this.clearOfflineBanner();
 		this._banner?.destroy();
 		this._banner = undefined;
 		this._forkNotice?.destroy();
