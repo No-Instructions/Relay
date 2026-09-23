@@ -1540,6 +1540,7 @@ export class RelayManager extends HasLogging {
 	_offLoginManager: Unsubscriber;
 	_offFeatureFlags: Unsubscriber;
 	private _isSubscribed = false;
+	private _rolesHydrated = false;
 	private pb: PocketBase | null;
 	destroyed = false;
 	private getProfileFileUrl: ProfileFileUrl = (record, filename, options) =>
@@ -1745,6 +1746,7 @@ export class RelayManager extends HasLogging {
 		// the client-side subscription map; clear our flag so the next login
 		// re-registers.
 		this._isSubscribed = false;
+		this._rolesHydrated = false;
 	}
 
 	async rotateKey(relayInvitation: RelayInvitation): Promise<RelayInvitation> {
@@ -1998,7 +2000,22 @@ export class RelayManager extends HasLogging {
 		}
 	}
 
+	/**
+	 * Whether every relay-role and folder-role record the server holds for
+	 * this user has been fetched at least once this session. Before that, a
+	 * role missing from the store may simply not have arrived, so only a
+	 * present record is evidence of anything; afterwards absence is real,
+	 * and the realtime subscription keeps the store current.
+	 */
+	get rolesHydrated(): boolean {
+		return this._rolesHydrated;
+	}
+
 	async update() {
+		const authenticated =
+			!!this.pb &&
+			this.pb.authStore.isValid &&
+			this.pb.authStore.model?.id !== undefined;
 		const withPb = (
 			collection: string,
 			options:
@@ -2051,6 +2068,14 @@ export class RelayManager extends HasLogging {
 				}
 			}
 		}));
+		if (authenticated && !this.destroyed && this.store && !this._rolesHydrated) {
+			this._rolesHydrated = true;
+			// Shared folders derive their role-policy answers on role-map
+			// notifications. Nothing in the maps changed, but a missing role
+			// just became evidence, so wake them to re-derive.
+			this.relayRoles.notifyListeners();
+			this.folderRoles.notifyListeners();
+		}
 	}
 
 	async acceptInvitation(shareKey: string): Promise<Relay> {
