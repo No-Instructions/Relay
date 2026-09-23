@@ -1906,23 +1906,32 @@ export class SharedFolder extends HasProvider {
 		if (!userId || !policyManager) {
 			return null;
 		}
-		const folderRolesSynced = this.relayManager.folderRoles
-			.values()
-			.some((r) => r.sharedFolderId === remote.id);
-		const relayRolesSynced = this.relayManager.relayRoles
-			.values()
-			.some((r) => r.relayId === remote.relayId);
-		// Relay roles cannot grant access to a private folder. Until its
-		// folder roles arrive, a denial would only reflect missing data.
-		if (!folderRolesSynced && (remote.private || !relayRolesSynced)) {
-			return null;
-		}
 		const result = policyManager.isAllowed({
 			principal: userId,
 			action,
 			resource: ["folder", remote.id],
 		});
-		return result.allowed;
+		// A grant rests on a record that is present, so it stands as soon
+		// as it can be derived.
+		if (result.allowed) {
+			return true;
+		}
+		// A denial rests on what is absent. The user's own folder role and
+		// own relay role each decide it, so each must be present or be known
+		// to be absent because every role record has been fetched at least
+		// once. Another member's record proves nothing about this user's.
+		const hydrated = this.relayManager.rolesHydrated === true;
+		const ownFolderRoleKnown =
+			hydrated ||
+			this.relayManager.folderRoles
+				.values()
+				.some((r) => r.sharedFolderId === remote.id && r.userId === userId);
+		const ownRelayRoleKnown =
+			hydrated ||
+			this.relayManager.relayRoles
+				.values()
+				.some((r) => r.relayId === remote.relayId && r.userId === userId);
+		return ownFolderRoleKnown && ownRelayRoleKnown ? false : null;
 	}
 
 	public get canWriteContentAnswer(): boolean | null {
