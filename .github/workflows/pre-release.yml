@@ -1,5 +1,10 @@
 name: Beta Releases
-on: 
+
+# A tag that differs from manifest.json's version publishes a prerelease
+# whose manifest carries the tag as its version.
+# Tag and version handling lives in .github/ci/release.sh.
+
+on:
   push:
     tags:
     - '*'
@@ -13,14 +18,7 @@ jobs:
     - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
     - name: Check if tag does not match manifest version
       id: check
-      run: |
-        TAG=${GITHUB_REF#refs/tags/}
-        MANIFEST_VERSION=$(jq -r .version manifest.json)
-        if [ "$TAG" == "$MANIFEST_VERSION" ]; then
-          echo "should_release=false" >> $GITHUB_OUTPUT
-        else
-          echo "should_release=true" >> $GITHUB_OUTPUT
-        fi
+      run: .github/ci/release.sh check beta "$GITHUB_REF_NAME"
 
   build:
     needs: check-version
@@ -39,12 +37,7 @@ jobs:
     - run: npm ci
     - run: npm run beta
     - name: Set release artifact manifest version
-      run: |
-        TAG=${GITHUB_REF#refs/tags/}
-        tmp="$(mktemp)"
-        jq --arg version "$TAG" '.version = $version' manifest.json > "$tmp"
-        mv "$tmp" manifest.json
-        jq -e --arg version "$TAG" '.version == $version' manifest.json
+      run: .github/ci/release.sh set-version "$GITHUB_REF_NAME"
     - name: Generate artifact attestations
       uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
       with:
