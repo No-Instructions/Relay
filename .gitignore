@@ -46,6 +46,8 @@ lint.d/*
 !lint.d/product.json
 build.d/*
 !build.d/production.json
+# CI scripts run from the workflow checkout.
+!.github/ci/*.js
 scripts/
 tickets/
 specs/
