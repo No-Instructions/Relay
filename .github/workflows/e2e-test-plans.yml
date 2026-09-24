@@ -1,5 +1,13 @@
 name: E2E scripted test plans
 
+# The push gate: every push to main and every release tag runs the default
+# scripted plan set on the push lane's own VM and staging users (slots 3-8,
+# plus the storage pair the suite claims itself). A dispatch can run it for
+# any ref, plan list, or harness.
+#
+# The work happens in .github/ci/lane.sh (fixed-VM mode), which runs the same
+# way from a workstation; this file only maps inputs onto it.
+
 on:
   push:
     branches: [main]
@@ -24,558 +32,77 @@ on:
         required: false
         default: '1.13.4'
 
+# One run at a time: the gate owns one VM and one set of staging users.
 concurrency:
   group: e2e-test-plans-linux
   cancel-in-progress: false
 
 env:
-  VM_ZONE: ${{ secrets.GCP_VM_ZONE }}
   GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
-  GCP_USE_IAP: "true"
+  VM_ZONE: ${{ secrets.GCP_VM_ZONE }}
+  CI_R2_BUCKET: system3-ci
+  CI_R2_ENDPOINT: ${{ secrets.CI_R2_ENDPOINT }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.CI_R2_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.CI_R2_SECRET_ACCESS_KEY }}
+
+permissions:
+  contents: read
 
 jobs:
   scripted-test:
-    name: ${{ format('scripted-test ({0})', matrix.shard.name) }}
+    name: scripted-test (scripted-all)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
       checks: write
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        shard:
-          - name: scripted-all
-            slug: all
-            tests: default
-    env:
-      VM_NAME: ${{ format('{0}-tp-{1}', secrets.GCP_VM_NAME, matrix.shard.slug) }}
-      SHARD_NAME: ${{ matrix.shard.name }}
-      SHARD_SLUG: ${{ matrix.shard.slug }}
-      SHARD_TESTS: ${{ matrix.shard.tests }}
-      GCP_VM_DISK_SIZE: 20GB
-      GCP_VM_DISK_TYPE: pd-standard
-
+      contents: read
     steps:
-      - name: Auth to GCP
-        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          sparse-checkout: .github/ci
+          persist-credentials: false
+
+      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Setup gcloud
-        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2.2.1
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2.2.1
 
-      - name: Select tests for shard
-        id: select-tests
-        run: |
-          TARGETED_TESTS="${{ github.event.inputs.tests || '' }}"
-          SHARD_TESTS="${{ matrix.shard.tests }}"
-
-          # The suite runner resolves ids against the harness manifest and
-          # fails loudly on unknown ids, so targeted dispatches pass through;
-          # a roster intersection here would silently skip unknown ids.
-          SELECTED_TESTS="$SHARD_TESTS"
-          if [ -n "$TARGETED_TESTS" ]; then
-            SELECTED_TESTS="$TARGETED_TESTS"
-          fi
-
-          if [ -n "$SELECTED_TESTS" ]; then
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "selected_tests=$SELECTED_TESTS" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-            echo "selected_tests=" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Clone relay-harness
-        if: steps.select-tests.outputs.should_run == 'true'
-        run: |
-          mkdir -p ~/.ssh
-          echo '${{ secrets.HARNESS_DEPLOY_KEY }}' > ~/.ssh/harness-key
-          chmod 600 ~/.ssh/harness-key
-          cat > ~/.ssh/known_hosts << 'EOF'
-          github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
-          github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
-          github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
-          EOF
-          chmod 600 ~/.ssh/known_hosts
-          cat > ~/.ssh/config << 'EOF'
-          Host github.com
-            IdentityFile ~/.ssh/harness-key
-            IdentitiesOnly yes
-            StrictHostKeyChecking yes
-            UserKnownHostsFile ~/.ssh/known_hosts
-          EOF
-
-          git clone git@github.com:No-Instructions/relay-harness.git ~/relay-harness
-          HREF="${{ github.event.inputs.harness_ref || 'origin/main' }}"
-          git -C ~/relay-harness checkout --detach "origin/${HREF#origin/}" 2>/dev/null \
-            || git -C ~/relay-harness checkout --detach "$HREF"
-
-      - name: Ensure VM is running
-        if: steps.select-tests.outputs.should_run == 'true'
-        run: |
-          STATUS=""
-          for i in $(seq 1 60); do
-            STATUS=$(gcloud compute instances describe "$VM_NAME" \
-              --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-              --format='get(status)' 2>/dev/null || echo "NOT_FOUND")
-
-            case "$STATUS" in
-              PROVISIONING|STAGING|STOPPING|SUSPENDING|REPAIRING)
-                echo "VM is $STATUS; waiting for a stable state ($i/60) ..."
-                sleep 10
-                ;;
-              *)
-                break
-                ;;
-            esac
-          done
-
-          if [ "$STATUS" = "NOT_FOUND" ]; then
-            echo "VM does not exist. Creating via harness infra scripts..."
-            cd ~/relay-harness
-            GCP_PROJECT="$GCP_PROJECT" GCP_ZONE="$VM_ZONE" GCP_VM_NAME="$VM_NAME" \
-              GCP_VM_DISK_SIZE="$GCP_VM_DISK_SIZE" GCP_VM_DISK_TYPE="$GCP_VM_DISK_TYPE" \
-              ./infra/gcp-linux-vm.sh create
-          elif [ "$STATUS" = "TERMINATED" ] || [ "$STATUS" = "STOPPED" ]; then
-            echo "Starting stopped VM..."
-            gcloud compute instances start "$VM_NAME" \
-              --zone="$VM_ZONE" --project="$GCP_PROJECT"
-          elif [ "$STATUS" = "RUNNING" ]; then
-            echo "VM already running"
-          else
-            echo "Unexpected VM status: $STATUS"
-            exit 1
-          fi
-
-          ssh-keygen -t rsa -b 3072 -f ~/.ssh/google_compute_engine -N "" -q 2>/dev/null || true
-          echo -e "\nHost *\n  ConnectTimeout 10" >> ~/.ssh/config
-
-          echo "Waiting for SSH readiness..."
-          for i in $(seq 1 30); do
-            if gcloud compute ssh "$VM_NAME" --quiet \
-              --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-              --tunnel-through-iap \
-              --command="echo ready" 2>/dev/null; then
-              echo "VM is ready"
-              break
-            fi
-            if [ "$i" -eq 30 ]; then
-              echo "Timed out waiting for VM SSH"
-              exit 1
-            fi
-            sleep 5
-          done
-
-      - name: Provision VM credentials
-        if: steps.select-tests.outputs.should_run == 'true'
-        run: |
-          scp_retry() {
-            local src="$1"
-            local dest="$2"
-            local label="$3"
-            local attempt
-
-            for attempt in $(seq 1 5); do
-              if gcloud compute scp --quiet "$src" "$VM_NAME":"$dest" \
-                --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-                --tunnel-through-iap; then
-                return 0
-              fi
-              echo "Retrying $label scp ($attempt/5) ..."
-              sleep 5
-            done
-
-            echo "Failed to copy $label to VM after 5 attempts"
-            return 1
-          }
-
-          ssh_retry() {
-            local label="$1"
-            local command="$2"
-            local attempt
-
-            for attempt in $(seq 1 5); do
-              if gcloud compute ssh "$VM_NAME" --quiet \
-                --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-                --tunnel-through-iap \
-                --command="$command"; then
-                return 0
-              fi
-              echo "Retrying $label ssh command ($attempt/5) ..."
-              sleep 5
-            done
-
-            echo "Failed $label ssh command after 5 attempts"
-            return 1
-          }
-
-          echo '${{ secrets.GCP_SA_KEY }}' > /tmp/sa-key.json
-          scp_retry /tmp/sa-key.json ~/ci-sa-key.json "service-account key"
-          rm -f /tmp/sa-key.json
-
-          echo '${{ secrets.HARNESS_DEPLOY_KEY }}' > /tmp/deploy-key
-          chmod 600 /tmp/deploy-key
-          scp_retry /tmp/deploy-key ~/ci-deploy-key "deploy key"
-          rm -f /tmp/deploy-key
-
-          ssh_retry "relay-e2e config dir creation" "mkdir -p ~/.config/relay-e2e"
-
-          echo '${{ secrets.CI_R2_ENDPOINT }}' > /tmp/r2-endpoint
-          echo '${{ secrets.CI_R2_ACCESS_KEY_ID }}' > /tmp/r2-access-key
-          echo '${{ secrets.CI_R2_SECRET_ACCESS_KEY }}' > /tmp/r2-secret-key
-          ssh_retry "R2 env write" "cat > ~/.config/relay-e2e/r2-env.sh << 'CREDS'
-          export CI_R2_ENDPOINT='$(cat /tmp/r2-endpoint)'
-          export CI_R2_ACCESS_KEY_ID='$(cat /tmp/r2-access-key)'
-          export CI_R2_SECRET_ACCESS_KEY='$(cat /tmp/r2-secret-key)'
-          CREDS
-          chmod 600 ~/.config/relay-e2e/r2-env.sh"
-          rm -f /tmp/r2-endpoint /tmp/r2-access-key /tmp/r2-secret-key
-
-      - name: Run scripted test plans on VM
-        if: steps.select-tests.outputs.should_run == 'true'
+      - name: Run the plans on the push-lane VM
         env:
-          OBSIDIAN_VERSION_ARG: ${{ github.event.inputs.obsidian_version || '1.13.4' }}
-        run: |
-          INPUT_REF="${{ github.event.inputs.ref || '' }}"
-          REF_TYPE="${{ github.ref_type }}"
-          REF_NAME="${{ github.ref_name }}"
+          HARNESS_DEPLOY_KEY: ${{ secrets.HARNESS_DEPLOY_KEY }}
+          CI_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+          VM: ${{ format('{0}-tp-all', secrets.GCP_VM_NAME) }}
+          # A dispatch tests its ref; a tag push its tag; a branch push the
+          # exact triggering commit, so re-runs reproduce the original checkout.
+          REF: ${{ inputs.ref || (github.ref_type == 'tag' && format('refs/tags/{0}', github.ref_name)) || github.sha }}
+          HARNESS_REF: ${{ inputs.harness_ref || 'origin/main' }}
+          TESTS: ${{ inputs.tests || 'default' }}
+          OBSIDIAN_VERSION: ${{ inputs.obsidian_version || '1.13.4' }}
+        run: >-
+          .github/ci/lane.sh run --lane push --vm "$VM"
+          --ref "$REF" --harness-ref "$HARNESS_REF" --tests "$TESTS"
+          --exec-suffix all --free-slots 3,4,5,6,7,8
+          --obsidian-version "$OBSIDIAN_VERSION"
 
-          if [ -n "$INPUT_REF" ]; then
-            REF="$INPUT_REF"
-          elif [ "$REF_TYPE" = "tag" ]; then
-            REF="refs/tags/$REF_NAME"
-          else
-            # Branch pushes test the exact commit that triggered the run so
-            # that re-run attempts reproduce the original checkout instead of
-            # whatever the branch tip has moved to since.
-            REF="${{ github.sha }}"
-          fi
+      - name: Release the VM
+        if: always()
+        run: .github/ci/lane.sh cleanup
 
-          SELECTED_TESTS="${{ steps.select-tests.outputs.selected_tests }}"
-          SHARD_SLUG_ARG="${{ matrix.shard.slug }}"
-          SHARD_PROFILE_FLAGS_ARG="${{ matrix.shard.profile_flags }}"
-          HARNESS_REF_ARG="${{ github.event.inputs.harness_ref || 'origin/main' }}"
-
-          gcloud compute ssh "$VM_NAME" --quiet \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-            --tunnel-through-iap \
-            --command="bash -s -- '$REF' '$SELECTED_TESTS' '$SHARD_SLUG_ARG' '$SHARD_PROFILE_FLAGS_ARG' '$HARNESS_REF_ARG' '$OBSIDIAN_VERSION_ARG'" 2>/dev/null << 'REMOTE_SCRIPT'
-          set -eo pipefail
-          REF="$1"
-          SELECTED_TESTS="$2"
-          SHARD_SLUG="$3"
-          SHARD_PROFILE_FLAGS="${4-}"
-          HARNESS_REF="${5:-origin/main}"
-          OBSIDIAN_VERSION="${6:-1.13.4}"
-
-          [ -f ~/.config/relay-e2e/r2-env.sh ] && source ~/.config/relay-e2e/r2-env.sh
-
-          # Version-specific filename so bumping OBSIDIAN_VERSION forces a fresh
-          # install on the persistent VM instead of reusing a prior version's
-          # cached AppImage.
-          export OBSIDIAN_PATH="$HOME/obsidian/Obsidian-${OBSIDIAN_VERSION}.AppImage"
-          if [ ! -f "$OBSIDIAN_PATH" ]; then
-            echo "Installing Obsidian AppImage..."
-            mkdir -p ~/obsidian
-            # Publish via temp-then-rename: a failed wget leaves a zero-byte
-            # file at -O's destination that the cache check would trust forever.
-            wget -q -O "${OBSIDIAN_PATH}.tmp" \
-              "https://github.com/obsidianmd/obsidian-releases/releases/download/v${OBSIDIAN_VERSION}/Obsidian-${OBSIDIAN_VERSION}.AppImage"
-            chmod +x "${OBSIDIAN_PATH}.tmp"
-            mv "${OBSIDIAN_PATH}.tmp" "$OBSIDIAN_PATH"
-            echo "Installed Obsidian $OBSIDIAN_VERSION"
-          fi
-
-          rm -rf /tmp/test-reports
-          rm -f ~/test-summary.json ~/test-metadata.json
-
-          gcloud auth activate-service-account --key-file="$HOME/ci-sa-key.json" 2>/dev/null
-
-          mkdir -p ~/.ssh
-          cp ~/ci-deploy-key ~/.ssh/ci-deploy-key
-          chmod 600 ~/.ssh/ci-deploy-key
-          cat > ~/.ssh/known_hosts << 'EOF'
-          github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
-          github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
-          github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
-          EOF
-          chmod 600 ~/.ssh/known_hosts
-          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/ci-deploy-key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
-
-          if [ ! -d ~/relay-plugin ]; then
-            git clone https://github.com/No-Instructions/Relay.git ~/relay-plugin
-          fi
-          cd ~/relay-plugin
-          git fetch origin --force --prune \
-            '+refs/heads/*:refs/remotes/origin/*' \
-            '+refs/tags/*:refs/tags/*'
-          git checkout -- .
-          git clean -fd
-          # A commit orphaned by a force-push is not reachable from any
-          # fetched head, so fall back to fetching the ref directly.
-          if ! git checkout --detach "$REF"; then
-            git fetch origin "$REF"
-            git checkout --detach "origin/${REF#origin/}" 2>/dev/null \
-              || git checkout --detach "$REF"
-          fi
-          echo "Relay product checkout:"
-          git show -s --format='  commit: %H%n  subject: %s'
-          echo "  describe: $(git describe --tags --always --long 2>/dev/null || git rev-parse --short HEAD)"
-
-          if [ ! -d ~/relay-harness ]; then
-            git clone git@github.com:No-Instructions/relay-harness.git ~/relay-harness
-          fi
-          cd ~/relay-harness
-          git fetch origin --prune
-          git checkout -- .
-          git clean -fd
-          git checkout --detach "origin/${HARNESS_REF#origin/}" 2>/dev/null \
-            || git checkout --detach "$HARNESS_REF"
-          echo "Relay harness checkout:"
-          git show -s --format='  commit: %H%n  subject: %s'
-
-          # Install uv (no apt/sudo) and the test-harness Python deps into a
-          # venv, then export the interpreter so run-test-plan-suite.sh runs
-          # against that Python.
-          export PATH="$HOME/.local/bin:$PATH"
-          if ! command -v uv >/dev/null 2>&1; then
-            echo ">>> installing uv"
-            wget -qO- https://astral.sh/uv/install.sh | sh \
-              || { echo ">>> UV INSTALL FAILED (exit $?)"; exit 1; }
-          fi
-          echo ">>> uv: $(uv --version 2>&1)"
-          uv venv --clear ~/.harness-venv \
-            || { echo ">>> UV VENV FAILED (exit $?)"; exit 1; }
-          export RELAY_TEST_PLAN_PYTHON="$HOME/.harness-venv/bin/python"
-          uv pip install --python "$RELAY_TEST_PLAN_PYTHON" \
-            click websockets tree-sitter tree-sitter-javascript matplotlib \
-            || { echo ">>> UV DEPS INSTALL FAILED (exit $?)"; exit 1; }
-          "$RELAY_TEST_PLAN_PYTHON" -c "import click, websockets, tree_sitter, tree_sitter_javascript, matplotlib" \
-            || { echo ">>> PYTHON IMPORT FAILED (exit $?)"; exit 1; }
-          echo ">>> python deps ok; playwright npm install"
-          cd ~/relay-harness/playwright && npm install --ignore-scripts --no-audit --no-fund --loglevel=error \
-            || { echo ">>> PLAYWRIGHT NPM FAILED (exit $?)"; exit 1; }
-          echo ">>> playwright ok"
-
-          export RELAY_PLUGIN_DIR=~/relay-plugin
-          cd ~/relay-harness
-
-          TEST_EXIT=0
-          TEST_LOG="$HOME/test-plan-suite-output.txt"
-          RELAY_RUN_EXEC_SUFFIX="$SHARD_SLUG" \
-          RELAY_FREE_SLOT_CANDIDATES="3,4,5,6,7,8" \
-            bash ./scripts/run-test-plan-suite.sh --upload --force-slots "--tests=$SELECTED_TESTS" >"$TEST_LOG" 2>&1 || TEST_EXIT=$?
-          echo "Scripted test-plan runner exited with status $TEST_EXIT"
-
-          LATEST_SUMMARY=$(find /tmp/test-reports/runs -mindepth 3 -maxdepth 3 -type f -name summary.json -print0 2>/dev/null \
-            | xargs -0 ls -t 2>/dev/null \
-            | head -1)
-          if [ -n "$LATEST_SUMMARY" ]; then
-            LATEST="$(dirname "$LATEST_SUMMARY")"
-
-            COMMIT=$(basename "$(dirname "$LATEST")")
-            EXEC_ID=$(basename "$LATEST")
-            REPORT_URL="https://ci.system3.dev/runs/${COMMIT}/${EXEC_ID}/index.html"
-            echo "{\"reportUrl\": \"$REPORT_URL\", \"commit\": \"$COMMIT\", \"execId\": \"$EXEC_ID\"}" > ~/test-metadata.json
-
-            node - "$LATEST_SUMMARY" > ~/test-summary.json <<'NODE'
-          const fs = require('fs');
-          const [summaryPath] = process.argv.slice(2);
-          const raw = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
-
-          const planIdFor = test => {
-            const source = `${test?.dir || ''} ${test?.name || ''}`.toLowerCase();
-            const match = source.match(/\btp[-_ ]?(\d{3})\b/);
-            return match ? `tp${match[1]}` : 'tp???';
-          };
-
-          const tests = (raw.tests || []).map(test => ({
-            name: planIdFor(test),
-            dir: planIdFor(test),
-            status: test.status || (test.passed ? 'pass' : 'fail'),
-            passed: test.passed === true || test.status === 'pass',
-          }));
-
-          const counts = tests.reduce((acc, test) => {
-            acc[test.status] = (acc[test.status] || 0) + 1;
-            return acc;
-          }, {});
-          const rawSummary = raw.summary || {};
-          const summary = {
-            total: rawSummary.total ?? tests.length,
-            pass: rawSummary.pass ?? counts.pass ?? 0,
-            fail: rawSummary.fail ?? counts.fail ?? 0,
-            expectedFail: rawSummary.expectedFail ?? counts.expected_fail ?? 0,
-            unexpectedPass: rawSummary.unexpectedPass ?? counts.unexpected_pass ?? 0,
-            duration: rawSummary.duration ?? 0,
-          };
-
-          process.stdout.write(JSON.stringify({
-            state: raw.state || (summary.fail > 0 ? 'failure' : 'success'),
-            summary,
-            tests,
-          }, null, 2));
-          NODE
-          else
-            echo '{"summary":{"total":0,"pass":0,"fail":0},"tests":[],"state":"error"}' > ~/test-summary.json
-            echo '{"reportUrl":"","commit":"","execId":""}' > ~/test-metadata.json
-          fi
-
-          exit $TEST_EXIT
-          REMOTE_SCRIPT
-
-      - name: Clean up VM credentials
-        if: always() && steps.select-tests.outputs.should_run == 'true'
-        run: |
-          gcloud compute ssh "$VM_NAME" --quiet \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-            --tunnel-through-iap \
-            --command="rm -f ~/ci-sa-key.json ~/ci-deploy-key ~/.ssh/ci-deploy-key ~/.config/relay-e2e/r2-env.sh" 2>/dev/null || true
-
-      - name: Fetch results
-        if: always() && steps.select-tests.outputs.should_run == 'true'
-        run: |
-          rm -f summary.json metadata.json
-          gcloud compute scp --quiet "$VM_NAME":~/test-plan-suite-output.txt ./suite-output.txt \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap 2>/dev/null || true
-          gcloud compute scp --quiet "$VM_NAME":~/test-summary.json ./summary.json \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-            --tunnel-through-iap 2>/dev/null || true
-          gcloud compute scp --quiet "$VM_NAME":~/test-metadata.json ./metadata.json \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-            --tunnel-through-iap 2>/dev/null || true
-
-      - name: Upload shard metadata
-        if: always() && steps.select-tests.outputs.should_run == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
         with:
-          name: testplans-${{ matrix.shard.slug }}-metadata
+          name: testplans-all-metadata
           path: |
             summary.json
             metadata.json
-            suite-output.txt
           if-no-files-found: ignore
 
-      - name: Request shard VM stop
-        if: always() && steps.select-tests.outputs.should_run == 'true'
-        run: |
-          STATUS=$(gcloud compute instances describe "$VM_NAME" \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-            --format='get(status)' 2>/dev/null || echo "NOT_FOUND")
-
-          if [ "$STATUS" = "RUNNING" ]; then
-            echo "Requesting asynchronous stop for shard VM..."
-            gcloud compute instances stop "$VM_NAME" \
-              --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-              --quiet --async 2>/dev/null || true
-          else
-            echo "Skipping stop request (status: $STATUS)"
-          fi
-
-      - name: Generate job summary
+      - name: Summarize
         if: always()
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           script: |
-            const fs = require('fs');
-            const shardName = process.env.SHARD_NAME || 'shard';
-            const shouldRun = process.env.RUN_SHARD === 'true';
-
-            if (!shouldRun) {
-              core.summary.addRaw(`## E2E scripted test plans (${shardName})\n\n:warning: **SKIPPED** | no matching tests for this shard\n`);
-              await core.summary.write();
-              return;
-            }
-
-            let summary, metadata;
-            try {
-              summary = JSON.parse(fs.readFileSync('summary.json', 'utf-8'));
-            } catch {
-              core.summary.addRaw(`## E2E scripted test plans (${shardName})\n\n:x: **Failed to retrieve test results from VM**\n`);
-              await core.summary.write();
-              core.setFailed('No test results available');
-              return;
-            }
-            try {
-              metadata = JSON.parse(fs.readFileSync('metadata.json', 'utf-8'));
-            } catch {
-              metadata = { reportUrl: '', commit: '', execId: '' };
-            }
-
-            const s = summary.summary || {};
-            const tests = summary.tests || [];
-            const statusEmoji = {
-              pass: ':white_check_mark:',
-              fail: ':x:',
-              expected_fail: ':warning:',
-              unexpected_pass: ':sparkles:',
-            };
-
-            const totalDur = Math.round((s.duration || 0) / 1000);
-            const verdictEmoji = (s.fail || 0) > 0 ? ':x:' : ':white_check_mark:';
-            const verdictText = (s.fail || 0) > 0 ? 'FAIL' : 'PASS';
-            const parts = [];
-            if (s.pass) parts.push(`${s.pass} pass`);
-            if (s.fail) parts.push(`${s.fail} fail`);
-            if (s.expectedFail) parts.push(`${s.expectedFail} expected-fail`);
-            if (s.unexpectedPass) parts.push(`${s.unexpectedPass} unexpected-pass`);
-
-            let md = `## E2E scripted test plans (${shardName})\n\n`;
-            md += `${verdictEmoji} **${verdictText}** | ${parts.join(', ')} | ${totalDur}s`;
-            if (metadata.reportUrl) {
-              md += ` | [Private Report](${metadata.reportUrl})`;
-            }
-            md += `\n\n`;
-
-            const planIdFor = test => {
-              const source = `${test?.dir || ''} ${test?.name || ''}`.toLowerCase();
-              const match = source.match(/\btp[-_ ]?(\d{3})\b/);
-              return match ? `tp${match[1]}` : 'tp???';
-            };
-
-            md += `| Test | Status |\n`;
-            md += `|------|--------|\n`;
-            for (const t of tests) {
-              const emoji = statusEmoji[t.status] || ':grey_question:';
-              md += `| ${planIdFor(t)} | ${emoji} ${t.status} |\n`;
-            }
-
-            core.summary.addRaw(md);
-            await core.summary.write();
-
-            if (metadata.reportUrl) {
-              try {
-                const { owner, repo } = context.repo;
-                const checkName = `scripted-test (${shardName})`;
-                const { data } = await github.rest.checks.listForRef({
-                  owner,
-                  repo,
-                  ref: context.sha,
-                  check_name: checkName,
-                  per_page: 100,
-                });
-                const runPath = `/actions/runs/${context.runId}/`;
-                const check = data.check_runs.find(checkRun => (checkRun.details_url || '').includes(runPath))
-                  || data.check_runs[0];
-                if (check) {
-                  await github.rest.checks.update({
-                    owner,
-                    repo,
-                    check_run_id: check.id,
-                    details_url: metadata.reportUrl,
-                  });
-                }
-              } catch (error) {
-                core.warning(`Failed to update check details URL: ${error.message}`);
-              }
-            }
-
-            if ((s.total || 0) === 0 || summary.state === 'error') {
-              core.setFailed('No tests were executed');
-            } else if ((s.fail || 0) > 0) {
-              core.setFailed(`${s.fail} test(s) failed`);
-            }
-        env:
-          RUN_SHARD: ${{ steps.select-tests.outputs.should_run }}
+            await require(`${process.env.GITHUB_WORKSPACE}/.github/ci/summary.js`)(
+              { github, context, core },
+              { title: 'E2E scripted test plans (scripted-all)', checkName: 'scripted-test (scripted-all)' });
