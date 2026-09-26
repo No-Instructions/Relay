@@ -1,3 +1,4 @@
+import { compactAttachmentErrorLabel } from "../S3Error";
 import {
 	TAbstractFile,
 	TFile,
@@ -420,17 +421,24 @@ class FilePillDecoration {
 			: this.file.pending
 				? ("pending" as const)
 				: ("unknown" as const);
+		// The tag has room for a few words; the full message is its tooltip.
+		const text = this.file.uploadError
+			? compactAttachmentErrorLabel(this.file.uploadError)
+			: tag;
+		const label = this.file.uploadError;
 		if (!this.pill) {
 			this.pill = mountComponent(UploadPill, {
 				target: this.el,
 				props: {
-					text: tag,
+					text,
+					label,
 					status,
 				},
 			});
 		} else {
 			this.pill.set({
-				text: tag,
+				text,
+				label,
 				status,
 			});
 		}
