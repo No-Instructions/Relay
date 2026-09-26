@@ -137,6 +137,22 @@ function isRetryableS3Details(details: S3ErrorDetails): boolean {
 	);
 }
 
+/**
+ * A short label for the explorer's file tag, which has room for a few
+ * words and shows the full message as its tooltip. Matches the message
+ * families this module and the sync engine produce; anything else is a
+ * generic sync error.
+ */
+export function compactAttachmentErrorLabel(message: string): string {
+	const text = message.toLowerCase();
+	if (/not found in storage|missing from storage/.test(text)) return "missing on server";
+	if (/will retry|temporarily unavailable|is busy|timed out|could not reach/.test(text)) return "retrying";
+	if (/too large/.test(text)) return "too large";
+	if (/out of storage|storage is required/.test(text)) return "no storage";
+	if (/authorization expired|could not access|access required|not authorized/.test(text)) return "no access";
+	return "sync error";
+}
+
 function userMessageForS3Error(details: S3ErrorDetails): string {
 	switch (details.code) {
 		case "SlowDown":

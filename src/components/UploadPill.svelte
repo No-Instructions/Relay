@@ -1,6 +1,6 @@
 <script lang="ts">
 	export let text: string;
-	export let label: string;
+	export let label: string | undefined = undefined;
 	export let color: string | undefined;
 	// The declared status is a closed vocabulary, never the display text:
 	// consumers must be able to match it without pinning human copy.
@@ -19,5 +19,8 @@
 <style>
 	.system3-uploadpill {
 		text-wrap: nowrap;
+		max-width: 45%;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 </style>
