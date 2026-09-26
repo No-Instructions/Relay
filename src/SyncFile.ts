@@ -601,6 +601,9 @@ export class SyncFile
 			try {
 				const uploaded = await this.sharedFolder.cas.writeFile(this);
 				await this.sharedFolder.markUploaded(this, "completed", uploaded);
+				if (hash) {
+					this.sharedFolder.markCasVerified(this.guid, hash);
+				}
 				this.uploadError = undefined;
 				this.notifyListeners();
 				this.debug("push complete", {
@@ -693,7 +696,11 @@ export class SyncFile
 			return;
 		}
 
-		if (this.isCleanLastServerEdit(this.meta, this.stat)) {
+		if (
+			this.isCleanLastServerEdit(this.meta, this.stat) &&
+			(!flags().enableVerifyUploads ||
+				this.sharedFolder.isCasVerified(this.guid, this.meta.hash))
+		) {
 			this.debug("sync decision", {
 				path: this.path,
 				guid: this.guid,
@@ -718,15 +725,7 @@ export class SyncFile
 				metaSynctime: this.meta.synctime,
 			});
 			if (flags().enableVerifyUploads) {
-				// Not remote
-				try {
-					if (!(await this.verifyUpload())) {
-						this.warn("file in metadata, but not on the server!");
-						await this.push();
-					}
-				} catch {
-					// pass
-				}
+				await this.reconcileRemoteContent(hash);
 			}
 			if (hash === this.meta.hash) {
 				this.clearCurrentUserEdit();
@@ -840,6 +839,54 @@ export class SyncFile
 		return this.sharedFolder.cas.verify(this);
 	}
 
+	/**
+	 * Confirm the version named by metadata exists in storage, at most once
+	 * per (file, hash). A hole is healable only from a device whose local
+	 * content is the missing version; a device holding a different version
+	 * must not clobber the claim, because the missing bytes may still exist
+	 * on the authoring device.
+	 */
+	private async reconcileRemoteContent(localHash: string | null) {
+		this._refreshMeta();
+		if (!this.meta) {
+			return;
+		}
+		const metaHash = this.meta.hash;
+		if (this.sharedFolder.isCasVerified(this.guid, metaHash)) {
+			return;
+		}
+		let exists: boolean;
+		try {
+			exists = await this.verifyUpload();
+		} catch (error) {
+			this.debug(
+				"remote content verification failed; retrying on a later sync",
+				error,
+			);
+			return;
+		}
+		if (exists) {
+			this.sharedFolder.markCasVerified(this.guid, metaHash);
+			return;
+		}
+		if (localHash && localHash === metaHash) {
+			this.warn(
+				`[${this.path}] content missing from storage; re-uploading local copy`,
+			);
+			await this.push(true);
+			return;
+		}
+		this.warn(
+			`[${this.path}] content missing from storage and the local copy is a different version; only a device holding that version can restore it`,
+		);
+		const message =
+			"Attachment content is missing from storage; waiting for a device that has this version.";
+		if (this.uploadError !== message) {
+			this.uploadError = message;
+			this.notifyListeners();
+		}
+	}
+
 	public attachmentTask(): AttachmentTask {
 		return { key: `${this.sharedFolder.guid}:${this.guid}`, path: this.caf.path, retry: () => this.sync() };
 	}
@@ -886,6 +933,7 @@ export class SyncFile
 					else await this.vault.adapter.rename(partial, destination);
 				} catch (error) { this.lastServerEdit = previous; throw error; }
 				await this.hashStore.saveHash(destination, meta.hash, mtime, this.guid);
+				this.sharedFolder.markCasVerified(this.guid, meta.hash);
 				this.uploadError = undefined;
 				this.notifyListeners();
 			} finally {
@@ -947,6 +995,7 @@ export class SyncFile
 				.catch((error) => {
 					this.warn("Failed to save pulled hash:", error);
 				});
+			this.sharedFolder.markCasVerified(this.guid, this.meta.hash);
 			if (this.uploadError) {
 				this.uploadError = undefined;
 				this.notifyListeners();

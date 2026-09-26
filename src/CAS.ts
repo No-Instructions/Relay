@@ -196,7 +196,9 @@ export class ContentAddressedStore extends HasLogging {
 			);
 		}
 		if (flags().enableStreamingUploads && this.sharedFolder.attachmentTransfers && await desktopAttachmentIO(syncFile.vault)) return this.writeStreaming(syncFile);
-		return this.s3Request(() => this.writeBuffered(syncFile), "upload attachment");
+		return this.withTransientRetry("upload attachment", () =>
+			this.s3Request(() => this.writeBuffered(syncFile), "upload attachment"),
+		);
 	}
 
 	private async writeBuffered(syncFile: SyncFile, signal?: AbortSignal): Promise<AttachmentVersion> {
