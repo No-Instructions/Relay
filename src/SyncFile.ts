@@ -1,4 +1,5 @@
 "use strict";
+import { vaultPaths } from "./VaultPathResolver";
 import {
 	S3File,
 	S3RemoteFile,
@@ -225,7 +226,7 @@ export class ContentAddressedFile extends HasLogging {
 		private guidProvider?: () => string | undefined,
 	) {
 		super();
-		const tfile = this.vault.getAbstractFileByPath(path);
+		const tfile = vaultPaths(this.vault).resolve(path);
 		if (tfile && tfile instanceof TFile) {
 			this._tfile = tfile;
 		}
@@ -233,7 +234,7 @@ export class ContentAddressedFile extends HasLogging {
 
 	private get tfile(): TFile {
 		if (!this._tfile) {
-			const tfile = this.vault.getAbstractFileByPath(this.path);
+			const tfile = vaultPaths(this.vault).resolve(this.path);
 			if (tfile && tfile instanceof TFile) {
 				this._tfile = tfile;
 			} else {
@@ -338,7 +339,7 @@ export class ContentAddressedFile extends HasLogging {
 		}
 		const oldPath = this.path;
 		this.path = newPath;
-		const tfile = this.vault.getAbstractFileByPath(newPath);
+		const tfile = vaultPaths(this.vault).resolve(newPath);
 		this._tfile = tfile instanceof TFile ? tfile : null;
 		// The hash store is keyed by vault-absolute path and its rows carry
 		// durable identity evidence; a row left behind at the old path would
@@ -372,7 +373,7 @@ export class ContentAddressedFile extends HasLogging {
 		// Re-verify against the vault on every call: a cached handle can go
 		// stale when the file is deleted or moved between checks, and a stale
 		// true here makes downstream TFile getters throw mid-flow.
-		const tfile = this.vault.getAbstractFileByPath(this.path);
+		const tfile = vaultPaths(this.vault).resolve(this.path);
 		if (tfile && tfile instanceof TFile) {
 			this._tfile = tfile;
 			return true;
@@ -968,7 +969,7 @@ export class SyncFile
 	}
 
 	public get tfile(): TFile {
-		const abstractFile = this.vault.getAbstractFileByPath(
+		const abstractFile = vaultPaths(this.vault).resolve(
 			this.sharedFolder.getPath(this.path),
 		);
 		if (abstractFile instanceof TFile) {
@@ -1013,7 +1014,7 @@ export class SyncFile
 	checkSyncWork(intent: WorkIntent): void {
 		if (!this.sharedFolder.attachmentTransfers) return;
 		this._refreshMeta();
-		const local = this.vault.getAbstractFileByPath(this.sharedFolder.getPath(this.path));
+		const local = vaultPaths(this.vault).resolve(this.sharedFolder.getPath(this.path));
 		this.checkSizeLimits(intent, local instanceof TFile ? local.stat : undefined);
 	}
 

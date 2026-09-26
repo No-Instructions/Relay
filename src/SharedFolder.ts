@@ -100,6 +100,7 @@ import {
 	normalizeRemoteActivityTimestamp,
 } from "./RemoteActivityIndex";
 import { expandDesiredRemotePaths } from "./syncPathUtils";
+import { FolderPathIdentity } from "./FolderPathIdentity";
 import type { TimeProvider } from "./TimeProvider";
 import * as Y from "yjs";
 
@@ -271,6 +272,7 @@ export class SharedFolder extends HasProvider {
 	private persistenceSynced: boolean = false;
 	private syncFileTreePromise: SharedPromise<void> | null = null;
 	private syncRequestedDuringSync: boolean = false;
+	private _pathIdentity: FolderPathIdentity | null = null;
 	private authoritative: boolean;
 	private pendingUpload: LocalStorage<string>;
 	private unsubscribes: Unsubscriber[] = [];
@@ -453,6 +455,9 @@ export class SharedFolder extends HasProvider {
 		this.syncStore.on(async () => {
 			await this.syncFileTree();
 		});
+		const invalidatePaths = () => this._pathIdentity?.invalidate();
+		this.folderDoc.on("afterTransaction", invalidatePaths);
+		this.unsubscribes.push(() => this.folderDoc.off("afterTransaction", invalidatePaths));
 
 		// The newly-enabled-types diff in syncFileTree compares against this
 		// baseline. It must be populated before the first syncFileTree can
@@ -569,8 +574,7 @@ export class SharedFolder extends HasProvider {
 				new IndexeddbPersistence(vaultId, doc, captureOpts, null, this.timeProvider),
 			getDiskState: async (docPath: string) => {
 				// docPath is SharedFolder-relative (e.g., "/note.md")
-				const vaultPath = this.getPath(docPath);
-				const tfile = this.vault.getAbstractFileByPath(vaultPath);
+				const tfile = this.getAbstractFile(docPath);
 				if (!(tfile instanceof TFile)) return null;
 				return await readNoteText(this.vault, tfile);
 			},
@@ -722,6 +726,8 @@ export class SharedFolder extends HasProvider {
 				// in for one.
 				if (!(await this.folderMachine.whenMayMint())) return;
 				if (this.destroyed) return;
+				const initializingPaths = this.pathIdentity.initialize();
+				if (initializingPaths) await initializingPaths;
 				this.addLocalDocs();
 				this.folderMachine.send({ type: "DISK_SCANNED" });
 				await this.syncFileTree();
@@ -1460,7 +1466,7 @@ export class SharedFolder extends HasProvider {
 			const vpath = this.getVirtualPath(tfile.path);
 			return (
 				!this.pendingCreates.has(vpath) &&
-				(this.canManageFiles || this.syncStore.has(vpath))
+				(this.canManageFiles || this.pathIdentity.hasClaim(vpath) || this.syncStore.has(vpath))
 			);
 		});
 		if (types) {
@@ -1529,7 +1535,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	public get tfolder(): TFolder {
-		const folder = this.vault.getAbstractFileByPath(this.path);
+		const folder = this.getAbstractFile("");
 		if (!(folder instanceof TFolder)) {
 			throw new Error("tfolder is not a folder");
 		}
@@ -1577,7 +1583,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	private getSyncFiles(): TAbstractFile[] {
-		const folder = this.vault.getAbstractFileByPath(this.path);
+		const folder = this.getAbstractFile("");
 		if (!(folder instanceof TFolder)) {
 			throw new Error(
 				`Could not find shared folders on file system at ${this.path}`,
@@ -2251,19 +2257,49 @@ export class SharedFolder extends HasProvider {
 		return this.shouldConnect ? "connected" : "disconnected";
 	}
 
+	private get pathIdentity(): FolderPathIdentity {
+		return this._pathIdentity ??= new FolderPathIdentity(
+			this.vault,
+			() => this.path,
+			visit => this.syncStore.forEach(visit),
+			file => {
+				const known = this.tfileGuids.get(file);
+				if (known && this.files.has(known)) return known;
+				const path = this.getVirtualPath(file.path);
+				return this.pendingUpload.get(path) ??
+					Array.from(this.files.values()).find(local => local.path === path)?.guid;
+			},
+		);
+	}
+
 	async _handleServerRename(
 		doc: IFile,
 		path: string,
 		file: TAbstractFile,
 		diffLog?: string[],
 	): Promise<void> {
-		// take a doc and it's new path.
 		const oldVPath = this.getVirtualPath(file.path);
 		this.serverOps.recordMove({ guid: doc.guid, from: oldVPath, to: path });
 		const inFlight = this.serverRenamesInFlight ??= new Map();
 		const rename = { deleted: false };
 		inFlight.set(doc.guid, rename);
+		let targetVPath = path;
 		try {
+			const location = await this.pathIdentity.resolve(path, doc.guid, file);
+			if (location.kind !== "available") {
+				this.warn("remote move deferred", path, location);
+				return;
+			}
+			const target = this.pathIdentity.moveTarget(path);
+			targetVPath = this.getVirtualPath(target);
+			if (targetVPath !== path) {
+				this.serverOps.recordMove({ guid: doc.guid, from: oldVPath, to: targetVPath });
+			}
+			if (file.path === target) {
+				this.serverOps.completeMove(oldVPath, targetVPath);
+				if (doc.path !== path) doc.move(path, this);
+				return;
+			}
 			diffLog?.push(`${file.path} was renamed to ${this.getPath(path)}`);
 			if (file instanceof TFile) {
 				const dir = dirname(path);
@@ -2272,8 +2308,8 @@ export class SharedFolder extends HasProvider {
 					diffLog?.push(`creating directory ${dir}`);
 				}
 			}
-			await this.renameForServerMove(file, normalizePath(this.getPath(path)));
-			this.serverOps.completeMove(oldVPath, path);
+			await this.renameForServerMove(file, target);
+			this.serverOps.completeMove(oldVPath, targetVPath);
 			this.bootSnapshot?.discard(oldVPath);
 			if (!this.destroyed && doc.path !== path) {
 				doc.move(path, this);
@@ -2285,7 +2321,7 @@ export class SharedFolder extends HasProvider {
 				const move = this.serverOps.moveFor(doc.guid);
 				const recreatedSource = diskPath === oldVPath && move !== undefined &&
 					!this.serverOps.coversPath(oldVPath);
-				if (move?.from === oldVPath && move.to === path) {
+				if (move?.from === oldVPath && move.to === targetVPath) {
 					this.serverOps.discardMove(doc.guid);
 				}
 				// Success leaves the file at the destination; a failed rename may
@@ -2323,6 +2359,11 @@ export class SharedFolder extends HasProvider {
 		diffLog?: string[],
 		restoreDeleted = false,
 	): Promise<IFile | undefined> {
+		const location = await this.pathIdentity.resolve(vpath, meta.id);
+		if (location.kind !== "available") {
+			this.warn("remote materialization deferred", vpath, location);
+			return undefined;
+		}
 		const live = restoreDeleted ? this.files.get(meta.id) : undefined;
 		if (isDocument(live)) {
 			// Restore the missing disk object from server content without
@@ -2708,6 +2749,20 @@ export class SharedFolder extends HasProvider {
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
+		const collision = this.pathIdentity.collision(path);
+		if (collision) {
+			this.warn("remote reconciliation deferred", path, collision);
+			return { op: "noop", path, promise: Promise.resolve() };
+		}
+
+		if (remoteIds.has(guid) && file && file.path !== path) {
+			const tfile = this.pathIdentity.file(file.path);
+			if (tfile) {
+				return { op: "rename", path, from: this.getPath(file.path), to: path,
+					promise: this._handleServerRename(file, path, tfile, diffLog) };
+			}
+		}
+
 		if (this.existsSync(path)) {
 			// Check for type mismatch: local SyncFile vs remote Canvas
 			if (file && isSyncFile(file) && isCanvasMeta(meta)) {
@@ -2765,22 +2820,10 @@ export class SharedFolder extends HasProvider {
 				}
 			}
 
-			return { op: "noop", path, promise: Promise.resolve() };
-		}
-
-		if (remoteIds.has(guid) && file) {
-			const oldPath = this.getPath(file.path);
-			const tfile = this.vault.getAbstractFileByPath(oldPath);
-			if (tfile) {
-				const promise = this._handleServerRename(file, path, tfile, diffLog);
-				return {
-					op: "rename",
-					path: path,
-					from: oldPath,
-					to: path,
-					promise,
-				};
+			if (!file && this.getAbstractFile(path)?.path !== this.getPath(path)) {
+				return { op: "create", path, promise: this._handleServerCreate(path, meta, diffLog) };
 			}
+			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
 		// write will trigger `create` which will read the file from disk by default.
@@ -3071,6 +3114,7 @@ export class SharedFolder extends HasProvider {
 	 */
 	private isNovelPath(vpath: string): boolean {
 		return (
+			!this.pathIdentity.hasClaim(vpath) &&
 			!this.syncStore.has(vpath) &&
 			!(this.bootSnapshot?.has(vpath) ?? false) &&
 			!this.serverOps.coversPath(vpath)
@@ -3165,7 +3209,7 @@ export class SharedFolder extends HasProvider {
 	public notifyVaultCreateLegacy(tfile: TAbstractFile): boolean {
 		const vpath = this.getVirtualPath(tfile.path);
 		if (this.isPendingDelete(vpath)) return false;
-		if (this.syncStore.has(vpath)) return true;
+		if (this.pathIdentity.hasClaim(vpath) || this.syncStore.has(vpath)) return true;
 		this.observeMoveSourceRecreation(vpath);
 		this.scheduleLegacyCreate(vpath);
 		return false;
@@ -3181,7 +3225,7 @@ export class SharedFolder extends HasProvider {
 		const timer = this.timeProvider.setTimeout(() => {
 			this.pendingCreates.delete(vpath);
 			if (this.isPendingDelete(vpath)) return;
-			const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
+			const tfile = this.getAbstractFile(vpath);
 			if (!tfile) return;
 			if (this.rejectReaderFolderChange([vpath])) return;
 			const newDocs = this.placeHold([tfile]);
@@ -3338,6 +3382,7 @@ export class SharedFolder extends HasProvider {
 		ops: Operation[],
 		types: SyncType[],
 	) {
+		this.pathIdentity.invalidate();
 		const remoteIds = syncStore.remoteIds;
 		syncStore.forEachWithPending((meta, path) => {
 			if (!this._assertNamespacing(path)) return;
@@ -3472,6 +3517,7 @@ export class SharedFolder extends HasProvider {
 			op: "update",
 			path,
 			promise: (async () => {
+				if (!this.pathIdentity.canClaim(path, pendingGuid)) return;
 				await this.preparePendingFileForPublication(file);
 				if (this.destroyed || run?.cancelled) return;
 				const latestMeta = this.syncStore.getCommittedMeta(path);
@@ -3650,6 +3696,9 @@ export class SharedFolder extends HasProvider {
 				if (!this.mergeManager || this.destroyed) return;
 				await this.mergeManager.initialize();
 				if (this.destroyed) return;
+				const initializingPaths = this.pathIdentity.initialize();
+				if (initializingPaths) await initializingPaths;
+				this.pathIdentity.invalidate();
 
 				// When file types are newly enabled, enqueue their local
 				// files for syncing before the rest of the tree sync runs.
@@ -3768,14 +3817,12 @@ export class SharedFolder extends HasProvider {
 	}
 
 	read(doc: IFile): Promise<string> {
-		const vaultPath = join(this.path, doc.path);
+		const vaultPath = this.pathIdentity.file(doc.path)?.path ?? this.getPath(doc.path);
 		return this.vault.adapter.read(normalizePath(vaultPath));
 	}
 
 	existsSync(path: string): boolean {
-		const vaultPath = normalizePath(join(this.path, path));
-		const pathExists = this.vault.getAbstractFileByPath(vaultPath) !== null;
-		return pathExists;
+		return this.pathIdentity.file(path) !== null;
 	}
 
 	exists(doc: IFile): Promise<boolean> {
@@ -3835,13 +3882,17 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
-	mkdir(path: string): Promise<void> {
-		const vaultPath = join(this.path, path);
-		return this.vault.adapter.mkdir(normalizePath(vaultPath));
+	async mkdir(path: string): Promise<void> {
+		if (this.getAbstractFile(path) instanceof TFolder) return;
+		try {
+			await this.vault.createFolder(normalizePath(this.getPath(path)));
+		} catch (error) {
+			if (!(this.getAbstractFile(path) instanceof TFolder)) throw error;
+		}
 	}
 
 	checkPath(path: string): boolean {
-		return path.startsWith(this.path + sep);
+		return this.pathIdentity.key(path).startsWith(this.pathIdentity.key(this.path + sep));
 	}
 
 	getVirtualPath(path: string): string {
@@ -3851,10 +3902,12 @@ export class SharedFolder extends HasProvider {
 		return vPath;
 	}
 
+	getAbstractFile(vpath: string): TAbstractFile | null {
+		return this.pathIdentity.file(vpath);
+	}
+
 	getTFile(file: IFile): TFile | null {
-		const maybeTFile = this.vault.getAbstractFileByPath(
-			this.getPath(file.path),
-		);
+		const maybeTFile = this.pathIdentity.file(file.path);
 		if (maybeTFile instanceof TFile) {
 			return maybeTFile;
 		}
@@ -3882,7 +3935,7 @@ export class SharedFolder extends HasProvider {
 		} else {
 			if (!this.canManageFiles) return null;
 			// the File exists, but the ID doesn't
-			const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
+			const tfile = this.getAbstractFile(vpath);
 			if (!(tfile instanceof TFile)) {
 				throw new Error("unexpectedly missing tfile or got tfolder");
 			}
@@ -3917,7 +3970,7 @@ export class SharedFolder extends HasProvider {
 		} else {
 			if (!this.canManageFiles) return null;
 			// the File exists, but the ID doesn't
-			const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
+			const tfile = this.getAbstractFile(vpath);
 			if (!(tfile instanceof TFile)) {
 				throw new Error("unexpectedly missing tfile or got tfolder");
 			}
@@ -3980,11 +4033,13 @@ export class SharedFolder extends HasProvider {
 			// no step can interleave between the proof and the write.
 			let contestedMeta: Meta | undefined = undefined;
 			this.folderDoc.transact(() => {
+				this.pathIdentity.invalidate();
 				const committedMeta = this.syncStore.getCommittedMeta(file.path);
 				if (committedMeta && committedMeta.id !== meta.id) {
 					contestedMeta = committedMeta;
 					return;
 				}
+				if (!this.pathIdentity.canClaim(file.path, meta.id)) return;
 				if (this.syncStore.willSet(file.path, meta)) {
 					this.log("new meta", file.path, meta);
 					this.syncStore.markUploaded(file.path, meta);
@@ -4095,7 +4150,9 @@ export class SharedFolder extends HasProvider {
 	}
 
 	private resolveFile(tfile: TAbstractFile): IFile | null {
-		const vpath = this.getVirtualPath(tfile.path);
+		const diskPath = this.getVirtualPath(tfile.path);
+		const vpath = this.pendingUpload.has(diskPath)
+			? diskPath : this.pathIdentity.canonical(diskPath);
 
 		// Identity first: Obsidian keeps one TAbstractFile instance per file
 		// and mutates its path in place, so a guid learned for the instance
@@ -4109,6 +4166,8 @@ export class SharedFolder extends HasProvider {
 				return knownFile;
 			}
 		}
+
+		if (this.pathIdentity.collision(diskPath)) return null;
 
 		const guid = this.syncStore.get(vpath);
 
@@ -4180,7 +4239,15 @@ export class SharedFolder extends HasProvider {
 		const mayMint = this.folderMachine.mayMint;
 		this.folderDoc.transact(() => {
 			newFiles.forEach((file) => {
-				const vpath = this.getVirtualPath(file.path);
+				const diskPath = this.getVirtualPath(file.path);
+				const vpath = this.pathIdentity.canonical(diskPath);
+				if (diskPath !== vpath) {
+					const pendingGuid = this.pendingUpload.get(diskPath);
+					if (pendingGuid && !this.pendingUpload.has(vpath)) {
+						this.pendingUpload.set(vpath, pendingGuid);
+						this.pendingUpload.delete(diskPath);
+					}
+				}
 				if (this.isPendingDelete(vpath)) {
 					this.log("skipping place hold for pending delete", vpath);
 					return;
@@ -4419,7 +4486,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	public viewSyncFile(tfile: TFile): SyncFile | undefined {
-		const vpath = this.getVirtualPath(tfile.path);
+		const vpath = this.pathIdentity.canonical(this.getVirtualPath(tfile.path));
 		const guid = this.syncStore.get(vpath);
 		if (!guid) return;
 		const file = this.files.get(guid);
@@ -4915,7 +4982,7 @@ export class SharedFolder extends HasProvider {
 		if (!guid) {
 			throw new Error("missing guid");
 		}
-		const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
+		const tfile = this.getAbstractFile(vpath);
 		if (!tfile) {
 			throw new Error(`Upload failed, file does not exist at ${vpath}`);
 		}
@@ -4944,7 +5011,7 @@ export class SharedFolder extends HasProvider {
 		if (!guid) {
 			throw new Error("missing guid");
 		}
-		const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
+		const tfile = this.getAbstractFile(vpath);
 		if (!tfile) {
 			throw new Error(`Upload failed, file does not exist at ${vpath}`);
 		}
@@ -4981,7 +5048,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	uploadFile(tfile: TAbstractFile): IFile | null {
-		const vpath = this.getVirtualPath(tfile.path);
+		const vpath = this.pathIdentity.canonical(this.getVirtualPath(tfile.path));
 		if (!this.isSyncableTFile(tfile)) {
 			this.log("skipping upload for unsyncable file", vpath);
 			return null;

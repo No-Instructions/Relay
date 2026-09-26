@@ -1,4 +1,5 @@
 "use strict";
+import { vaultPaths } from "./VaultPathResolver";
 import { describeOrigin } from "./merge-hsm/undo/origins";
 import { IndexeddbPersistence } from "./storage/y-indexeddb";
 import * as Y from "yjs";
@@ -1634,14 +1635,14 @@ export class Document
 	private async ensureParentDirectory(vaultPath: string): Promise<void> {
 		const parentPath = vaultPath.substring(0, vaultPath.lastIndexOf("/"));
 		if (!parentPath) return;
-		if (this.vault.getAbstractFileByPath(parentPath)) return;
+		if (vaultPaths(this.vault).resolve(parentPath)) return;
 		try {
 			await this.vault.createFolder(parentPath);
 		} catch (error) {
 			// The index may have caught up while the losing creation was in
 			// flight. When it has not, the adapter is asked instead, because
 			// it reads the filesystem rather than the index.
-			if (this.vault.getAbstractFileByPath(parentPath)) return;
+			if (vaultPaths(this.vault).resolve(parentPath)) return;
 			if (await this.vault.adapter.exists(parentPath)) return;
 			throw error;
 		}

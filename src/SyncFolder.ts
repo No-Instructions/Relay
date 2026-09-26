@@ -31,9 +31,7 @@ export class SyncFolder extends HasLogging implements IFile {
 		this.name = this.path.split("/").pop() || "";
 		this.vault = this._parent.vault;
 		const fromVault = () => {
-			const tfolder = this.vault.getAbstractFileByPath(
-				this.sharedFolder.getPath(path),
-			);
+			const tfolder = this.sharedFolder.getAbstractFile(path);
 			if (tfolder instanceof TFolder) {
 				this._tfolder = tfolder;
 				this.ready = true;
@@ -47,17 +45,20 @@ export class SyncFolder extends HasLogging implements IFile {
 			if (this._parent.isPendingDelete(path)) {
 				this.warn("skipping folder creation for pending delete", path);
 			} else {
-				this.createPromise = this.vault.createFolder(
-					this.sharedFolder.getPath(path),
-				);
-				this.createPromise
+				this.createPromise = this.sharedFolder.mkdir(path).then(() => {
+					const folder = this.sharedFolder.getAbstractFile(path);
+					if (!(folder instanceof TFolder)) throw new Error("Folder is not indexed after creation");
+					return folder;
+				});
+				this.createPromise = this.createPromise
 					.then((tfolder) => {
 						this._tfolder = tfolder;
 						this.ready = true;
+						return tfolder;
 					})
-					.catch(() => {
-						// folder exists, retry
-						fromVault();
+					.catch(error => {
+						if (fromVault()) return this._tfolder!;
+						throw error;
 					});
 			}
 		}
@@ -73,8 +74,8 @@ export class SyncFolder extends HasLogging implements IFile {
 			if (this.createPromise) {
 				await this.createPromise;
 			}
-			void parent.markUploaded(this);
-		})();
+			if (this.ready) await parent.markUploaded(this);
+		})().catch(error => this.warn("folder materialization failed", path, error));
 		this.log("created");
 	}
 
@@ -106,9 +107,7 @@ export class SyncFolder extends HasLogging implements IFile {
 	}
 
 	public get tfolder(): TFolder {
-		const abstractFile = this.vault.getAbstractFileByPath(
-			this.sharedFolder.getPath(this.path),
-		);
+		const abstractFile = this.sharedFolder.getAbstractFile(this.path);
 		if (abstractFile instanceof TFolder) {
 			return abstractFile;
 		}
