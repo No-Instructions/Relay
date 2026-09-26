@@ -100,6 +100,7 @@ import {
 	normalizeRemoteActivityTimestamp,
 } from "./RemoteActivityIndex";
 import { expandDesiredRemotePaths } from "./syncPathUtils";
+import { findCaseAliasOnDisk, findOccupiedVaultPath } from "./casePathGuard";
 import type { TimeProvider } from "./TimeProvider";
 import * as Y from "yjs";
 
@@ -271,6 +272,9 @@ export class SharedFolder extends HasProvider {
 	private persistenceSynced: boolean = false;
 	private syncFileTreePromise: SharedPromise<void> | null = null;
 	private syncRequestedDuringSync: boolean = false;
+	private blockedVaultPaths = new Set<string>();
+	private warnedVaultPaths = new Map<string, string>();
+	private warnedPublicationPaths = new Map<string, string>();
 	private authoritative: boolean;
 	private pendingUpload: LocalStorage<string>;
 	private unsubscribes: Unsubscriber[] = [];
@@ -2251,6 +2255,77 @@ export class SharedFolder extends HasProvider {
 		return this.shouldConnect ? "connected" : "disconnected";
 	}
 
+	private async mayMaterializeRemotePath(
+		vpath: string,
+		source?: TAbstractFile,
+	): Promise<boolean> {
+		const target = normalizePath(this.getPath(vpath));
+		const occupied = await findOccupiedVaultPath(
+			this.vault,
+			this.path,
+			target,
+			source,
+		);
+		if (!occupied) {
+			this.warnedVaultPaths?.delete(vpath);
+			return true;
+		}
+
+		const blockedPath = occupied.path.slice(this.path.length);
+		(this.blockedVaultPaths ??= new Set()).add(blockedPath);
+		const signature = `${occupied.kind}:${occupied.path}`;
+		this.warnedVaultPaths ??= new Map();
+		if (this.warnedVaultPaths.get(vpath) !== signature) {
+			this.warn(
+				`[${vpath}] remote path cannot be materialized while ${occupied.path} occupies its disk location`,
+				occupied.kind,
+			);
+			this.warnedVaultPaths.set(vpath, signature);
+		}
+		return false;
+	}
+
+	private isProtectedByOccupiedPath(vpath: string): boolean {
+		const folded = vpath.toLowerCase();
+		for (const blocked of this.blockedVaultPaths ?? []) {
+			const prefix = blocked.toLowerCase();
+			if (folded === prefix || folded.startsWith(prefix + sep)) return true;
+		}
+		return false;
+	}
+
+	/** Keep a local case alias from publishing a second remote identity. */
+	private async mayPublishPath(vpath: string): Promise<boolean> {
+		const folded = vpath.toLowerCase();
+		const candidates: string[] = [];
+		this.syncStore.forEach((_meta, path) => {
+			if (path !== vpath && path.toLowerCase() === folded) candidates.push(path);
+		});
+		for (const other of candidates) {
+			const otherAlias = await findCaseAliasOnDisk(
+				this.vault.adapter,
+				this.path,
+				normalizePath(this.getPath(other)),
+			);
+			const localAlias = otherAlias ? null : await findCaseAliasOnDisk(
+				this.vault.adapter,
+				this.path,
+				normalizePath(this.getPath(vpath)),
+			);
+			if (!otherAlias && !localAlias) continue;
+			this.warnedPublicationPaths ??= new Map();
+			if (this.warnedPublicationPaths.get(vpath) !== other) {
+				this.warn(
+					`[${vpath}] upload cannot be published while it shares a disk location with ${other}`,
+				);
+				this.warnedPublicationPaths.set(vpath, other);
+			}
+			return false;
+		}
+		this.warnedPublicationPaths?.delete(vpath);
+		return true;
+	}
+
 	async _handleServerRename(
 		doc: IFile,
 		path: string,
@@ -2264,6 +2339,7 @@ export class SharedFolder extends HasProvider {
 		const rename = { deleted: false };
 		inFlight.set(doc.guid, rename);
 		try {
+			if (!(await this.mayMaterializeRemotePath(path, file))) return;
 			diffLog?.push(`${file.path} was renamed to ${this.getPath(path)}`);
 			if (file instanceof TFile) {
 				const dir = dirname(path);
@@ -2323,6 +2399,7 @@ export class SharedFolder extends HasProvider {
 		diffLog?: string[],
 		restoreDeleted = false,
 	): Promise<IFile | undefined> {
+		if (!(await this.mayMaterializeRemotePath(vpath))) return undefined;
 		const live = restoreDeleted ? this.files.get(meta.id) : undefined;
 		if (isDocument(live)) {
 			// Restore the missing disk object from server content without
@@ -2970,6 +3047,7 @@ export class SharedFolder extends HasProvider {
 			const isSyncableFile = this.isSyncableTFile(file);
 			const fileInFolder = this.checkPath(file.path);
 			const vpath = this.getVirtualPath(file.path);
+			if (this.isProtectedByOccupiedPath(vpath)) return;
 			const fileInMap = remotePaths.has(vpath);
 			// Only a removal witnessed in membership is adopted, and a nonempty
 			// directory is never trashed, since it may hold local-only children.
@@ -3472,6 +3550,7 @@ export class SharedFolder extends HasProvider {
 			op: "update",
 			path,
 			promise: (async () => {
+				if (!(await this.mayPublishPath(path))) return;
 				await this.preparePendingFileForPublication(file);
 				if (this.destroyed || run?.cancelled) return;
 				const latestMeta = this.syncStore.getCommittedMeta(path);
@@ -3650,6 +3729,7 @@ export class SharedFolder extends HasProvider {
 				if (!this.mergeManager || this.destroyed) return;
 				await this.mergeManager.initialize();
 				if (this.destroyed) return;
+				this.blockedVaultPaths = new Set();
 
 				// When file types are newly enabled, enqueue their local
 				// files for syncing before the rest of the tree sync runs.
@@ -3966,6 +4046,7 @@ export class SharedFolder extends HasProvider {
 			);
 			return;
 		}
+		if (!(await this.mayPublishPath(file.path))) return;
 		const mark = (file: IFile, meta: Meta) => {
 			if (!this.syncStore) {
 				return;
