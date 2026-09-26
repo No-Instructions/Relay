@@ -168,6 +168,9 @@ function userMessageForS3Error(details: S3ErrorDetails): string {
 	if (details.code) {
 		return `Attachment storage error (${details.code})`;
 	}
+	if (details.status === 404) {
+		return "Attachment content not found in storage.";
+	}
 	return "Attachment storage request failed.";
 }
 

@@ -273,6 +273,7 @@ export class SharedFolder extends HasProvider {
 	private syncRequestedDuringSync: boolean = false;
 	private authoritative: boolean;
 	private pendingUpload: LocalStorage<string>;
+	private casVerified: LocalStorage<string>;
 	private unsubscribes: Unsubscriber[] = [];
 	private storageQuota?: number;
 	/**
@@ -411,6 +412,9 @@ export class SharedFolder extends HasProvider {
 		this.fset = new Files();
 		this.pendingUpload = new LocalStorage<string>(
 			`${appId}-system3-relay/folders/${this.guid}/pendingUploads`,
+		);
+		this.casVerified = new LocalStorage<string>(
+			`${appId}-system3-relay/folders/${this.guid}/casVerified`,
 		);
 		this.pendingUpload.forEach((guid, vpath) => {
 			if (!this.existsSync(vpath)) {
@@ -725,6 +729,9 @@ export class SharedFolder extends HasProvider {
 				this.addLocalDocs();
 				this.folderMachine.send({ type: "DISK_SCANNED" });
 				await this.syncFileTree();
+				if (flags().enableVerifyUploads) {
+					this.sweepUnverifiedCasContent();
+				}
 				try {
 					void this._persistence.set("path", this.path);
 					void this._persistence.set("relay", this.relayId || "");
@@ -1623,6 +1630,39 @@ export class SharedFolder extends HasProvider {
 			if (isCanvas(file)) {
 				file.setLocalOnly(value);
 			}
+		}
+	}
+
+	/**
+	 * Durable per-device ledger of attachment versions known to exist in
+	 * storage, so remote-existence verification runs at most once per
+	 * (file, hash) instead of on every sync pass. Content is immutable under
+	 * its hash, so an entry never needs re-checking.
+	 */
+	public isCasVerified(guid: string, hash: string): boolean {
+		return this.casVerified.get(guid) === hash;
+	}
+
+	public markCasVerified(guid: string, hash: string): void {
+		this.casVerified.set(guid, hash);
+	}
+
+	/**
+	 * Enqueue a sync for every attachment version not yet in the ledger. The
+	 * tree sync noops files whose local state matches committed metadata, so
+	 * their sync pass, where remote-content verification lives, otherwise
+	 * never runs for files at rest. The ledger bounds this to one
+	 * verification per (file, hash) per device.
+	 */
+	private sweepUnverifiedCasContent(): void {
+		for (const file of this.files.values()) {
+			if (!isSyncFile(file) || file.destroyed) continue;
+			const meta = this.syncStore.getMeta(file.path);
+			if (!meta || !isFileMetas(meta) || !meta.hash) continue;
+			if (this.isCasVerified(file.guid, meta.hash)) continue;
+			this.backgroundSync.enqueueSync(file, false, "verify").catch((error) => {
+				this.warn(`attachment verification sync failed for ${file.path}`, error);
+			});
 		}
 	}
 
