@@ -55,4 +55,18 @@ export class VaultPathResolver {
 		if (vault.getAbstractFileByPathInsensitive) return vault.getAbstractFileByPathInsensitive(path);
 		return vault.getAllLoadedFiles().find(file => this.key(file.path) === this.key(path)) ?? null;
 	}
+
+	/** Spell a new path beneath the deepest indexed physical directory. */
+	target(path: string): string {
+		path = normalizePath(path);
+		let parent = dirname(path);
+		while (parent !== "." && parent !== "/") {
+			const directory = this.resolve(parent);
+			if (directory && "children" in directory) {
+				return directory.path + path.slice(parent.length);
+			}
+			parent = dirname(parent);
+		}
+		return path;
+	}
 }

@@ -9,7 +9,7 @@ import { S3Document, S3Folder, S3RN, S3RemoteDocument } from "./S3RN";
 import { capabilitiesOf, writeAccessUnder } from "./client/types";
 import { SharedFolder } from "./SharedFolder";
 import type { TFile, Vault, TFolder } from "obsidian";
-import { debounce, normalizePath } from "obsidian";
+import { debounce } from "obsidian";
 import type { Unsubscriber } from "./observable/Observable";
 import { Dependency, Lifetime } from "./promiseUtils";
 import { withFlag } from "./flagManager";
@@ -1712,7 +1712,7 @@ export class Document
 					options.mtime !== undefined ? { mtime: options.mtime } : undefined;
 				await this.vault.modify(tfile, contents, modifyOptions);
 			} else {
-				const vaultPath = normalizePath(this.sharedFolder.getPath(this.path));
+				const vaultPath = vaultPaths(this.vault).target(this.sharedFolder.getPath(this.path));
 				await this.ensureParentDirectory(vaultPath);
 				tfile = await this.vault.create(vaultPath, contents);
 				this._tfile = tfile;

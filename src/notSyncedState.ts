@@ -9,6 +9,12 @@ export interface NotSyncedPillState {
 /** Shared decision for the file explorer and the open-file banner. */
 export function notSyncedPillState(sharedFolder: SharedFolder, file: TFile): NotSyncedPillState | null {
 	if (!sharedFolder.checkPath(file.path)) return null;
+	if (sharedFolder.hasPathConflict(file.path)) {
+		return {
+			label: "This file cannot sync: another shared path uses the same location on this device",
+			reason: "path-collision",
+		};
+	}
 	if (sharedFolder.isStorageBlockedTFile(file)) {
 		return { label: "Attachment storage is required to sync this file", reason: "storage-required" };
 	}
@@ -16,7 +22,7 @@ export function notSyncedPillState(sharedFolder: SharedFolder, file: TFile): Not
 		return { label: "Syncing this file type is disabled", reason: "file-type-disabled" };
 	}
 	if (sharedFolder.ready && !sharedFolder.canManageFiles &&
-		!sharedFolder.syncStore.has(sharedFolder.getVirtualPath(file.path))) {
+		!sharedFolder.syncStore.has(sharedFolder.getMembershipPath(file.path))) {
 		return {
 			label: "This file is only on this device: the folder is read-only for you",
 			reason: "read-only-folder",

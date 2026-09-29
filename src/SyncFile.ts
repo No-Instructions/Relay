@@ -850,7 +850,7 @@ export class SyncFile
 		const task = this.attachmentTask();
 		const meta = this.meta!;
 		await manager.run(task, async (row, signal) => {
-			const destination = this.caf.path;
+			const destination = vaultPaths(this.vault).target(this.caf.path);
 			const before = await this.vault.adapter.stat(destination);
 			const partial = manager.partialPath(task);
 			try {
@@ -865,7 +865,7 @@ export class SyncFile
 				const current = await this.vault.adapter.stat(destination);
 				this._refreshMeta();
 				checkAttachmentAbort(signal);
-				if (this.destroyed || destination !== this.caf.path || this.meta?.hash !== meta.hash ||
+				if (this.destroyed || destination !== vaultPaths(this.vault).target(this.caf.path) || this.meta?.hash !== meta.hash ||
 					before?.mtime !== current?.mtime || before?.size !== current?.size) throw new Error("Attachment changed during download; local file was preserved");
 				if (!stat) throw new Error("Partial attachment is missing");
 				const io = await desktopAttachmentIO(this.vault);
@@ -927,7 +927,7 @@ export class SyncFile
 				return;
 			}
 			const content = await this.sharedFolder.cas.readFile(this);
-			const vaultPath = this.sharedFolder.getPath(this.path);
+			const vaultPath = vaultPaths(this.vault).target(this.sharedFolder.getPath(this.path));
 			const edit: ServerEditMarker = {
 				mtime: Date.now(),
 				size: content.byteLength,

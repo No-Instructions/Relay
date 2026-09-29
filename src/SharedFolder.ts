@@ -100,7 +100,7 @@ import {
 	normalizeRemoteActivityTimestamp,
 } from "./RemoteActivityIndex";
 import { expandDesiredRemotePaths } from "./syncPathUtils";
-import { FolderPathIdentity } from "./FolderPathIdentity";
+import { FolderPathIdentity, type PathResolution } from "./FolderPathIdentity";
 import type { TimeProvider } from "./TimeProvider";
 import * as Y from "yjs";
 
@@ -273,6 +273,8 @@ export class SharedFolder extends HasProvider {
 	private syncFileTreePromise: SharedPromise<void> | null = null;
 	private syncRequestedDuringSync: boolean = false;
 	private _pathIdentity: FolderPathIdentity | null = null;
+	/** Diagnostic deduplication; never consulted to permit or refuse an operation. */
+	private pathDeferrals?: Map<string, string>;
 	private authoritative: boolean;
 	private pendingUpload: LocalStorage<string>;
 	private unsubscribes: Unsubscriber[] = [];
@@ -352,7 +354,7 @@ export class SharedFolder extends HasProvider {
 	 * reconcile has decided every entry. */
 	private bootSnapshot: MembershipSnapshot | null = null;
 	/** Server-decided operations whose disk effect is still in flight. */
-	private serverOps = new ServerOps();
+	private serverOps = new ServerOps(path => this.pathIdentity.key(path));
 	/** Dispatched renames retain their echo until the disk operation settles. */
 	private serverRenamesInFlight = new Map<string, { deleted: boolean }>();
 	/** One parked publication re-entry per held path. */
@@ -1463,9 +1465,10 @@ export class SharedFolder extends HasProvider {
 		// that is still settling must be decided by its timer (or canceled by a
 		// rename/delete), rather than registered early by a scan.
 		let syncTFiles = this.getSyncFiles().filter((tfile) => {
-			const vpath = this.getVirtualPath(tfile.path);
+			const diskPath = this.getVirtualPath(tfile.path);
+			const vpath = this.getMembershipPath(tfile.path);
 			return (
-				!this.pendingCreates.has(vpath) &&
+				!this.pendingCreates.has(diskPath) &&
 				(this.canManageFiles || this.pathIdentity.hasClaim(vpath) || this.syncStore.has(vpath))
 			);
 		});
@@ -1483,7 +1486,7 @@ export class SharedFolder extends HasProvider {
 			this.placeHold(syncTFiles);
 		}
 		syncTFiles.forEach((tfile) => {
-			const vpath = this.getVirtualPath(tfile.path);
+			const vpath = this.getMembershipPath(tfile.path);
 			const guid = this.syncStore.get(vpath);
 			const existing = guid ? this.files.get(guid) : undefined;
 			if (existing) {
@@ -2269,6 +2272,7 @@ export class SharedFolder extends HasProvider {
 				return this.pendingUpload.get(path) ??
 					Array.from(this.files.values()).find(local => local.path === path)?.guid;
 			},
+			path => this.pendingUpload.has(path),
 		);
 	}
 
@@ -2286,11 +2290,8 @@ export class SharedFolder extends HasProvider {
 		let targetVPath = path;
 		try {
 			const location = await this.pathIdentity.resolve(path, doc.guid, file);
-			if (location.kind !== "available") {
-				this.warn("remote move deferred", path, location);
-				return;
-			}
-			const target = this.pathIdentity.moveTarget(path);
+			if (this.reportPathDeferral("remote move", path, location)) return;
+			const target = this.pathIdentity.diskTarget(path);
 			targetVPath = this.getVirtualPath(target);
 			if (targetVPath !== path) {
 				this.serverOps.recordMove({ guid: doc.guid, from: oldVPath, to: targetVPath });
@@ -2360,10 +2361,7 @@ export class SharedFolder extends HasProvider {
 		restoreDeleted = false,
 	): Promise<IFile | undefined> {
 		const location = await this.pathIdentity.resolve(vpath, meta.id);
-		if (location.kind !== "available") {
-			this.warn("remote materialization deferred", vpath, location);
-			return undefined;
-		}
+		if (this.reportPathDeferral("remote materialization", vpath, location)) return undefined;
 		const live = restoreDeleted ? this.files.get(meta.id) : undefined;
 		if (isDocument(live)) {
 			// Restore the missing disk object from server content without
@@ -2750,8 +2748,7 @@ export class SharedFolder extends HasProvider {
 		}
 
 		const collision = this.pathIdentity.collision(path);
-		if (collision) {
-			this.warn("remote reconciliation deferred", path, collision);
+		if (this.reportPathDeferral("remote reconciliation", path, collision)) {
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
@@ -2820,9 +2817,6 @@ export class SharedFolder extends HasProvider {
 				}
 			}
 
-			if (!file && this.getAbstractFile(path)?.path !== this.getPath(path)) {
-				return { op: "create", path, promise: this._handleServerCreate(path, meta, diffLog) };
-			}
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
@@ -3003,27 +2997,25 @@ export class SharedFolder extends HasProvider {
 		const ffiles = this.getSyncFiles();
 		const deletes: Delete[] = [];
 		const reader = !this.canManageFiles;
-		const removedPaths = reader
-			? new Set(this.serverOps.pendingDeletePaths())
-			: null;
 		const folders = ffiles.filter((file) => file instanceof TFolder);
 		const files = ffiles.filter((file) => file instanceof TFile);
 		const sync = (file: TAbstractFile) => {
 			// If the file is in the shared folder and not in the map, move it to the Trash
 			const isSyncableFile = this.isSyncableTFile(file);
 			const fileInFolder = this.checkPath(file.path);
-			const vpath = this.getVirtualPath(file.path);
+			const diskPath = this.getVirtualPath(file.path);
+			const vpath = this.pathIdentity.local(diskPath);
 			const fileInMap = remotePaths.has(vpath);
 			// Only a removal witnessed in membership is adopted, and a nonempty
 			// directory is never trashed, since it may hold local-only children.
 			if (
 				reader && (
-					(!removedPaths?.has(vpath) && !this.bootSnapshot?.has(vpath)) ||
+					(!this.serverOps.hasDelete(vpath) && !this.bootSnapshot?.has(vpath)) ||
 					(file instanceof TFolder && file.children.length > 0)
 				)
 			) return;
 			const filePending =
-				this.pendingUpload.has(vpath) || this.pendingCreates.has(vpath);
+				this.pendingUpload.has(vpath) || this.pendingCreates.has(diskPath);
 			// Membership already lists a moved identity at its new path, so its
 			// source path reads as absent from the map while the disk rename is
 			// still outstanding. That path belongs to the move, not to a removal.
@@ -3308,13 +3300,16 @@ export class SharedFolder extends HasProvider {
 	public notifyVaultRename(file: TAbstractFile, oldPath: string): void {
 		if (file.path === oldPath || this.isReaderFolderRestoreChild(file, oldPath)) return;
 		if (this.consumeReaderRestoreRenameEcho(file, oldPath)) return;
-		const oldVPath = this.getVirtualPath(oldPath);
-		const newVPath = this.getVirtualPath(file.path);
-		this.cancelPendingCreate(oldVPath);
-		this.cancelPendingCreate(newVPath);
-		if (this.consumeMoveEcho(oldVPath, newVPath)) {
+		const oldDiskPath = this.getVirtualPath(oldPath);
+		const newDiskPath = this.getVirtualPath(file.path);
+		this.cancelPendingCreate(oldDiskPath);
+		this.cancelPendingCreate(newDiskPath);
+		if (this.consumeMoveEcho(oldDiskPath, newDiskPath)) {
 			return;
 		}
+		const oldVPath = this.pathIdentity.local(oldDiskPath);
+		const newVPath = this.pathIdentity.renameTarget(newDiskPath);
+		if (oldVPath === newVPath) return;
 		const oldTracked = this.syncStore.has(oldVPath);
 		const newTracked = this.syncStore.has(newVPath);
 		const hasPendingClaim =
@@ -3517,7 +3512,7 @@ export class SharedFolder extends HasProvider {
 			op: "update",
 			path,
 			promise: (async () => {
-				if (!this.pathIdentity.canClaim(path, pendingGuid)) return;
+				if (!this.canPublishPath(path, pendingGuid)) return;
 				await this.preparePendingFileForPublication(file);
 				if (this.destroyed || run?.cancelled) return;
 				const latestMeta = this.syncStore.getCommittedMeta(path);
@@ -3885,7 +3880,7 @@ export class SharedFolder extends HasProvider {
 	async mkdir(path: string): Promise<void> {
 		if (this.getAbstractFile(path) instanceof TFolder) return;
 		try {
-			await this.vault.createFolder(normalizePath(this.getPath(path)));
+			await this.vault.createFolder(this.pathIdentity.diskTarget(path));
 		} catch (error) {
 			if (!(this.getAbstractFile(path) instanceof TFolder)) throw error;
 		}
@@ -3900,6 +3895,45 @@ export class SharedFolder extends HasProvider {
 
 		const vPath = path.slice(this.path.length);
 		return vPath;
+	}
+
+	/** Interpret a path reported by the vault as a shared membership path. */
+	getMembershipPath(path: string): string {
+		return this.pathIdentity.local(this.getVirtualPath(path));
+	}
+
+	/** Live collision state; it clears when the competing path is renamed or removed. */
+	hasPathConflict(path: string): boolean {
+		const vpath = this.getMembershipPath(path);
+		const pendingGuid = this.pendingUpload.get(vpath);
+		return pendingGuid
+			? this.pathIdentity.publicationConflict(vpath, pendingGuid) !== null
+			: this.pathIdentity.collision(vpath) !== null;
+	}
+
+	private canPublishPath(path: string, guid: string): boolean {
+		const conflict = this.pathIdentity.publicationConflict(path, guid);
+		return !this.reportPathDeferral("local publication", path, conflict);
+	}
+
+	private reportPathDeferral(operation: string, path: string, resolution: PathResolution | null): boolean {
+		const key = operation + ":" + path;
+		const reports = this.pathDeferrals ??= new Map();
+		if (!resolution || resolution.kind === "available") {
+			reports.delete(key);
+			return false;
+		}
+		const signature = JSON.stringify(resolution);
+		if (reports.get(key) !== signature) {
+			reports.set(key, signature);
+			this.warn("shared path operation deferred", { operation, path, resolution });
+		}
+		return true;
+	}
+
+	/** A vault rename chooses a new basename under the membership parent's path. */
+	private getRenameTargetPath(path: string): string {
+		return this.pathIdentity.renameTarget(this.getVirtualPath(path));
 	}
 
 	getAbstractFile(vpath: string): TAbstractFile | null {
@@ -4039,7 +4073,7 @@ export class SharedFolder extends HasProvider {
 					contestedMeta = committedMeta;
 					return;
 				}
-				if (!this.pathIdentity.canClaim(file.path, meta.id)) return;
+				if (!this.canPublishPath(file.path, meta.id)) return;
 				if (this.syncStore.willSet(file.path, meta)) {
 					this.log("new meta", file.path, meta);
 					this.syncStore.markUploaded(file.path, meta);
@@ -4151,8 +4185,7 @@ export class SharedFolder extends HasProvider {
 
 	private resolveFile(tfile: TAbstractFile): IFile | null {
 		const diskPath = this.getVirtualPath(tfile.path);
-		const vpath = this.pendingUpload.has(diskPath)
-			? diskPath : this.pathIdentity.canonical(diskPath);
+		const vpath = this.pathIdentity.local(diskPath);
 
 		// Identity first: Obsidian keeps one TAbstractFile instance per file
 		// and mutates its path in place, so a guid learned for the instance
@@ -4486,7 +4519,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	public viewSyncFile(tfile: TFile): SyncFile | undefined {
-		const vpath = this.pathIdentity.canonical(this.getVirtualPath(tfile.path));
+		const vpath = this.getMembershipPath(tfile.path);
 		const guid = this.syncStore.get(vpath);
 		if (!guid) return;
 		const file = this.files.get(guid);
@@ -5048,7 +5081,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	uploadFile(tfile: TAbstractFile): IFile | null {
-		const vpath = this.pathIdentity.canonical(this.getVirtualPath(tfile.path));
+		const vpath = this.getMembershipPath(tfile.path);
 		if (!this.isSyncableTFile(tfile)) {
 			this.log("skipping upload for unsyncable file", vpath);
 			return null;
@@ -5073,20 +5106,21 @@ export class SharedFolder extends HasProvider {
 	}
 
 	markPendingDelete(vpath: string) {
-		this.pendingDeletes.set(vpath, this.timeProvider.now());
+		this.pendingDeletes.set(this.pathIdentity.key(vpath), this.timeProvider.now());
 		this.log("marked pending delete", vpath);
 	}
 
 	clearPendingDelete(vpath: string) {
-		this.pendingDeletes.delete(vpath);
+		this.pendingDeletes.delete(this.pathIdentity.key(vpath));
 		this.log("cleared pending delete", vpath);
 	}
 
 	isPendingDelete(vpath: string): boolean {
-		const markedAt = this.pendingDeletes.get(vpath);
+		const key = this.pathIdentity.key(vpath);
+		const markedAt = this.pendingDeletes.get(key);
 		if (markedAt === undefined) return false;
 		if (this.timeProvider.now() - markedAt > PENDING_DELETE_TTL_MS) {
-			this.pendingDeletes.delete(vpath);
+			this.pendingDeletes.delete(key);
 			return false;
 		}
 		return true;
@@ -5098,7 +5132,7 @@ export class SharedFolder extends HasProvider {
 	 */
 	consumePendingDelete(vpath: string): boolean {
 		if (!this.isPendingDelete(vpath)) return false;
-		this.pendingDeletes.delete(vpath);
+		this.pendingDeletes.delete(this.pathIdentity.key(vpath));
 		return true;
 	}
 
@@ -5110,8 +5144,8 @@ export class SharedFolder extends HasProvider {
 		vpaths: Iterable<string>,
 		folderRoots: Iterable<string> = [],
 	): string[] {
-		const paths = new Set(vpaths);
-		const roots = Array.from(new Set(folderRoots));
+		const paths = new Set(Array.from(vpaths, path => this.pathIdentity.local(path)));
+		const roots = Array.from(new Set(Array.from(folderRoots, path => this.pathIdentity.local(path))));
 		for (const root of roots) {
 			paths.add(root);
 		}
@@ -5140,7 +5174,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	deleteFiles(vpaths: Iterable<string>) {
-		const paths = Array.from(new Set(vpaths));
+		const paths = Array.from(new Set(Array.from(vpaths, path => this.pathIdentity.local(path))));
 		if (paths.length === 0) {
 			return;
 		}
@@ -5227,12 +5261,12 @@ export class SharedFolder extends HasProvider {
 		let newVPath = "";
 		let oldVPath = "";
 		try {
-			newVPath = this.getVirtualPath(newPath);
+			newVPath = this.getRenameTargetPath(newPath);
 		} catch {
 			this.log("Moving out of shared folder");
 		}
 		try {
-			oldVPath = this.getVirtualPath(oldPath);
+			oldVPath = this.getMembershipPath(oldPath);
 		} catch {
 			this.log("Moving in from outside of shared folder");
 		}
@@ -5241,6 +5275,7 @@ export class SharedFolder extends HasProvider {
 			// not related to shared folders
 			return;
 		}
+		if (newVPath === oldVPath) return;
 		const oldTracked = oldVPath ? this.syncStore.has(oldVPath) : false;
 		const newTracked = newVPath ? this.syncStore.has(newVPath) : false;
 		const hasPendingClaim =

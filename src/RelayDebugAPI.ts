@@ -863,7 +863,7 @@ export class RelayDebugAPI {
         `(got: ${JSON.stringify(path)}; shared folders: ${available})`
       );
     }
-    const vpath = folder.getVirtualPath(vaultPath);
+    const vpath = folder.getMembershipPath(vaultPath);
     const guid = folder.syncStore?.get(vpath);
     if (!guid) return null;
     const doc = this.managedDoc(folder, guid);
@@ -1364,7 +1364,7 @@ export class RelayDebugAPI {
     if (!sharedFolders || !path) return null;
     const folder = sharedFolders.lookup(path);
     if (!folder) return null;
-    const guid = folder.syncStore?.get(folder.getVirtualPath(path));
+    const guid = folder.syncStore?.get(folder.getMembershipPath(path));
     if (!guid) return null;
     const canvas = folder.files.get(guid);
     if (!isCanvas(canvas)) return null;

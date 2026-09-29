@@ -312,7 +312,7 @@ export default class Live extends Plugin {
 			if (!folder) {
 				continue;
 			}
-			const vpath = folder.getVirtualPath(event.path);
+			const vpath = folder.getMembershipPath(event.path);
 			// Consume the suppression token: this vault event IS the echo of
 			// our own trash effect.
 			if (folder.consumePendingDelete(vpath)) {

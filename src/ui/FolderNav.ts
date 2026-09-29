@@ -592,7 +592,7 @@ class FileStatusVisitor extends BaseVisitor<DocumentStatus> {
 	): DocumentStatus | null {
 		if (sharedFolder) {
 			try {
-				const vpath = sharedFolder.getVirtualPath(file.path);
+				const vpath = sharedFolder.getMembershipPath(file.path);
 				const guid = sharedFolder.syncStore.get(vpath);
 				if (!guid) return null;
 				const document = sharedFolder.files.get(guid);
@@ -710,7 +710,7 @@ class FileConflictVisitor extends BaseVisitor<FileConflictDecoration> {
 			Document.checkExtension(file.path)
 		) {
 			try {
-				const vpath = sharedFolder.getVirtualPath(file.path);
+				const vpath = sharedFolder.getMembershipPath(file.path);
 				const guid = sharedFolder.syncStore.get(vpath);
 				if (!guid) {
 					if (storage) storage.destroy();

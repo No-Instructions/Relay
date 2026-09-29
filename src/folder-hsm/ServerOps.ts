@@ -23,7 +23,7 @@ export interface ServerMove {
 
 export class ServerOps {
 	/** Remote removals whose disk adoption has not completed. */
-	private deletes = new Set<string>();
+	private deletes = new Map<string, string>();
 	/** Moves whose disk rename remains outstanding, by identity. */
 	private movesByGuid = new Map<string, ServerMove>();
 	/** The disk path still carrying each moved identity. */
@@ -31,30 +31,37 @@ export class ServerOps {
 	/** Move sources at which the vault observed a distinct local creation. */
 	private recreatedSources = new Set<string>();
 
+	constructor(private readonly pathKey: (path: string) => string = path => path) {}
+
 	/**
 	 * Is this path spoken for by an operation in flight? A pending delete,
 	 * or the vacated source of a pending move (unless a distinct file has
 	 * since claimed it).
 	 */
 	coversPath(path: string): boolean {
-		if (this.deletes.has(path)) return true;
-		if (this.recreatedSources.has(path)) return false;
-		return this.moveGuidsBySource.has(path);
+		const key = this.pathKey(path);
+		if (this.deletes.has(key)) return true;
+		if (this.recreatedSources.has(key)) return false;
+		return this.moveGuidsBySource.has(key);
 	}
 
 	/** A remote removal arrived; its disk adoption is now pending. */
 	recordDelete(path: string): void {
-		this.deletes.add(path);
+		this.deletes.set(this.pathKey(path), path);
 	}
 
 	/** The removal's disk adoption completed, or the path re-committed. */
 	clearDelete(path: string): void {
-		this.deletes.delete(path);
+		this.deletes.delete(this.pathKey(path));
+	}
+
+	hasDelete(path: string): boolean {
+		return this.deletes.has(this.pathKey(path));
 	}
 
 	/** Removals still awaiting disk adoption, for the absence sweep. */
 	pendingDeletePaths(): string[] {
-		return Array.from(this.deletes);
+		return Array.from(this.deletes.values());
 	}
 
 	/**
@@ -65,26 +72,28 @@ export class ServerOps {
 	 */
 	recordMove(move: ServerMove): void {
 		const previous = this.movesByGuid.get(move.guid);
-		const sourceWasRecreated = this.recreatedSources.has(move.from);
+		const sourceKey = this.pathKey(move.from);
+		const sourceWasRecreated = this.recreatedSources.has(sourceKey);
 		if (previous) {
-			this.moveGuidsBySource.delete(previous.from);
-			if (previous.from !== move.from) {
-				this.recreatedSources.delete(previous.from);
+			const previousKey = this.pathKey(previous.from);
+			this.moveGuidsBySource.delete(previousKey);
+			if (previousKey !== sourceKey) {
+				this.recreatedSources.delete(previousKey);
 			}
 		}
 
-		const displacedGuid = this.moveGuidsBySource.get(move.from);
+		const displacedGuid = this.moveGuidsBySource.get(sourceKey);
 		if (displacedGuid && displacedGuid !== move.guid) {
 			this.movesByGuid.delete(displacedGuid);
 		}
 
-		this.deletes.delete(move.from);
-		this.deletes.delete(move.to);
+		this.deletes.delete(sourceKey);
+		this.deletes.delete(this.pathKey(move.to));
 		if (!sourceWasRecreated) {
-			this.recreatedSources.delete(move.from);
+			this.recreatedSources.delete(sourceKey);
 		}
 		this.movesByGuid.set(move.guid, { ...move });
-		this.moveGuidsBySource.set(move.from, move.guid);
+		this.moveGuidsBySource.set(sourceKey, move.guid);
 	}
 
 	/** Membership moved again after disk had already left the new source. */
@@ -92,15 +101,16 @@ export class ServerOps {
 		const move = this.movesByGuid.get(guid);
 		if (!move) return;
 		this.movesByGuid.delete(guid);
-		if (this.moveGuidsBySource.get(move.from) === guid) {
-			this.moveGuidsBySource.delete(move.from);
-			this.recreatedSources.delete(move.from);
+		const sourceKey = this.pathKey(move.from);
+		if (this.moveGuidsBySource.get(sourceKey) === guid) {
+			this.moveGuidsBySource.delete(sourceKey);
+			this.recreatedSources.delete(sourceKey);
 		}
 	}
 
 	/** The move whose identity disk still exposes at this source path. */
 	moveFrom(path: string): ServerMove | undefined {
-		const guid = this.moveGuidsBySource.get(path);
+		const guid = this.moveGuidsBySource.get(this.pathKey(path));
 		return guid ? this.movesByGuid.get(guid) : undefined;
 	}
 
@@ -116,8 +126,9 @@ export class ServerOps {
 	 * was a move source.
 	 */
 	observeSourceRecreation(path: string): boolean {
-		if (!this.moveGuidsBySource.has(path)) return false;
-		this.recreatedSources.add(path);
+		const key = this.pathKey(path);
+		if (!this.moveGuidsBySource.has(key)) return false;
+		this.recreatedSources.add(key);
 		return true;
 	}
 
@@ -129,9 +140,9 @@ export class ServerOps {
 	completeMove(from: string, to: string): ServerMove | undefined {
 		const move = this.moveFrom(from);
 		if (!move || move.to !== to) return undefined;
-		this.moveGuidsBySource.delete(from);
+		this.moveGuidsBySource.delete(this.pathKey(from));
 		this.movesByGuid.delete(move.guid);
-		this.recreatedSources.delete(from);
+		this.recreatedSources.delete(this.pathKey(from));
 		return move;
 	}
 

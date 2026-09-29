@@ -33,6 +33,7 @@ export class FolderPathIdentity {
 		private readonly root: () => string,
 		private readonly readClaims: (visit: (meta: Meta, path: string) => void) => void,
 		private readonly identityOf: (file: TAbstractFile) => string | undefined,
+		private readonly isPending: (path: string) => boolean = () => false,
 	) {
 		this.vaultPaths = vaultPaths(vault);
 	}
@@ -66,6 +67,17 @@ export class FolderPathIdentity {
 		return path;
 	}
 
+	/** A pending local identity keeps its own key until its claim is resolved. */
+	local(path: string): string {
+		return this.isPending(path) ? path : this.canonical(path);
+	}
+
+	/** Keep a user's new basename while resolving the existing parent. */
+	renameTarget(path: string): string {
+		const parent = dirname(path);
+		return parent === "/" ? path : this.local(parent) + path.slice(parent.length);
+	}
+
 	hasClaim(path: string): boolean {
 		return (this.index().get(this.key(path))?.claims.length ?? 0) > 0;
 	}
@@ -78,13 +90,22 @@ export class FolderPathIdentity {
 
 	/** Rechecked synchronously inside the membership publication transaction. */
 	canClaim(path: string, guid: string): boolean {
-		if (this.collision(path)) return false;
+		return this.publicationConflict(path, guid) === null;
+	}
+
+	publicationConflict(path: string, guid: string): Extract<PathResolution, { kind: "collision" }> | null {
+		const collision = this.collision(path);
+		if (collision) return collision;
 		for (const prefix of this.prefixes(path)) {
 			const slot = this.index().get(this.key(prefix));
-			if (slot && !slot.spellings.has(prefix)) return false;
+			if (slot && !slot.spellings.has(prefix)) {
+				return { kind: "collision", path: prefix, reason: "local and shared paths use different spellings for one filesystem location" };
+			}
 		}
 		const claim = this.claim(path);
-		return !claim || (claim.path === path && claim.meta.id === guid);
+		return claim && (claim.path !== path || claim.meta.id !== guid)
+			? { kind: "collision", path, reason: "another identity owns this shared path" }
+			: null;
 	}
 
 	/**
@@ -132,11 +153,9 @@ export class FolderPathIdentity {
 		return null;
 	}
 
-	/** Preserve the physical parent spelling while applying the requested basename. */
-	moveTarget(path: string): string {
-		const parent = dirname(path);
-		const file = parent === "/" ? null : this.file(parent);
-		return file ? file.path + path.slice(parent.length) : normalizePath(this.root() + path);
+	/** Preserve physical directory spelling for a new file or a rename. */
+	diskTarget(path: string): string {
+		return this.vaultPaths.target(this.root() + path);
 	}
 
 	collision(path: string): Extract<PathResolution, { kind: "collision" }> | null {
