@@ -3043,7 +3043,7 @@ export class SharedFolder extends HasProvider {
 							// would, before the mark clears — the write guard
 							// covers the window, and a destroyed doc's queued
 							// writes stand down.
-							const doc = this.fset.find((f) => f.path === vpath);
+							const doc = this.fset.find((f) => this.pathIdentity.key(f.path) === this.pathIdentity.key(vpath));
 							if (doc) {
 								this.fset.delete(doc);
 								this.files.delete(doc.guid);
@@ -3056,7 +3056,7 @@ export class SharedFolder extends HasProvider {
 							// may classify as a local creation again, so a
 							// legitimate recreation is not refused.
 							this.serverOps.clearDelete(vpath);
-							this.bootSnapshot?.discard(vpath);
+							this.bootSnapshot?.discard(doc?.path ?? vpath);
 						})
 						.finally(() => {
 							this.clearPendingDelete(vpath);
