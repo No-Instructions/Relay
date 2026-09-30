@@ -102,23 +102,38 @@ export async function findMaterializeConflict(
 	return null;
 }
 
+const nameOf = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+
 /**
- * Whether two spellings reach one disk object. They must fold together
- * (foldPathCase), both must resolve on the disk, and the disk must reach one
- * of them through another spelling: an aliased ancestor alone does not make
- * the full paths one object, and two exact spellings are two objects.
+ * Whether two spellings that fold together (foldPathCase) reach one disk
+ * object. Both must resolve on the disk. Then, at every component where the
+ * spellings differ, the directory listing decides: one entry there that
+ * folds to the name is one object reached two ways, two entries are two
+ * objects. The listing carries the disk's own names, where Obsidian's
+ * case-sensitive existence check compares Unicode spellings only after
+ * normalizing them, so a composed and a decomposed spelling of one name both
+ * pass it.
  */
 async function reachOneObject(
-	adapter: Pick<DataAdapter, "exists">,
+	adapter: Pick<DataAdapter, "exists" | "list">,
 	a: string,
 	b: string,
 ): Promise<boolean> {
 	if (foldPathCase(a) !== foldPathCase(b)) return false;
 	if (!(await adapter.exists(a)) || !(await adapter.exists(b))) return false;
-	return (
-		(await probeDiskSpelling(adapter, a)).kind === "alias" ||
-		(await probeDiskSpelling(adapter, b)).kind === "alias"
-	);
+	const partsA = a.split("/");
+	const partsB = b.split("/");
+	if (partsA.length !== partsB.length) return false;
+	for (let i = 0; i < partsA.length; i++) {
+		if (partsA[i] === partsB[i]) continue;
+		const listing = await adapter.list(partsA.slice(0, i).join("/"));
+		const key = foldPathCase(partsA[i]);
+		const entries = [...listing.files, ...listing.folders].filter(
+			(path) => foldPathCase(nameOf(path)) === key,
+		);
+		if (entries.length !== 1) return false;
+	}
+	return true;
 }
 
 /**
@@ -127,7 +142,7 @@ async function reachOneObject(
  * variant is a distinct object.
  */
 export async function findVariantSharingObject(
-	adapter: Pick<DataAdapter, "exists">,
+	adapter: Pick<DataAdapter, "exists" | "list">,
 	path: string,
 	variants: readonly string[],
 ): Promise<string | null> {
