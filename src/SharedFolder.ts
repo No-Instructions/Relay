@@ -101,14 +101,12 @@ import {
 } from "./RemoteActivityIndex";
 import { expandDesiredRemotePaths } from "./syncPathUtils";
 import {
-	CasePathHolds,
 	DiskSlotTakenError,
-	assertFreeOnDisk,
-	findMaterializeConflict,
 	findVariantSharingObject,
 	type CasePathHold,
 	type CasePathHoldsView,
 } from "./casePaths";
+import { FolderDisk } from "./FolderDisk";
 import type { TimeProvider } from "./TimeProvider";
 import * as Y from "yjs";
 
@@ -362,12 +360,7 @@ export class SharedFolder extends HasProvider {
 	private serverOps = new ServerOps();
 	/** Dispatched renames retain their echo until the disk operation settles. */
 	private serverRenamesInFlight = new Map<string, { deleted: boolean }>();
-	/**
-	 * Paths kept apart from another spelling that reaches the same disk
-	 * object: remote changes kept off disk, and local files kept out of
-	 * membership. Each is re-evaluated on every tree sync.
-	 */
-	private caseHolds = new CasePathHolds();
+	private _disk: FolderDisk | null = null;
 	/** One parked publication re-entry per held path. */
 	private _parkedPublications: Map<string, Promise<void>> = new Map();
 	/** One publication decision executor per held path. */
@@ -2266,44 +2259,29 @@ export class SharedFolder extends HasProvider {
 		return this.shouldConnect ? "connected" : "disconnected";
 	}
 
-	private casePathHolds(): CasePathHolds {
-		return (this.caseHolds ??= new CasePathHolds());
+	/** The one way this folder's engine writes to disk; see FolderDisk. */
+	get disk(): FolderDisk {
+		return (this._disk ??= new FolderDisk({
+			vault: this.vault,
+			vaultPath: (vpath) => normalizePath(this.getPath(vpath)),
+			alive: () => !this.destroyed,
+			renameFile: (file, vaultPath) => this.renameForServerMove(file, vaultPath),
+			warn: (message) => this.warn(message),
+			log: (message) => this.log(message),
+		}));
+	}
+
+	private casePathHolds(): FolderDisk["holds"] {
+		return this.disk.holds;
 	}
 
 	private holdCasePath(hold: CasePathHold): void {
-		if (!this.casePathHolds().hold(hold)) return;
-		const cause = {
-			"case-alias": `${hold.blockedBy} exists on disk under another spelling`,
-			occupied: `another file is indexed at ${hold.blockedBy}`,
-			unindexed: `${hold.blockedBy} exists on disk before the vault has indexed it`,
-			"shared-slot": `it reaches the same disk object as ${hold.blockedBy}`,
-		}[hold.reason];
-		const held = hold.direction === "materialize"
-			? "remote change held off disk"
-			: "publication held";
-		this.warn(`[${hold.path}] ${held}: ${cause}`);
+		this.disk.hold(hold);
 	}
 
-	/**
-	 * Whether a remote change may create a disk object at `vpath`, or move
-	 * `source` there (see findMaterializeConflict). A refused change is held,
-	 * and a later tree sync retries it.
-	 */
-	private async mayMaterialize(
-		vpath: string,
-		source?: TAbstractFile,
-	): Promise<boolean> {
-		const conflict = await findMaterializeConflict(
-			this.vault,
-			normalizePath(this.getPath(vpath)),
-			source,
-		);
-		if (conflict) {
-			this.holdCasePath({ path: vpath, direction: "materialize", ...conflict });
-			return false;
-		}
-		this.casePathHolds().release("materialize", vpath);
-		return true;
+	/** Whether a remote change may create a disk object at `vpath`; see FolderDisk. */
+	private mayMaterialize(vpath: string, source?: TAbstractFile): Promise<boolean> {
+		return this.disk.mayMaterialize(vpath, source);
 	}
 
 	/** Committed spellings that fold together with `vpath` or with a folder above it. */
@@ -2397,20 +2375,14 @@ export class SharedFolder extends HasProvider {
 		const rename = { deleted: false };
 		inFlight.set(doc.guid, rename);
 		try {
+			const from = file.path;
 			// A held move stays recorded: its source keeps its place on disk
 			// and a later tree sync retries it.
-			if (!(await this.mayMaterialize(path, file))) return;
-			diffLog?.push(`${file.path} was renamed to ${this.getPath(path)}`);
-			if (file instanceof TFile) {
-				const dir = dirname(path);
-				if (!this.existsSync(dir)) {
-					await this.mkdir(dir);
-					diffLog?.push(`creating directory ${dir}`);
-					// The destination can be taken while the directory is made.
-					if (!(await this.mayMaterialize(path, file))) return;
-				}
-			}
-			await this.renameForServerMove(file, normalizePath(this.getPath(path)));
+			const moved = await this.disk.move({ guid: doc.guid, path }, file, (dir) =>
+				diffLog?.push(`creating directory ${dir}`),
+			);
+			if (!moved) return;
+			diffLog?.push(`${from} was renamed to ${this.getPath(path)}`);
 			this.serverOps.completeMove(oldVPath, path);
 			this.bootSnapshot?.discard(oldVPath);
 			if (!this.destroyed && doc.path !== path) {
@@ -3367,6 +3339,8 @@ export class SharedFolder extends HasProvider {
 	 */
 	public notifyVaultCreateLegacy(tfile: TAbstractFile): boolean {
 		const vpath = this.getVirtualPath(tfile.path);
+		// A file the index just took in may be the one a hold waited on.
+		this.sweepCaseHolds();
 		if (this.isPendingDelete(vpath)) return false;
 		if (this.syncStore.has(vpath)) return true;
 		this.observeMoveSourceRecreation(vpath);
@@ -4031,19 +4005,8 @@ export class SharedFolder extends HasProvider {
 			return engine.writeEngineContents(content);
 		}
 		this.log("writing to ", normalizePath(vaultPath));
-		if (this.existsSync(doc.path)) {
-			return this.vault.adapter
-				.write(normalizePath(vaultPath), content)
-				.then(() => true);
-		}
-		// A file the index does not hold must be free on disk too: a raw write
-		// would otherwise overwrite a file the index has not caught up with, or
-		// land inside a different object reached through another spelling.
-		return assertFreeOnDisk(this.vault.adapter, normalizePath(vaultPath)).then(
-			async () => {
-				await this.vault.adapter.write(normalizePath(vaultPath), content);
-				return true;
-			},
+		return this.disk.write(doc, content).then(
+			() => true,
 			(error: unknown) => {
 				if (!(error instanceof DiskSlotTakenError)) throw error;
 				this.warn(`[${doc.path}] write refused: ${error.message}`);
@@ -4063,8 +4026,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	mkdir(path: string): Promise<void> {
-		const vaultPath = join(this.path, path);
-		return this.vault.adapter.mkdir(normalizePath(vaultPath));
+		return this.disk.mkdir(path);
 	}
 
 	checkPath(path: string): boolean {
@@ -4078,10 +4040,13 @@ export class SharedFolder extends HasProvider {
 		return vPath;
 	}
 
+	/** The object the vault index holds at a virtual path. */
+	getAbstractFile(vpath: string): TAbstractFile | null {
+		return this.vault.getAbstractFileByPath(normalizePath(this.getPath(vpath)));
+	}
+
 	getTFile(file: IFile): TFile | null {
-		const maybeTFile = this.vault.getAbstractFileByPath(
-			this.getPath(file.path),
-		);
+		const maybeTFile = this.getAbstractFile(file.path);
 		if (maybeTFile instanceof TFile) {
 			return maybeTFile;
 		}

@@ -11,7 +11,6 @@ import { type FileMetas, type SyncFileType } from "./SyncTypes";
 import { TFile, type Vault, type TFolder, type FileStats } from "obsidian";
 import { Observable, type Unsubscriber } from "./observable/Observable";
 import { snapshotAttachment, desktopAttachmentIO, checkAttachmentAbort } from "./AttachmentIO";
-import { assertFreeOnDisk } from "./casePaths";
 import { AttachmentLimitError, type AttachmentTask } from "./AttachmentTransfers";
 import { generateHash } from "./hashing";
 import type { HasMimeType, IFile } from "./IFile";
@@ -861,37 +860,17 @@ export class SyncFile
 				});
 				row.phase = "verifying";
 				manager.notifyListeners();
-				const stat = await this.vault.adapter.stat(partial);
-				const current = await this.vault.adapter.stat(destination);
+				const replacement = await this.sharedFolder.disk.prepareReplacement(this, partial, before);
 				this._refreshMeta();
 				checkAttachmentAbort(signal);
-				if (this.destroyed || destination !== this.caf.path || this.meta?.hash !== meta.hash ||
-					before?.mtime !== current?.mtime || before?.size !== current?.size) throw new Error("Attachment changed during download; local file was preserved");
-				if (!stat) throw new Error("Partial attachment is missing");
-				const io = await desktopAttachmentIO(this.vault);
-				let replacement: ArrayBuffer | undefined;
-				let mtime = stat.mtime;
-				if (current && !io) {
-					// The portable adapter cannot replace a destination by rename.
-					replacement = await this.vault.adapter.readBinary(partial);
-					const latest = await this.vault.adapter.stat(destination);
-					if (latest?.mtime !== current.mtime || latest?.size !== current.size) throw new Error("Attachment changed during download; local file was preserved");
-					mtime = Date.now();
+				if (this.destroyed || destination !== this.caf.path || this.meta?.hash !== meta.hash) {
+					throw new Error("Attachment changed during download; local file was preserved");
 				}
-				checkAttachmentAbort(signal);
-				// A destination the index does not hold must be free on disk
-				// too: the rename would otherwise replace a file the index has
-				// not caught up with, or land inside a different object reached
-				// through another spelling.
-				if (!this.caf.exists()) {
-					await assertFreeOnDisk(this.vault.adapter, destination);
-				}
+				const { mtime, size } = replacement;
 				const previous = this.lastServerEdit;
-				this.lastServerEdit = { mtime, size: stat.size, hash: meta.hash };
+				this.lastServerEdit = { mtime, size, hash: meta.hash };
 				try {
-					if (replacement) await this.vault.adapter.writeBinary(destination, replacement, { mtime });
-					else if (current && io) await io.fs.promises.rename(io.fullPath(partial), io.fullPath(destination));
-					else await this.vault.adapter.rename(partial, destination);
+					await replacement.commit();
 				} catch (error) { this.lastServerEdit = previous; throw error; }
 				await this.hashStore.saveHash(destination, meta.hash, mtime, this.guid);
 				this.uploadError = undefined;
@@ -934,24 +913,16 @@ export class SyncFile
 				return;
 			}
 			const content = await this.sharedFolder.cas.readFile(this);
-			const vaultPath = this.sharedFolder.getPath(this.path);
 			const edit: ServerEditMarker = {
 				mtime: Date.now(),
 				size: content.byteLength,
 				hash: this.meta.hash,
 			};
-			// A file the index does not hold must be free on disk too: a raw
-			// write would otherwise overwrite a file the index has not caught
-			// up with, or land inside a different object reached through
-			// another spelling.
-			if (!this.caf.exists()) {
-				await assertFreeOnDisk(this.vault.adapter, vaultPath);
-			}
 			// Record the marker before writing so the modify event raised by
 			// writeBinary is recognized as our own server-write echo
 			// (noteLocalModify) rather than a user edit.
 			this.lastServerEdit = edit;
-			await this.vault.adapter.writeBinary(vaultPath, content, {
+			const vaultPath = await this.sharedFolder.disk.writeBinary(this, content, {
 				mtime: edit.mtime,
 			});
 			// Save the hash eagerly: the pulled content's hash is known from
@@ -1139,12 +1110,12 @@ export class SyncFile
 	}
 
 	public async write(content: string): Promise<void> {
-		void this.vault.adapter.write(this.tfile.path, content);
+		await this.sharedFolder.disk.write(this, content);
 		await this.caf.hash();
 	}
 
 	public async append(content: string): Promise<void> {
-		void this.vault.append(this.tfile, content);
+		await this.sharedFolder.disk.append(this.tfile, content);
 		await this.caf.hash();
 	}
 
