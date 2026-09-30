@@ -8,7 +8,7 @@ import { S3Document, S3Folder, S3RN, S3RemoteDocument } from "./S3RN";
 import { capabilitiesOf, writeAccessUnder } from "./client/types";
 import { SharedFolder } from "./SharedFolder";
 import type { TFile, Vault, TFolder } from "obsidian";
-import { debounce, normalizePath } from "obsidian";
+import { debounce } from "obsidian";
 import type { Unsubscriber } from "./observable/Observable";
 import { Dependency, Lifetime } from "./promiseUtils";
 import { withFlag } from "./flagManager";
@@ -25,7 +25,6 @@ import {
 import { reconnectProvider } from "./merge-hsm/integration/ProviderLifecycle";
 import { generateHash } from "./hashing";
 import { readNoteText } from "./diskText";
-import { probeDiskSpelling } from "./casePaths";
 import { trackAsyncCleanup } from "./reloadUtils";
 import { trackPromise } from "./trackPromise";
 import { DocumentDestroyedError } from "./DocumentDestroyedError";
@@ -1610,44 +1609,6 @@ export class Document
 		});
 	}
 
-	/**
-	 * Make sure the directory a new file is about to be created in is there,
-	 * treating "something else already made it" as success.
-	 *
-	 * The directory tree is materialised by more than one writer — the folder
-	 * objects create their own directories from a promise nobody awaits, and
-	 * the first download of a note lands in the middle of that sweep. Whether
-	 * a directory is there is read from the vault index, which does not learn
-	 * of one until the creation that made it has resolved, so between the
-	 * index answering no and the request to create it the directory can
-	 * already exist. Asking for it a second time is reported as a failure.
-	 *
-	 * That failure would be harmless if it stopped here. It does not: it is
-	 * thrown from underneath the write, and the download doing the writing has
-	 * by then registered the document and settled its ancestor — so the throw
-	 * leaves a document that reads as synced and a file that was never
-	 * created, which every later download declines to fetch because the
-	 * document is loaded. The file never arrives and nothing says so.
-	 *
-	 * Only the end state matters, so a directory that is there is a success
-	 * whoever made it. Anything else is rethrown.
-	 */
-	private async ensureParentDirectory(vaultPath: string): Promise<void> {
-		const parentPath = vaultPath.substring(0, vaultPath.lastIndexOf("/"));
-		if (!parentPath) return;
-		if (this.vault.getAbstractFileByPath(parentPath)) return;
-		try {
-			await this.vault.createFolder(parentPath);
-		} catch (error) {
-			// The index may have caught up while the losing creation was in
-			// flight. When it has not, the adapter is asked instead, because
-			// it reads the filesystem rather than the index.
-			if (this.vault.getAbstractFileByPath(parentPath)) return;
-			if (await this.vault.adapter.exists(parentPath)) return;
-			throw error;
-		}
-	}
-
 	private async writeDiskContents(
 		contents: string,
 		options: {
@@ -1665,60 +1626,41 @@ export class Document
 			mtime?: number;
 		},
 	): Promise<boolean> {
-		if (this.destroyed) {
-			this.warn("[writeDiskContents] Skipping write for destroyed document", this.path);
-			return false;
-		}
-		if (this.sharedFolder.isPendingDelete(this.path)) {
-			this.warn("[writeDiskContents] Skipping write for pending delete", this.path);
-			return false;
-		}
-		if (options.excludeWhileActive && this.userLock) {
-			this.warn("[writeDiskContents] Skipping idle write for active document", this.path);
-			return false;
-		}
-
-		const encoder = new TextEncoder();
-		const hash = await generateHash(encoder.encode(contents).buffer);
-		if (this.destroyed) {
-			this.warn("[writeDiskContents] Skipping write for destroyed document", this.path);
-			return false;
-		}
-		let tfile = options.onlyIfMissing ? this.getTFile() : this.tfile;
-		if (options.onlyIfMissing && tfile) return false;
-		if (!tfile && !options.createIfMissing) {
-			return false;
-		}
-		if (!tfile) {
-			// A new file is never created through another spelling of an
-			// existing path. Obsidian refuses a create whose own name aliases
-			// an existing one, but not one beneath a directory reached through
-			// another spelling, which lands inside a different object.
-			const vaultPath = normalizePath(this.sharedFolder.getPath(this.path));
-			const spelling = await probeDiskSpelling(this.vault.adapter, vaultPath);
-			if (spelling.kind === "alias") {
-				this.warn(
-					"[writeDiskContents] Skipping create: a path component exists on disk under another spelling",
-					this.path,
-					spelling.at,
-				);
-				return false;
-			}
+		// Whether the document still lets these bytes out. The disk asks again
+		// right before the write, after anything it had to wait for on the way
+		// there; the merge policy itself stays the document's.
+		const acceptsWrite = (): boolean => {
 			if (this.destroyed) {
 				this.warn("[writeDiskContents] Skipping write for destroyed document", this.path);
 				return false;
 			}
-		}
-		// Last thing before the write. From here to vault.modify nothing
-		// suspends, so a document that says no here cannot be written over.
-		if (
-			options.onlyWhileAcceptingRemoteEnrollment &&
-			!this._hsm?.acceptsRemoteEnrollment
-		) {
-			this.warn(
-				"[writeDiskContents] Skipping write: the document no longer accepts a remote copy",
-				this.path,
-			);
+			if (this.sharedFolder.isPendingDelete(this.path)) {
+				this.warn("[writeDiskContents] Skipping write for pending delete", this.path);
+				return false;
+			}
+			if (options.excludeWhileActive && this.userLock) {
+				this.warn("[writeDiskContents] Skipping idle write for active document", this.path);
+				return false;
+			}
+			if (
+				options.onlyWhileAcceptingRemoteEnrollment &&
+				!this._hsm?.acceptsRemoteEnrollment
+			) {
+				this.warn(
+					"[writeDiskContents] Skipping write: the document no longer accepts a remote copy",
+					this.path,
+				);
+				return false;
+			}
+			return true;
+		};
+		if (!acceptsWrite()) return false;
+
+		const encoder = new TextEncoder();
+		const hash = await generateHash(encoder.encode(contents).buffer);
+		let tfile = options.onlyIfMissing ? this.getTFile() : this.tfile;
+		if (options.onlyIfMissing && tfile) return false;
+		if (!tfile && !options.createIfMissing) {
 			return false;
 		}
 
@@ -1727,15 +1669,26 @@ export class Document
 		this._lastEngineWrite = intent;
 
 		try {
+			let written: boolean;
 			if (tfile) {
 				const modifyOptions =
 					options.mtime !== undefined ? { mtime: options.mtime } : undefined;
-				await this.vault.modify(tfile, contents, modifyOptions);
+				written = await this.sharedFolder.disk.modify(
+					tfile,
+					contents,
+					modifyOptions,
+					acceptsWrite,
+				);
 			} else {
-				const vaultPath = normalizePath(this.sharedFolder.getPath(this.path));
-				await this.ensureParentDirectory(vaultPath);
-				tfile = await this.vault.create(vaultPath, contents);
-				this._tfile = tfile;
+				tfile = await this.sharedFolder.disk.create(this, contents, acceptsWrite);
+				written = tfile !== null;
+				if (tfile) this._tfile = tfile;
+			}
+			if (!written || !tfile) {
+				if (this._lastEngineWrite === intent) {
+					this._lastEngineWrite = previousIdentity;
+				}
+				return false;
 			}
 		} catch (error) {
 			if (this._lastEngineWrite === intent) {
