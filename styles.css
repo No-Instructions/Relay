@@ -175,14 +175,20 @@ button.system3-login-button {
 	text-shadow: var(--input-shadow);
 }
 
+.nav-file-tag.system3-case-conflict {
+	color: var(--text-error);
+}
+
 .relay-read-only-banner-box,
-.relay-not-synced-banner-box {
+.relay-not-synced-banner-box,
+.relay-case-conflict-banner-box {
 	background: color-mix(in srgb, var(--background-primary), var(--text-normal) 8%);
 	padding-inline-end: var(--scrollbar-width, 12px);
 }
 
 .relay-read-only-banner,
-.relay-not-synced-banner {
+.relay-not-synced-banner,
+.relay-case-conflict-banner {
 	padding: var(--file-margins);
 	padding-block: 6px;
 	color: var(--text-muted);
@@ -192,7 +198,7 @@ button.system3-login-button {
 	cursor: default;
 }
 
-.workspace-leaf-content:has(> .view-content > .is-readable-line-width) :is(.relay-read-only-banner, .relay-not-synced-banner) > span {
+.workspace-leaf-content:has(> .view-content > .is-readable-line-width) :is(.relay-read-only-banner, .relay-not-synced-banner, .relay-case-conflict-banner) > span {
 	display: block;
 	width: max-content;
 	min-width: min(100%, var(--file-line-width));
@@ -220,7 +226,8 @@ button.system3-login-button {
 }
 
 .relay-read-only-header-label,
-.relay-not-synced-header-label {
+.relay-not-synced-header-label,
+.relay-case-conflict-header-label {
 	padding: 2px 8px;
 	color: var(--text-muted);
 	font-size: var(--font-ui-small);

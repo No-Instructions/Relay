@@ -38,6 +38,7 @@ import ServiceMessagesNotice from "./components/ServiceMessagesNotice.svelte";
 import { ServiceMessages, type ServiceMessageAction } from "./ServiceMessages";
 import { SERVICE_MESSAGE_VIEW, ServiceMessageView, openServiceMessageView } from "./ui/ServiceMessageView";
 import { NoteMessageBanners } from "./ui/NoteMessageBanners";
+import { CaseConflictBanners } from "./ui/CaseConflictBanners";
 import { ResourceMeterMount } from "./ui/ResourceMeter";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager, type LoginSettings } from "./LoginManager";
@@ -981,6 +982,9 @@ export default class Live extends Plugin {
 			this.addChild(new NoteMessageBanners(
 				this.app, serviceMessages, this.sharedFolders, this.textViewRegistry,
 				action => { void this.openServiceMessageAction(action); },
+			));
+			this.addChild(new CaseConflictBanners(
+				this.app, this.sharedFolders, this.textViewRegistry,
 			));
 			this._liveViews = new LiveViewManager(
 				this.app,
