@@ -11,6 +11,7 @@ import { type FileMetas, type SyncFileType } from "./SyncTypes";
 import { TFile, type Vault, type TFolder, type FileStats } from "obsidian";
 import { Observable, type Unsubscriber } from "./observable/Observable";
 import { snapshotAttachment, desktopAttachmentIO, checkAttachmentAbort } from "./AttachmentIO";
+import { assertFreeOnDisk } from "./casePaths";
 import { AttachmentLimitError, type AttachmentTask } from "./AttachmentTransfers";
 import { generateHash } from "./hashing";
 import type { HasMimeType, IFile } from "./IFile";
@@ -878,6 +879,13 @@ export class SyncFile
 					mtime = Date.now();
 				}
 				checkAttachmentAbort(signal);
+				// A destination the index does not hold must be free on disk
+				// too: the rename would otherwise replace a file the index has
+				// not caught up with, or land inside a different object reached
+				// through another spelling.
+				if (!this.caf.exists()) {
+					await assertFreeOnDisk(this.vault.adapter, destination);
+				}
 				const previous = this.lastServerEdit;
 				this.lastServerEdit = { mtime, size: stat.size, hash: meta.hash };
 				try {
@@ -932,6 +940,13 @@ export class SyncFile
 				size: content.byteLength,
 				hash: this.meta.hash,
 			};
+			// A file the index does not hold must be free on disk too: a raw
+			// write would otherwise overwrite a file the index has not caught
+			// up with, or land inside a different object reached through
+			// another spelling.
+			if (!this.caf.exists()) {
+				await assertFreeOnDisk(this.vault.adapter, vaultPath);
+			}
 			// Record the marker before writing so the modify event raised by
 			// writeBinary is recognized as our own server-write echo
 			// (noteLocalModify) rather than a user edit.

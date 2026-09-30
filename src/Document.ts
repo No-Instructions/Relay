@@ -25,6 +25,7 @@ import {
 import { reconnectProvider } from "./merge-hsm/integration/ProviderLifecycle";
 import { generateHash } from "./hashing";
 import { readNoteText } from "./diskText";
+import { probeDiskSpelling } from "./casePaths";
 import { trackAsyncCleanup } from "./reloadUtils";
 import { trackPromise } from "./trackPromise";
 import { DocumentDestroyedError } from "./DocumentDestroyedError";
@@ -1687,6 +1688,26 @@ export class Document
 		if (options.onlyIfMissing && tfile) return false;
 		if (!tfile && !options.createIfMissing) {
 			return false;
+		}
+		if (!tfile) {
+			// A new file is never created through another spelling of an
+			// existing path. Obsidian refuses a create whose own name aliases
+			// an existing one, but not one beneath a directory reached through
+			// another spelling, which lands inside a different object.
+			const vaultPath = normalizePath(this.sharedFolder.getPath(this.path));
+			const spelling = await probeDiskSpelling(this.vault.adapter, vaultPath);
+			if (spelling.kind === "alias") {
+				this.warn(
+					"[writeDiskContents] Skipping create: a path component exists on disk under another spelling",
+					this.path,
+					spelling.at,
+				);
+				return false;
+			}
+			if (this.destroyed) {
+				this.warn("[writeDiskContents] Skipping write for destroyed document", this.path);
+				return false;
+			}
 		}
 		// Last thing before the write. From here to vault.modify nothing
 		// suspends, so a document that says no here cannot be written over.
