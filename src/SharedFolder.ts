@@ -100,6 +100,13 @@ import {
 	normalizeRemoteActivityTimestamp,
 } from "./RemoteActivityIndex";
 import { expandDesiredRemotePaths } from "./syncPathUtils";
+import {
+	DiskSlotTakenError,
+	findVariantSharingObject,
+	type CasePathHold,
+	type CasePathHoldsView,
+} from "./casePaths";
+import { FolderDisk } from "./FolderDisk";
 import type { TimeProvider } from "./TimeProvider";
 import * as Y from "yjs";
 
@@ -353,6 +360,7 @@ export class SharedFolder extends HasProvider {
 	private serverOps = new ServerOps();
 	/** Dispatched renames retain their echo until the disk operation settles. */
 	private serverRenamesInFlight = new Map<string, { deleted: boolean }>();
+	private _disk: FolderDisk | null = null;
 	/** One parked publication re-entry per held path. */
 	private _parkedPublications: Map<string, Promise<void>> = new Map();
 	/** One publication decision executor per held path. */
@@ -2251,8 +2259,111 @@ export class SharedFolder extends HasProvider {
 		return this.shouldConnect ? "connected" : "disconnected";
 	}
 
+	/** The one way this folder's engine writes to disk; see FolderDisk. */
+	get disk(): FolderDisk {
+		return (this._disk ??= new FolderDisk({
+			vault: this.vault,
+			vaultPath: (vpath) => normalizePath(this.getPath(vpath)),
+			alive: () => !this.destroyed,
+			renameFile: (file, vaultPath) => this.renameForServerMove(file, vaultPath),
+			warn: (message) => this.warn(message),
+			log: (message) => this.log(message),
+		}));
+	}
+
+	private casePathHolds(): FolderDisk["holds"] {
+		return this.disk.holds;
+	}
+
+	private holdCasePath(hold: CasePathHold): void {
+		this.disk.hold(hold);
+	}
+
+	/** Whether a remote change may create a disk object at `vpath`; see FolderDisk. */
+	private mayMaterialize(vpath: string, source?: TAbstractFile): Promise<boolean> {
+		return this.disk.mayMaterialize(vpath, source);
+	}
+
+	/** Committed spellings that fold together with `vpath` or with a folder above it. */
+	private caseVariantsAlong(vpath: string): { path: string; variants: string[] }[] {
+		const found: { path: string; variants: string[] }[] = [];
+		for (let path = vpath; path !== "/"; path = dirname(path)) {
+			const variants = this.syncStore.committedCaseVariants(path);
+			if (variants.length > 0) found.push({ path, variants });
+		}
+		return found;
+	}
+
+	/**
+	 * Clear a local file to publish a new membership claim at `vpath`. A
+	 * committed spelling of the path, or of a folder above it, that reaches
+	 * the same disk object refuses it: publishing would give one local object
+	 * two spellings in membership, and a case-insensitive device can hold only
+	 * one of them. Resolves to the committed variants found on distinct disk
+	 * objects, or null while the claim is held. An identity already committed
+	 * at the path is not a new claim.
+	 */
+	private async caseVariantsClearedForClaim(
+		vpath: string,
+		guid: string,
+	): Promise<ReadonlySet<string> | null> {
+		if (this.syncStore.getCommittedMeta(vpath)?.id === guid) return new Set();
+		const cleared = new Set<string>();
+		const vaultPath = (path: string) => normalizePath(this.getPath(path));
+		for (const { path, variants } of this.caseVariantsAlong(vpath)) {
+			const shared = await findVariantSharingObject(
+				this.vault.adapter,
+				vaultPath(path),
+				variants.map(vaultPath),
+			);
+			if (shared !== null) {
+				this.holdCasePath({
+					path: vpath,
+					direction: "publish",
+					reason: "shared-slot",
+					blockedBy: this.getVirtualPath(shared),
+				});
+				return null;
+			}
+			variants.forEach((variant) => cleared.add(variant));
+		}
+		this.casePathHolds().release("publish", vpath);
+		return cleared;
+	}
+
+	/** What this device holds back because of case conflicts; see CasePathHolds. */
+	public get heldCasePaths(): CasePathHoldsView {
+		return this.casePathHolds();
+	}
+
+	/**
+	 * Drop holds whose path no longer waits: a remote path that left
+	 * membership or reached disk, a local file no longer awaiting publication.
+	 */
+	private sweepCaseHolds(): void {
+		this.casePathHolds().retain((hold) =>
+			hold.direction === "publish"
+				? this.pendingUpload.has(hold.path)
+				: this.syncStore.has(hold.path) && !this.existsSync(hold.path),
+		);
+	}
+
+	/** A local delete or rename can free the disk slot a held remote change waits on. */
+	private retryHeldMaterializations(): void {
+		if (!this.casePathHolds().holding("materialize")) return;
+		void this.syncFileTree().catch((error) => {
+			if (!isDestroyedError(error)) {
+				this.warn("syncFileTree retry of held remote changes failed", error);
+			}
+		});
+	}
+
+	/**
+	 * Move an identity's disk file to the path membership gives it. The
+	 * identity need not be loaded: its file object only follows the move.
+	 */
 	async _handleServerRename(
-		doc: IFile,
+		doc: Pick<IFile, "guid" | "path" | "move">,
 		path: string,
 		file: TAbstractFile,
 		diffLog?: string[],
@@ -2264,15 +2375,14 @@ export class SharedFolder extends HasProvider {
 		const rename = { deleted: false };
 		inFlight.set(doc.guid, rename);
 		try {
-			diffLog?.push(`${file.path} was renamed to ${this.getPath(path)}`);
-			if (file instanceof TFile) {
-				const dir = dirname(path);
-				if (!this.existsSync(dir)) {
-					await this.mkdir(dir);
-					diffLog?.push(`creating directory ${dir}`);
-				}
-			}
-			await this.renameForServerMove(file, normalizePath(this.getPath(path)));
+			const from = file.path;
+			// A held move stays recorded: its source keeps its place on disk
+			// and a later tree sync retries it.
+			const moved = await this.disk.move({ guid: doc.guid, path }, file, (dir) =>
+				diffLog?.push(`creating directory ${dir}`),
+			);
+			if (!moved) return;
+			diffLog?.push(`${from} was renamed to ${this.getPath(path)}`);
 			this.serverOps.completeMove(oldVPath, path);
 			this.bootSnapshot?.discard(oldVPath);
 			if (!this.destroyed && doc.path !== path) {
@@ -2323,6 +2433,7 @@ export class SharedFolder extends HasProvider {
 		diffLog?: string[],
 		restoreDeleted = false,
 	): Promise<IFile | undefined> {
+		if (!(await this.mayMaterialize(vpath))) return undefined;
 		const live = restoreDeleted ? this.files.get(meta.id) : undefined;
 		if (isDocument(live)) {
 			// Restore the missing disk object from server content without
@@ -2769,6 +2880,17 @@ export class SharedFolder extends HasProvider {
 		}
 
 		if (remoteIds.has(guid) && file) {
+			// Membership can list one identity under several paths, as when two
+			// devices rename it concurrently. A file at one of its identity's
+			// committed paths stays there: moving it toward another would move
+			// it back when the next pass reads the first. The pass over its own
+			// path still restores the file if it is missing.
+			if (
+				file.path !== path &&
+				this.syncStore.getCommittedMeta(file.path)?.id === guid
+			) {
+				return { op: "noop", path, promise: Promise.resolve() };
+			}
 			const oldPath = this.getPath(file.path);
 			const tfile = this.vault.getAbstractFileByPath(oldPath);
 			if (tfile) {
@@ -2965,6 +3087,11 @@ export class SharedFolder extends HasProvider {
 			: null;
 		const folders = ffiles.filter((file) => file instanceof TFolder);
 		const files = ffiles.filter((file) => file instanceof TFile);
+		// A directory holding the source of an outstanding server move keeps
+		// that file on disk until the move lands or is dropped.
+		const moveSourceDirectories = expandDesiredRemotePaths(
+			this.serverOps.pendingMoves().map((move) => move.from),
+		);
 		const sync = (file: TAbstractFile) => {
 			// If the file is in the shared folder and not in the map, move it to the Trash
 			const isSyncableFile = this.isSyncableTFile(file);
@@ -2984,7 +3111,9 @@ export class SharedFolder extends HasProvider {
 			// Membership already lists a moved identity at its new path, so its
 			// source path reads as absent from the map while the disk rename is
 			// still outstanding. That path belongs to the move, not to a removal.
-			const moveSource = this.serverOps.moveFrom(vpath) !== undefined;
+			const moveSource =
+				this.serverOps.moveFrom(vpath) !== undefined ||
+				(file instanceof TFolder && moveSourceDirectories.has(vpath));
 			const synced = this._provider?.synced && this._persistence?.synced;
 			if (
 				fileInFolder &&
@@ -2994,49 +3123,95 @@ export class SharedFolder extends HasProvider {
 				!moveSource
 			) {
 				if (synced) {
-					diffLog.push(`deleted local file ${vpath} for remotely deleted doc`);
-					this.markPendingDelete(vpath);
-					const promise = this.vault.adapter
-						.trashLocal(file.path)
-						.then(() => {
-							// The pending-delete mark suppresses the trash's own
-							// vault-delete echo, so the deletion handler that
-							// would destroy the live in-memory doc never runs for
-							// this path. A surviving doc re-creates the file on
-							// its next engine write and re-registers it as new.
-							// Tear it down here the way a processed vault delete
-							// would, before the mark clears — the write guard
-							// covers the window, and a destroyed doc's queued
-							// writes stand down.
-							const doc = this.fset.find((f) => f.path === vpath);
-							if (doc) {
-								this.fset.delete(doc);
-								this.files.delete(doc.guid);
-								void doc.cleanup();
-								doc.destroy();
-								this.teardownDocState(doc.guid);
-								this.fset.update();
-							}
-							// The removal's disk adoption is complete: the path
-							// may classify as a local creation again, so a
-							// legitimate recreation is not refused.
-							this.serverOps.clearDelete(vpath);
-							this.bootSnapshot?.discard(vpath);
-						})
-						.finally(() => {
-							this.clearPendingDelete(vpath);
-						});
-					deletes.push({
-						op: "delete",
-						path: vpath,
-						promise,
-					});
+					const trash = (): Promise<void> => {
+						this.markPendingDelete(vpath);
+						return this.vault.adapter
+							.trashLocal(file.path)
+							.then(() => {
+								// The pending-delete mark suppresses the trash's own
+								// vault-delete echo, so the deletion handler that
+								// would destroy the live in-memory doc never runs for
+								// this path. A surviving doc re-creates the file on
+								// its next engine write and re-registers it as new.
+								// Tear it down here the way a processed vault delete
+								// would, before the mark clears — the write guard
+								// covers the window, and a destroyed doc's queued
+								// writes stand down.
+								const doc = this.fset.find((f) => f.path === vpath);
+								if (doc) {
+									this.fset.delete(doc);
+									this.files.delete(doc.guid);
+									void doc.cleanup();
+									doc.destroy();
+									this.teardownDocState(doc.guid);
+									this.fset.update();
+								}
+								// The removal's disk adoption is complete: the path
+								// may classify as a local creation again, so a
+								// legitimate recreation is not refused.
+								this.serverOps.clearDelete(vpath);
+								this.bootSnapshot?.discard(vpath);
+							})
+							.finally(() => {
+								this.clearPendingDelete(vpath);
+							});
+					};
+					// A committed spelling of this path may carry the file's own
+					// identity: a server move whose disk rename never happened
+					// leaves the file under the old spelling. That file moves
+					// into place instead, keeping content the server never had.
+					const owners = file instanceof TFile ? this.caseVariantEntries(vpath) : [];
+					if (owners.length === 0) {
+						diffLog.push(`deleted local file ${vpath} for remotely deleted doc`);
+						deletes.push({ op: "delete", path: vpath, promise: trash() });
+						return;
+					}
+					const reclaimOrTrash = async (): Promise<void> => {
+						for (const { path, guid } of owners) {
+							if (!(await this.knowsFileAs(file, vpath, guid))) continue;
+							this.log(`[${vpath}] moving to ${path}, where its own identity is committed`);
+							await this._handleServerRename(
+								this.files.get(guid) ?? { guid, path: vpath, move: () => {} },
+								path,
+								file,
+							);
+							return;
+						}
+						this.log(`[${vpath}] deleted local file for remotely deleted doc`);
+						await trash();
+					};
+					deletes.push({ op: "delete", path: vpath, promise: reclaimOrTrash() });
 				}
 			}
 		};
 		files.forEach(sync);
 		folders.forEach(sync);
 		return deletes;
+	}
+
+	/** Committed entries whose paths fold together with `vpath`, with their identities. */
+	private caseVariantEntries(vpath: string): { path: string; guid: string }[] {
+		return this.syncStore.committedCaseVariants(vpath).flatMap((path) => {
+			const meta = this.syncStore.getCommittedMeta(path);
+			return meta ? [{ path, guid: meta.id }] : [];
+		});
+	}
+
+	/**
+	 * Whether this device knows the file at `vpath` as `guid`: by the file
+	 * object loaded for it, by the merge record last persisted at that path,
+	 * or by the hash record written when an attachment there last synced.
+	 */
+	private async knowsFileAs(
+		file: TAbstractFile,
+		vpath: string,
+		guid: string,
+	): Promise<boolean> {
+		if (this.tfileGuids?.get(file) === guid) return true;
+		if (this.files.get(guid)?.path === vpath) return true;
+		if (this.mergeManager?.getPersistedPath(guid) === vpath) return true;
+		const record = await this.hashStore?.getHash(normalizePath(this.getPath(vpath)));
+		return record?.guid === guid;
 	}
 
 	private getDesiredRemotePaths(): Set<string> {
@@ -3164,6 +3339,8 @@ export class SharedFolder extends HasProvider {
 	 */
 	public notifyVaultCreateLegacy(tfile: TAbstractFile): boolean {
 		const vpath = this.getVirtualPath(tfile.path);
+		// A file the index just took in may be the one a hold waited on.
+		this.sweepCaseHolds();
 		if (this.isPendingDelete(vpath)) return false;
 		if (this.syncStore.has(vpath)) return true;
 		this.observeMoveSourceRecreation(vpath);
@@ -3264,6 +3441,7 @@ export class SharedFolder extends HasProvider {
 	public notifyVaultRename(file: TAbstractFile, oldPath: string): void {
 		if (file.path === oldPath || this.isReaderFolderRestoreChild(file, oldPath)) return;
 		if (this.consumeReaderRestoreRenameEcho(file, oldPath)) return;
+		this.retryHeldMaterializations();
 		const oldVPath = this.getVirtualPath(oldPath);
 		const newVPath = this.getVirtualPath(file.path);
 		this.cancelPendingCreate(oldVPath);
@@ -3472,6 +3650,9 @@ export class SharedFolder extends HasProvider {
 			op: "update",
 			path,
 			promise: (async () => {
+				// Checked before the transfer as well as at publication, so a
+				// held claim does not upload content nothing will reference.
+				if (!(await this.caseVariantsClearedForClaim(path, pendingGuid))) return;
 				await this.preparePendingFileForPublication(file);
 				if (this.destroyed || run?.cancelled) return;
 				const latestMeta = this.syncStore.getCommittedMeta(path);
@@ -3743,6 +3924,10 @@ export class SharedFolder extends HasProvider {
 						this.bootSnapshot?.discard(move.from);
 					}
 				}
+				this.sweepCaseHolds();
+				// A removal can free the disk slot a held remote change waits
+				// on: once the trash has landed, a follow-up sync retries it.
+				if (deletes.length > 0) this.retryHeldMaterializations();
 				this.sweepStalePendingUploads();
 			} finally {
 				// Reset the promise after completion (success or failure)
@@ -3820,9 +4005,14 @@ export class SharedFolder extends HasProvider {
 			return engine.writeEngineContents(content);
 		}
 		this.log("writing to ", normalizePath(vaultPath));
-		return this.vault.adapter
-			.write(normalizePath(vaultPath), content)
-			.then(() => true);
+		return this.disk.write(doc, content).then(
+			() => true,
+			(error: unknown) => {
+				if (!(error instanceof DiskSlotTakenError)) throw error;
+				this.warn(`[${doc.path}] write refused: ${error.message}`);
+				return false;
+			},
+		);
 	}
 
 	getPath(path: string): string {
@@ -3836,25 +4026,31 @@ export class SharedFolder extends HasProvider {
 	}
 
 	mkdir(path: string): Promise<void> {
-		const vaultPath = join(this.path, path);
-		return this.vault.adapter.mkdir(normalizePath(vaultPath));
+		return this.disk.mkdir(path);
 	}
 
 	checkPath(path: string): boolean {
-		return path.startsWith(this.path + sep);
+		return normalizePath(path).startsWith(normalizePath(this.path) + sep);
 	}
 
+	/**
+	 * The virtual path is spelled as Obsidian's normalizePath spells it:
+	 * composed, with non-breaking spaces as spaces. Obsidian can index one
+	 * file under both compositions of an accented name; both name one path
+	 * here, and that is the name membership holds.
+	 */
 	getVirtualPath(path: string): string {
 		this.assertPath(path);
+		return normalizePath(path).slice(normalizePath(this.path).length);
+	}
 
-		const vPath = path.slice(this.path.length);
-		return vPath;
+	/** The object the vault index holds at a virtual path. */
+	getAbstractFile(vpath: string): TAbstractFile | null {
+		return this.vault.getAbstractFileByPath(normalizePath(this.getPath(vpath)));
 	}
 
 	getTFile(file: IFile): TFile | null {
-		const maybeTFile = this.vault.getAbstractFileByPath(
-			this.getPath(file.path),
-		);
+		const maybeTFile = this.getAbstractFile(file.path);
 		if (maybeTFile instanceof TFile) {
 			return maybeTFile;
 		}
@@ -3966,6 +4162,8 @@ export class SharedFolder extends HasProvider {
 			);
 			return;
 		}
+		const cleared = await this.caseVariantsClearedForClaim(file.path, file.guid);
+		if (!cleared) return;
 		const mark = (file: IFile, meta: Meta) => {
 			if (!this.syncStore) {
 				return;
@@ -3979,17 +4177,34 @@ export class SharedFolder extends HasProvider {
 			// the slot is still empty (or already carries this identity), so
 			// no step can interleave between the proof and the write.
 			let contestedMeta: Meta | undefined = undefined;
+			let unvettedVariant: string | undefined = undefined;
 			this.folderDoc.transact(() => {
 				const committedMeta = this.syncStore.getCommittedMeta(file.path);
 				if (committedMeta && committedMeta.id !== meta.id) {
 					contestedMeta = committedMeta;
 					return;
 				}
+				// A new claim was cleared against the case variants committed
+				// before its transfer. One committed since has not been checked
+				// against the disk, so the claim waits for the next decision.
+				if (!committedMeta) {
+					unvettedVariant = this.caseVariantsAlong(file.path)
+						.flatMap(({ variants }) => variants)
+						.find((variant) => !cleared.has(variant));
+					if (unvettedVariant !== undefined) return;
+				}
 				if (this.syncStore.willSet(file.path, meta)) {
 					this.log("new meta", file.path, meta);
 					this.syncStore.markUploaded(file.path, meta);
 				}
 			}, this);
+			if (unvettedVariant !== undefined) {
+				this.log(
+					`[markUploaded] stood down: ${unvettedVariant} was committed during the transfer`,
+					file.path,
+				);
+				return;
+			}
 			// Read through an assertion: control flow cannot see the closure
 			// assignment above.
 			const committedMeta = contestedMeta as Meta | undefined;
@@ -4273,7 +4488,10 @@ export class SharedFolder extends HasProvider {
 		return canvas;
 	}
 
-	async downloadCanvas(vpath: string, userVisible = true): Promise<Canvas> {
+	async downloadCanvas(
+		vpath: string,
+		userVisible = true,
+	): Promise<Canvas | undefined> {
 		if (!Canvas.checkExtension(vpath)) {
 			throw new Error("unexpected extension");
 		}
@@ -4283,6 +4501,11 @@ export class SharedFolder extends HasProvider {
 		const guid = this.syncStore.get(vpath);
 		if (!guid) {
 			throw new Error(`called download on item that is not in ids ${vpath}`);
+		}
+		// A file not on disk yet is created only where no other spelling holds
+		// its slot. A held download is retried by the next tree sync.
+		if (!this.existsSync(vpath) && !(await this.mayMaterialize(vpath))) {
+			return undefined;
 		}
 		const canvas = this.getOrCreateCanvas(guid, vpath);
 		void canvas.markOrigin("remote");
@@ -4502,6 +4725,11 @@ export class SharedFolder extends HasProvider {
 		// A remap already owns this path: stand aside before paying for the
 		// fetch, not after.
 		if (!this.downloadMayProceed(undefined, vpath, "before fetching")) {
+			return undefined;
+		}
+		// A file not on disk yet is created only where no other spelling holds
+		// its slot. A held download is retried by the next tree sync.
+		if (!this.existsSync(vpath) && !(await this.mayMaterialize(vpath))) {
 			return undefined;
 		}
 
@@ -5077,6 +5305,7 @@ export class SharedFolder extends HasProvider {
 		if (paths.length === 0) {
 			return;
 		}
+		this.retryHeldMaterializations();
 		if (!this.canManageFiles) {
 			const readerOwnedPaths = paths.filter(
 				(vpath) => !!this.syncStore.getMeta(vpath) || this.pendingUpload.has(vpath),
@@ -5156,6 +5385,7 @@ export class SharedFolder extends HasProvider {
 	renameFile(tfile: TAbstractFile, oldPath: string) {
 		if (tfile.path === oldPath || this.isReaderFolderRestoreChild(tfile, oldPath)) return;
 		if (this.consumeReaderRestoreRenameEcho(tfile, oldPath)) return;
+		this.retryHeldMaterializations();
 		const newPath = tfile.path;
 		let newVPath = "";
 		let oldVPath = "";
