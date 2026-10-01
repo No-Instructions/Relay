@@ -10,6 +10,8 @@ interface BannerOptions {
 	backgroundColor?: string;
 	color?: string;
 	render?: (container: HTMLElement) => () => void;
+	/** The slot the banner competes for; a string in the options' place names it alone. */
+	namespace?: string;
 }
 
 type BannerSlot = { candidates: Set<Banner>; active?: Banner };
@@ -33,7 +35,7 @@ export class Banner {
 		options: BannerOptions | string = {},
 	) {
 		this.options = typeof options === "string" ? {} : options;
-		this.namespace = typeof options === "string" ? options : "system3";
+		this.namespace = typeof options === "string" ? options : (options.namespace ?? "system3");
 		this.view = view;
 		this.text = text;
 		this.onClick = onClick;

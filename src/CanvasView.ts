@@ -1,4 +1,4 @@
-import type { TFile, TextFileView, WorkspaceLeaf } from "obsidian";
+import type { TFile, TextFileView, Workspace, WorkspaceLeaf } from "obsidian";
 
 export type CanvasSide = "top" | "right" | "bottom" | "left";
 
@@ -183,4 +183,16 @@ export interface CanvasEdgeData {
 	fromSide: string;
 	toNode: string;
 	toSide: string;
+}
+
+/** Visit every open canvas view. */
+export function iterateCanvasViews(
+	workspace: Workspace,
+	fn: (view: CanvasView) => void,
+): void {
+	workspace.iterateAllLeaves((leaf) => {
+		if (leaf.view.getViewType() === "canvas") {
+			fn(leaf.view as unknown as CanvasView);
+		}
+	});
 }
