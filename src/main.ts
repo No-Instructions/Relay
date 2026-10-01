@@ -31,6 +31,7 @@ import {
 
 import { SharedFolders } from "./SharedFolder";
 import { FolderNavigationDecorations } from "./ui/FolderNav";
+import { openCaseConflictExplanation } from "./ui/CaseConflictModal";
 import { MetadataHealthSidebarNoticeMount } from "./ui/MetadataHealthSidebarNotice";
 import { SidebarNoticeMount } from "./ui/SidebarNoticeMount";
 import { mountComponent } from "./ui/svelteHost.svelte";
@@ -38,6 +39,7 @@ import ServiceMessagesNotice from "./components/ServiceMessagesNotice.svelte";
 import { ServiceMessages, type ServiceMessageAction } from "./ServiceMessages";
 import { SERVICE_MESSAGE_VIEW, ServiceMessageView, openServiceMessageView } from "./ui/ServiceMessageView";
 import { NoteMessageBanners } from "./ui/NoteMessageBanners";
+import { CaseConflictBanners } from "./ui/CaseConflictBanners";
 import { ResourceMeterMount } from "./ui/ResourceMeter";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager, type LoginSettings } from "./LoginManager";
@@ -982,6 +984,9 @@ export default class Live extends Plugin {
 				this.app, serviceMessages, this.sharedFolders, this.textViewRegistry,
 				action => { void this.openServiceMessageAction(action); },
 			));
+			this.addChild(new CaseConflictBanners(
+				this.app, this.sharedFolders, this.textViewRegistry, this.explainCaseConflict,
+			));
 			this._liveViews = new LiveViewManager(
 				this.app,
 				this.sharedFolders,
@@ -1264,6 +1269,11 @@ export default class Live extends Plugin {
 		});
 	}
 
+	/** Opens why an item's name conflicts with another spelling, from its pill or banner. */
+	explainCaseConflict = (folder: SharedFolder, file: TAbstractFile): void => {
+		openCaseConflictExplanation(this.app, folder, file);
+	};
+
 	async openSettings(path: string = "/") {
 		const setting = (
 			this.app as typeof this.app & { setting: SettingsController }
@@ -1412,6 +1422,7 @@ export default class Live extends Plugin {
 			this.app.workspace,
 			this.sharedFolders,
 			this.backgroundSync,
+			this.explainCaseConflict,
 		);
 		this.folderNavDecorations.refresh();
 

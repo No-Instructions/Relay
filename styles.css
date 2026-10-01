@@ -175,14 +175,20 @@ button.system3-login-button {
 	text-shadow: var(--input-shadow);
 }
 
+.nav-file-tag.system3-case-conflict {
+	color: var(--text-error);
+}
+
 .relay-read-only-banner-box,
-.relay-not-synced-banner-box {
+.relay-not-synced-banner-box,
+.relay-case-conflict-banner-box {
 	background: color-mix(in srgb, var(--background-primary), var(--text-normal) 8%);
 	padding-inline-end: var(--scrollbar-width, 12px);
 }
 
 .relay-read-only-banner,
-.relay-not-synced-banner {
+.relay-not-synced-banner,
+.relay-case-conflict-banner {
 	padding: var(--file-margins);
 	padding-block: 6px;
 	color: var(--text-muted);
@@ -192,12 +198,51 @@ button.system3-login-button {
 	cursor: default;
 }
 
-.workspace-leaf-content:has(> .view-content > .is-readable-line-width) :is(.relay-read-only-banner, .relay-not-synced-banner) > span {
+.workspace-leaf-content:has(> .view-content > .is-readable-line-width) :is(.relay-read-only-banner, .relay-not-synced-banner, .relay-case-conflict-banner) > span {
 	display: block;
 	width: max-content;
 	min-width: min(100%, var(--file-line-width));
 	max-width: 100%;
 	margin-inline: auto;
+}
+
+/* The case-conflict banner: one line, "(more info)" to the explanation, and a dismissal. */
+.relay-case-conflict-line {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--size-4-2);
+}
+.workspace-leaf-content:has(> .view-content > .is-readable-line-width) .relay-case-conflict-banner > .relay-case-conflict-line {
+	width: max-content;
+	min-width: min(100%, var(--file-line-width));
+	max-width: 100%;
+	margin-inline: auto;
+}
+.relay-case-conflict-text {
+	flex: 1;
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+.relay-case-conflict-link {
+	display: inline;
+	height: auto;
+	padding: 0;
+	border: 0;
+	background: none;
+	box-shadow: none;
+	color: inherit;
+	font: inherit;
+	text-decoration: underline;
+	cursor: pointer;
+}
+.relay-case-conflict-close {
+	flex: 0 0 auto;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	margin-top: -1px;
+	color: inherit;
+	box-shadow: none;
 }
 
 .relay-banner-context {
@@ -220,7 +265,8 @@ button.system3-login-button {
 }
 
 .relay-read-only-header-label,
-.relay-not-synced-header-label {
+.relay-not-synced-header-label,
+.relay-case-conflict-header-label {
 	padding: 2px 8px;
 	color: var(--text-muted);
 	font-size: var(--font-ui-small);
@@ -945,4 +991,74 @@ canvas.relay-canvas-presence {
 
 .relay-conflict-toggle .checkbox-container {
 	transform: none;
+}
+
+/* A NAME CONFLICT pill that explains itself reads as a button. */
+.nav-file-tag.system3-pill-button {
+	cursor: pointer;
+}
+.nav-file-tag.system3-pill-button:hover,
+.nav-file-tag.system3-pill-button:focus-visible {
+	color: var(--text-normal);
+	background-color: var(--background-modifier-hover);
+}
+
+/* The explanation behind the pill and banner: both spellings with the
+   letters that differ marked and where each one is, then why, and the fix. */
+.modal.relay-case-conflict-modal {
+	width: min(480px, calc(100vw - 48px));
+}
+.relay-case-conflict-info {
+	font-size: var(--font-ui-small);
+	line-height: 1.5;
+}
+.relay-case-conflict-names {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+	margin: 0 0 var(--size-4-3);
+	padding: var(--size-4-2) var(--size-4-3);
+	border-radius: var(--radius-m);
+	background: var(--background-secondary);
+}
+.relay-case-conflict-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--size-4-2);
+	min-width: 0;
+}
+.relay-case-name {
+	color: var(--text-normal);
+	font-weight: var(--font-medium);
+	overflow-wrap: anywhere;
+}
+.relay-case-diff {
+	background: color-mix(in srgb, var(--text-error) 22%, transparent);
+	color: var(--text-normal);
+	border-radius: 3px;
+	padding: 0 1px;
+	font-weight: var(--font-bold);
+	box-shadow: inset 0 -2px 0 var(--text-error);
+}
+.relay-case-conflict-status {
+	color: var(--text-muted);
+	white-space: nowrap;
+}
+.relay-case-conflict-body {
+	margin: 0 0 var(--size-4-2);
+	color: var(--text-muted);
+}
+.relay-case-conflict-fix {
+	margin: 0 0 var(--size-4-2);
+	color: var(--text-normal);
+}
+.relay-case-conflict-docs {
+	font-size: var(--font-ui-small);
+}
+.relay-case-conflict-modal .modal-button-container {
+	margin-top: var(--size-4-4);
+}
+.relay-rename-prompt input {
+	width: 100%;
 }
