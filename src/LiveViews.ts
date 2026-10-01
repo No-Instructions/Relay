@@ -37,7 +37,7 @@ import {
 } from "./y-codemirror.next/UserAttributionPlugin";
 import { InvalidLinkPlugin } from "./markdownView/InvalidLinkExtension";
 import * as Differ from "./differ/differencesView";
-import type { CanvasView } from "./CanvasView";
+import { iterateCanvasViews, type CanvasView } from "./CanvasView";
 import { isCanvas, type Canvas } from "./Canvas";
 import { CanvasPlugin } from "./CanvasPlugin";
 import { CanvasPresencePlugin } from "./canvas-presence";
@@ -89,17 +89,6 @@ export function getConnectionManager(
 export type DocumentViewer = WorkspaceLeaf | symbol;
 
 const BACKGROUND_CONNECTIONS = 3;
-
-function iterateCanvasViews(
-	workspace: Workspace,
-	fn: (leaf: CanvasView) => void,
-) {
-	workspace.iterateAllLeaves((leaf) => {
-		if (leaf.view.getViewType() === "canvas") {
-			fn(leaf.view as unknown as CanvasView);
-		}
-	});
-}
 
 function ViewsetsEqual(vs1: S3View[], vs2: S3View[]): boolean {
 	if (vs1.length !== vs2.length) {

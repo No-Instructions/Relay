@@ -26,6 +26,7 @@ import { isDestroyedError } from "src/DestroyedError";
 import type { MergeHSM } from "src/merge-hsm/MergeHSM";
 import { changedQueueItemPaths } from "src/ui/FolderNavRefresh";
 import { notSyncedPillState } from "../notSyncedState";
+import { caseConflictState } from "../caseConflictState";
 export { notSyncedPillState, type NotSyncedPillState } from "../notSyncedState";
 
 class SiblingWatcher {
@@ -544,6 +545,80 @@ export class NotSyncedPillVisitor extends BaseVisitor<NotSyncedPillDecoration> {
 	}
 }
 
+class CaseConflictPillDecoration implements Destroyable {
+	pill: MountedComponent;
+
+	constructor(
+		private el: HTMLElement,
+		label: string,
+	) {
+		this.el.querySelectorAll(".system3-case-conflict").forEach((el) => {
+			el.remove();
+		});
+		this.pill = mountComponent(TextPill, {
+			target: this.el,
+			props: {
+				text: "CASE CONFLICT",
+				label,
+				reason: "case-conflict",
+				kind: "case-conflict",
+			},
+		});
+	}
+
+	setLabel(label: string) {
+		this.pill.set({ label });
+	}
+
+	destroy() {
+		this.pill.destroy();
+		this.el.querySelectorAll(".system3-case-conflict").forEach((el) => {
+			el.remove();
+		});
+	}
+}
+
+/** Marks files and folders whose own spelling conflicts with another shared path. */
+export class CaseConflictPillVisitor extends BaseVisitor<CaseConflictPillDecoration> {
+	visitFolder(
+		folder: TFolder,
+		item: FolderItem,
+		storage?: CaseConflictPillDecoration,
+		sharedFolder?: SharedFolder,
+	): CaseConflictPillDecoration | null {
+		return this.decorate(folder, item, storage, sharedFolder);
+	}
+
+	visitFile(
+		file: TFile,
+		item: FileItem,
+		storage?: CaseConflictPillDecoration,
+		sharedFolder?: SharedFolder,
+	): CaseConflictPillDecoration | null {
+		return this.decorate(file, item, storage, sharedFolder);
+	}
+
+	private decorate(
+		file: TAbstractFile,
+		item: FileItem | FolderItem,
+		storage?: CaseConflictPillDecoration,
+		sharedFolder?: SharedFolder,
+	): CaseConflictPillDecoration | null {
+		const state = sharedFolder ? caseConflictState(sharedFolder, file) : null;
+		if (state?.own) {
+			if (storage) {
+				storage.setLabel(state.label);
+				return storage;
+			}
+			return new CaseConflictPillDecoration(item.selfEl, state.label);
+		}
+		if (storage) {
+			storage.destroy();
+		}
+		return null;
+	}
+}
+
 class DocumentStatus implements Destroyable {
 	el: HTMLElement;
 	document?: Document;
@@ -1036,6 +1111,9 @@ export class FolderNavigationDecorations {
 					),
 				);
 				folder.onDestroy(
+					folder.heldCasePaths.subscribe(() => this.quickRefresh(folder)),
+				);
+				folder.onDestroy(
 					folder.mergeManager.syncStatus.subscribeChanges(
 						(_statuses, changed) =>
 							this.syncStatusChanged(folder, changed),
@@ -1069,6 +1147,7 @@ export class FolderNavigationDecorations {
 		});
 		visitors.push(new FilePillVisitor());
 		visitors.push(new NotSyncedPillVisitor());
+		visitors.push(new CaseConflictPillVisitor());
 		visitors.push(new FileConflictVisitor());
 		return visitors;
 	}
