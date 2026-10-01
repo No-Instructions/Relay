@@ -5,6 +5,7 @@ import { type Vault, TFolder } from "obsidian";
 import type { Unsubscriber } from "./observable/Observable";
 import { uuidv4 } from "lib0/random";
 import type { IFile } from "./IFile";
+import { DestroyedError, isDestroyedError } from "./DestroyedError";
 
 export function isSyncFolder(folder: IFile): folder is SyncFolder {
 	return folder instanceof SyncFolder;
@@ -12,11 +13,18 @@ export function isSyncFolder(folder: IFile): folder is SyncFolder {
 
 export class SyncFolder extends HasLogging implements IFile {
 	private _parent: SharedFolder;
-	_tfolder: TFolder | null = null;
+	private destroyed = false;
 	name: string;
 	synctime: number;
 	vault: Vault;
-	ready: boolean = false;
+	/** Whether the vault index holds a directory at this path. */
+	get ready(): boolean {
+		return (
+			!this.destroyed &&
+			!this._parent.destroyed &&
+			this._parent.getAbstractFile(this.path) instanceof TFolder
+		);
+	}
 	createPromise: Promise<TFolder> | null = null;
 	connected: boolean = true;
 	offFolderStatusListener: Unsubscriber;
@@ -30,34 +38,33 @@ export class SyncFolder extends HasLogging implements IFile {
 		this._parent = parent;
 		this.name = this.path.split("/").pop() || "";
 		this.vault = this._parent.vault;
-		const fromVault = () => {
-			const tfolder = this.vault.getAbstractFileByPath(
-				this.sharedFolder.getPath(path),
-			);
-			if (tfolder instanceof TFolder) {
-				this._tfolder = tfolder;
-				this.ready = true;
-				return true;
-			}
-			return false;
-		};
 		this.synctime = 0;
 		this.setLoggers(`[SyncFolder](${this.path})`);
-		if (!fromVault()) {
+		if (!this.ready) {
 			if (this._parent.isPendingDelete(path)) {
 				this.warn("skipping folder creation for pending delete", path);
 			} else {
-				this.createPromise = this.vault.createFolder(
-					this.sharedFolder.getPath(path),
-				);
-				this.createPromise
-					.then((tfolder) => {
-						this._tfolder = tfolder;
-						this.ready = true;
+				// Through the folder's disk boundary, which refuses a directory
+				// the disk reaches through another spelling and accepts one
+				// another writer finished first.
+				const indexed = (): TFolder | null => {
+					if (this.destroyed || parent.destroyed) {
+						throw new DestroyedError("SyncFolder", path);
+					}
+					const folder = parent.getAbstractFile(path);
+					return folder instanceof TFolder ? folder : null;
+				};
+				this.createPromise = parent
+					.mkdir(path)
+					.then(() => {
+						const folder = indexed();
+						if (!folder) throw new Error("the directory is not indexed after creation");
+						return folder;
 					})
-					.catch(() => {
-						// folder exists, retry
-						fromVault();
+					.catch((error: unknown) => {
+						const folder = indexed();
+						if (folder) return folder;
+						throw error;
 					});
 			}
 		}
@@ -73,8 +80,14 @@ export class SyncFolder extends HasLogging implements IFile {
 			if (this.createPromise) {
 				await this.createPromise;
 			}
-			void parent.markUploaded(this);
-		})();
+			if (this.ready && this.sharedFolder === parent && this.path === path) {
+				await parent.markUploaded(this);
+			}
+		})().catch((error: unknown) => {
+			if (!isDestroyedError(error)) {
+				this.warn("folder materialization failed", path, error);
+			}
+		});
 		this.log("created");
 	}
 
@@ -106,9 +119,7 @@ export class SyncFolder extends HasLogging implements IFile {
 	}
 
 	public get tfolder(): TFolder {
-		const abstractFile = this.vault.getAbstractFileByPath(
-			this.sharedFolder.getPath(this.path),
-		);
+		const abstractFile = this.sharedFolder.getAbstractFile(this.path);
 		if (abstractFile instanceof TFolder) {
 			return abstractFile;
 		}
@@ -140,9 +151,9 @@ export class SyncFolder extends HasLogging implements IFile {
 	public cleanup() {}
 
 	destroy() {
+		this.destroyed = true;
 		this.offFolderStatusListener?.();
 		this.offFolderStatusListener = null as unknown as typeof this.offFolderStatusListener;
 		this._parent = null as unknown as typeof this._parent;
-		this._tfolder = null;
 	}
 }

@@ -17,6 +17,7 @@ import {
 	type Meta,
 } from "./SyncTypes";
 import type { SyncSettingsManager } from "./SyncSettings";
+import { canonicalSpelling, foldPathCase } from "./casePaths";
 
 export interface MapDeltaEntry {
 	path: string;
@@ -121,6 +122,15 @@ export class SyncStore extends Observable<SyncStore> {
 	overlay: Map<string, Meta>;
 	deleteSet: Set<string>;
 	typeRegistry: TypeRegistry;
+	/**
+	 * Committed paths and the folders they imply, grouped by folded spelling.
+	 * The store's own writes index themselves as they happen, so a query
+	 * inside an unfinished transaction sees them; every other writer is
+	 * indexed by the map observer when its transaction ends.
+	 */
+	private caseFolds = new Map<string, Set<string>>();
+	/** Each folder implied by committed paths, with the paths beneath it. */
+	private impliedFolders = new Map<string, Set<string>>();
 
 	constructor(
 		public ydoc: Y.Doc,
@@ -134,12 +144,117 @@ export class SyncStore extends Observable<SyncStore> {
 		this.overlay = new Map();
 		this.deleteSet = new Set();
 		this.typeRegistry = new TypeRegistry(this.syncSettingsManager);
+		this.meta.forEach((_meta, path) => this.indexCaseFold(path));
+		const caseFoldObserver = (event: Y.YMapEvent<Meta>) => {
+			event.changes.keys.forEach((change, path) => {
+				if (change.action === "add") this.indexCaseFold(path);
+				else if (change.action === "delete") this.unindexCaseFold(path);
+			});
+		};
+		this.meta.observe(caseFoldObserver);
+		this.unsubscribes.push(() => {
+			this.meta?.unobserve(caseFoldObserver);
+		});
+	}
+
+	private addCaseFold(path: string): void {
+		const key = foldPathCase(path);
+		let paths = this.caseFolds.get(key);
+		if (!paths) {
+			paths = new Set();
+			this.caseFolds.set(key, paths);
+		}
+		paths.add(path);
+	}
+
+	/** Forget a spelling once neither a committed entry nor a path beneath it holds it. */
+	private dropCaseFold(path: string): void {
+		if (this.meta.has(path) || this.impliedFolders.has(path)) return;
+		const key = foldPathCase(path);
+		const paths = this.caseFolds.get(key);
+		if (!paths) return;
+		paths.delete(path);
+		if (paths.size === 0) this.caseFolds.delete(key);
+	}
+
+	private folders(path: string): string[] {
+		const folders: string[] = [];
+		for (let folder = dirname(path); !["/", ".", ""].includes(folder); folder = dirname(folder)) {
+			folders.push(folder);
+		}
+		return folders;
+	}
+
+	private indexCaseFold(path: string): void {
+		this.addCaseFold(path);
+		for (const folder of this.folders(path)) {
+			let beneath = this.impliedFolders.get(folder);
+			if (!beneath) {
+				beneath = new Set();
+				this.impliedFolders.set(folder, beneath);
+			}
+			beneath.add(path);
+			this.addCaseFold(folder);
+		}
+	}
+
+	private unindexCaseFold(path: string): void {
+		for (const folder of this.folders(path)) {
+			const beneath = this.impliedFolders.get(folder);
+			beneath?.delete(path);
+			if (beneath?.size === 0) this.impliedFolders.delete(folder);
+			this.dropCaseFold(folder);
+		}
+		this.dropCaseFold(path);
+	}
+
+	/**
+	 * Paths other than `vpath` that fold together with it (foldPathCase):
+	 * committed entries, and folders implied by committed entries beneath
+	 * them. A case-insensitive disk resolves them to one object, so at most
+	 * one of them can exist on such a device.
+	 */
+	committedCaseVariants(vpath: string): string[] {
+		const paths = this.caseFolds.get(foldPathCase(vpath));
+		if (!paths) return [];
+		return Array.from(paths).filter(
+			(path) =>
+				path !== vpath &&
+				(this.getCommittedMeta(path) !== undefined || this.impliedFolders.has(path)),
+		);
 	}
 
 	assertVPath(path: string) {
 		if (path.startsWith(this.namespace + sep)) {
 			throw new Error("Expected virtual path" + path);
 		}
+	}
+
+	/**
+	 * The key membership holds for a path. Keys this device mints are
+	 * composed (NFC); a key another client published decomposed is the same
+	 * name, and stands in for the composed path it folds with. A rename
+	 * moves such a key to its composed form.
+	 */
+	private key(vpath: string): string {
+		if (
+			this.meta.has(vpath) ||
+			this.overlay.has(vpath) ||
+			this.pendingUpload.has(vpath) ||
+			this.legacyIds.has(vpath)
+		) {
+			return vpath;
+		}
+		const canonical = canonicalSpelling(vpath);
+		if (canonical !== vpath) return vpath;
+		const folded = this.caseFolds.get(foldPathCase(vpath));
+		if (!folded) return vpath;
+		for (const path of folded) {
+			if (path !== vpath && this.meta.has(path) && canonicalSpelling(path) === canonical) {
+				return path;
+			}
+		}
+		return vpath;
 	}
 
 	print() {
@@ -163,9 +278,10 @@ export class SyncStore extends Observable<SyncStore> {
 	}
 
 	move(oldVPath: string, newVPath: string) {
-		this.log("moving file", oldVPath, "to", newVPath);
 		this.assertVPath(oldVPath);
 		this.assertVPath(newVPath);
+		oldVPath = this.key(oldVPath);
+		this.log("moving file", oldVPath, "to", newVPath);
 		const guid = this.pendingUpload.get(oldVPath);
 		if (guid) {
 			this.pendingUpload.set(newVPath, guid);
@@ -191,6 +307,7 @@ export class SyncStore extends Observable<SyncStore> {
 
 	new(vpath: string): string {
 		this.assertVPath(vpath);
+		vpath = this.key(vpath);
 		const guid = uuidv4();
 		this.pendingUpload.set(vpath, guid);
 		this.log("minted identity", vpath, guid);
@@ -253,6 +370,7 @@ export class SyncStore extends Observable<SyncStore> {
 	}
 
 	has(path: string) {
+		path = this.key(path);
 		return this.hasKnown(path) || this.hasClaim(path);
 	}
 
@@ -323,6 +441,7 @@ export class SyncStore extends Observable<SyncStore> {
 
 	set(vpath: string, meta: Meta) {
 		this.assertVPath(vpath);
+		vpath = this.key(vpath);
 		// Both membership maps commit in one transaction: a document entry
 		// must never be observable in one map without the other. A nested
 		// transact inherits the caller's transaction and origin; a bare
@@ -343,6 +462,7 @@ export class SyncStore extends Observable<SyncStore> {
 			}
 			this.log("metadata write (path, existing, meta)", vpath, existing, meta);
 			this.meta.set(vpath, meta);
+			this.indexCaseFold(vpath);
 			const pendingGuid = this.pendingUpload.get(vpath);
 			if (pendingGuid && pendingGuid === meta.id) {
 				this.pendingUpload.delete(vpath);
@@ -486,6 +606,7 @@ export class SyncStore extends Observable<SyncStore> {
 
 	get(vpath: string): string | undefined {
 		this.assertVPath(vpath);
+		vpath = this.key(vpath);
 		if (this.deleteSet.has(vpath)) {
 			return undefined;
 		}
@@ -502,6 +623,7 @@ export class SyncStore extends Observable<SyncStore> {
 
 	getMeta(vpath: string): Meta | undefined {
 		this.assertVPath(vpath);
+		vpath = this.key(vpath);
 		if (this.deleteSet.has(vpath)) {
 			return undefined;
 		}
@@ -541,6 +663,7 @@ export class SyncStore extends Observable<SyncStore> {
 	 */
 	getCommittedMeta(vpath: string): Meta | undefined {
 		this.assertVPath(vpath);
+		vpath = this.key(vpath);
 		if (this.deleteSet.has(vpath)) {
 			return undefined;
 		}
@@ -549,11 +672,14 @@ export class SyncStore extends Observable<SyncStore> {
 
 	delete(vpath: string) {
 		this.assertVPath(vpath);
+		vpath = this.key(vpath);
 		// Mirror of set(): removal leaves both maps in one transaction.
 		return this.ydoc.transact(() => {
 			this.legacyIds.delete(vpath);
 			this.pendingUpload.delete(vpath);
-			return this.meta.delete(vpath);
+			const removed = this.meta.delete(vpath);
+			this.unindexCaseFold(vpath);
+			return removed;
 		});
 	}
 
@@ -658,6 +784,8 @@ export class SyncStore extends Observable<SyncStore> {
 		if (folderMeta) {
 			this.meta.set(newFolder, folderMeta);
 			this.meta.delete(oldFolder);
+			this.indexCaseFold(newFolder);
+			this.unindexCaseFold(oldFolder);
 		}
 
 		// Move each path to new location

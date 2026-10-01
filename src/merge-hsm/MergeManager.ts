@@ -988,6 +988,11 @@ export class MergeManager {
     return this._managedMetaCache.get(guid);
   }
 
+  /** The path at which this identity's merge record was last persisted. */
+  getPersistedPath(guid: string): string | undefined {
+    return (this._stateMetaCache.get(guid) ?? this._managedMetaCache.get(guid))?.path;
+  }
+
   /**
    * Refresh the managed-file caches from a freshly persisted record,
    * projected into the same lightweight meta shape the cold-start bulk
