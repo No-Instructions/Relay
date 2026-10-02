@@ -10,6 +10,7 @@
 <div
 	class="nav-file-tag system3-uploadpill"
 	aria-label={label}
+	title={label}
 	data-status={status}
 	style={color ? `color:${color}` : ""}
 >

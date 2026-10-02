@@ -1,3 +1,5 @@
+import { findProblemDetails } from "./ProblemDetails";
+
 const OBJECT_STRING = "[object Object]";
 const MAX_ERROR_MESSAGE_LENGTH = 300;
 
@@ -5,8 +7,18 @@ export function formatUserFacingError(
 	error: unknown,
 	fallback = "Sync failed",
 ): string {
+	const problem = findProblemDetails(error);
+	if (problem?.detail) return problem.detail;
+	if (problem?.title) return problem.title;
 	const message = extractErrorMessage(error, new Set<object>());
 	return normalizeMessage(message) ?? fallback;
+}
+
+export function formatUserFacingErrorTitle(
+	error: unknown,
+	fallback = "Sync failed",
+): string {
+	return findProblemDetails(error)?.title ?? formatUserFacingError(error, fallback);
 }
 
 export function errorFromUnknown(
@@ -44,13 +56,14 @@ function extractErrorMessage(
 		return String(value);
 	}
 
-	if (value instanceof Error) {
-		return normalizeMessage(value.message) ?? normalizeMessage(value.name);
-	}
-
 	if (typeof value !== "object") return null;
 	if (seen.has(value)) return null;
 	seen.add(value);
+	if (value instanceof Error) {
+		return normalizeMessage(extractErrorMessage(value.message, seen)) ??
+			extractNestedMessage(value as unknown as Record<string, unknown>, seen) ??
+			normalizeMessage(value.name);
+	}
 
 	const record = value as Record<string, unknown>;
 	const directMessage = extractDirectMessage(record, seen);
