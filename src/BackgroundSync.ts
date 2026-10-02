@@ -20,6 +20,7 @@ import {
 	type FolderSyncSnapshot,
 	type FolderSyncWorkItemInput,
 } from "./BackgroundSyncProgress";
+import { httpErrorFromResponse } from "./HttpError";
 import { errorFromUnknown, formatUserFacingError } from "./UserFacingError";
 import { getRelayRequestHeaders, requestUrlWithMetrics } from "./customFetch";
 import {
@@ -1263,7 +1264,7 @@ export class BackgroundSync extends HasLogging {
 				response.status,
 				response.text,
 			);
-			throw new Error(`Unable to download item: ${S3RN.encode(entity)}`);
+			throw httpErrorFromResponse(response.status, response.text);
 		}
 		return response;
 	}
@@ -1320,9 +1321,7 @@ export class BackgroundSync extends HasLogging {
 				response.status,
 				response.text,
 			);
-			throw new Error(
-				`downloadByGuid: status ${response.status} for ${S3RN.encode(entity)}`,
-			);
+			throw httpErrorFromResponse(response.status, response.text);
 		}
 
 		const updateBytes = new Uint8Array(response.arrayBuffer);
