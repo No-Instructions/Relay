@@ -1,3 +1,5 @@
+import { findProblemDetails } from "./ProblemDetails";
+
 const OBJECT_STRING = "[object Object]";
 const MAX_ERROR_MESSAGE_LENGTH = 300;
 
@@ -5,8 +7,25 @@ export function formatUserFacingError(
 	error: unknown,
 	fallback = "Sync failed",
 ): string {
+	const problem = findProblemDetails(error);
+	if (problem?.detail || problem?.title) {
+		return formatErrorText(problem.detail ?? problem.title, fallback);
+	}
 	const message = extractErrorMessage(error, new Set<object>());
 	return normalizeMessage(message) ?? fallback;
+}
+
+export function formatUserFacingErrorTitle(
+	error: unknown,
+	fallback = "Sync failed",
+): string {
+	const title = findProblemDetails(error)?.title;
+	return title ? formatErrorText(title, fallback) : formatUserFacingError(error, fallback);
+}
+
+/** Bound display copy without interpreting server wording as internal diagnostics. */
+export function formatErrorText(message: unknown, fallback = "Sync failed"): string {
+	return normalizeText(message) ?? fallback;
 }
 
 export function errorFromUnknown(
@@ -44,13 +63,14 @@ function extractErrorMessage(
 		return String(value);
 	}
 
-	if (value instanceof Error) {
-		return normalizeMessage(value.message) ?? normalizeMessage(value.name);
-	}
-
 	if (typeof value !== "object") return null;
 	if (seen.has(value)) return null;
 	seen.add(value);
+	if (value instanceof Error) {
+		return normalizeMessage(extractErrorMessage(value.message, seen)) ??
+			extractNestedMessage(value as unknown as Record<string, unknown>, seen) ??
+			normalizeMessage(value.name);
+	}
 
 	const record = value as Record<string, unknown>;
 	const directMessage = extractDirectMessage(record, seen);
@@ -119,14 +139,18 @@ function parseJsonObject(value: string): object | null {
 
 function normalizeMessage(message: unknown): string | null {
 	if (typeof message !== "string") return null;
+	return normalizeText(humanizeInternalSyncMessage(message.replace(/\s+/g, " ").trim()));
+}
+
+function normalizeText(message: unknown): string | null {
+	if (typeof message !== "string") return null;
 	const normalized = message.replace(/\s+/g, " ").trim();
 	if (!normalized || normalized === OBJECT_STRING || normalized === "Object") {
 		return null;
 	}
-	const humanReadable = humanizeInternalSyncMessage(normalized);
-	return humanReadable.length > MAX_ERROR_MESSAGE_LENGTH
-		? `${humanReadable.slice(0, MAX_ERROR_MESSAGE_LENGTH - 3)}...`
-		: humanReadable;
+	return normalized.length > MAX_ERROR_MESSAGE_LENGTH
+		? `${normalized.slice(0, MAX_ERROR_MESSAGE_LENGTH - 3)}...`
+		: normalized;
 }
 
 function primitiveToString(value: unknown): string | null {

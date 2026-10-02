@@ -16,7 +16,11 @@ import { generateHash } from "./hashing";
 import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
 import { flags } from "./flagManager";
-import { errorFromUnknown, formatUserFacingError } from "./UserFacingError";
+import {
+	errorFromUnknown,
+	formatUserFacingError,
+	formatUserFacingErrorTitle,
+} from "./UserFacingError";
 import type {
 	PlanContext,
 	SessionIntent,
@@ -421,7 +425,9 @@ export class SyncFile
 	connected: boolean = true;
 	destroyed: boolean = false;
 	offFileInfo: Unsubscriber = () => {};
-	uploadError?: string = undefined;
+	private _uploadError?: string;
+	private uploadErrorTitle?: string;
+
 	private syncPromise: Promise<void> | null = null;
 	private syncRequestedDuringSync = false;
 	private lastServerEdit: ServerEditMarker | null = null;
@@ -496,9 +502,18 @@ export class SyncFile
 		return !!this.sharedFolder.syncStore.pendingUpload.has(this.path);
 	}
 
+	get uploadError(): string | undefined {
+		return this._uploadError;
+	}
+
+	set uploadError(message: string | undefined) {
+		this._uploadError = message;
+		this.uploadErrorTitle = undefined;
+	}
+
 	public get tag() {
 		return this.uploadError
-			? this.uploadError
+			? this.uploadErrorTitle ?? this.uploadError
 			: this.inMeta
 				? ""
 				: this.pending
@@ -611,6 +626,7 @@ export class SyncFile
 				});
 			} catch (error) {
 				this.uploadError = formatUserFacingError(error, "Failed to push file");
+				this.uploadErrorTitle = formatUserFacingErrorTitle(error, this.uploadError);
 				this.notifyListeners();
 				throw error instanceof Error ? error : errorFromUnknown(error);
 			}
@@ -948,6 +964,7 @@ export class SyncFile
 			// error here reported the download as complete, so nothing above
 			// ever retried and the file stayed missing until plugin reload.
 			this.uploadError = formatUserFacingError(error, "Failed to pull file");
+			this.uploadErrorTitle = formatUserFacingErrorTitle(error, this.uploadError);
 			this.notifyListeners();
 			throw error instanceof Error ? error : errorFromUnknown(error);
 		}

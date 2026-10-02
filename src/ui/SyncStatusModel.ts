@@ -4,7 +4,7 @@ import {
 	type FolderSyncSnapshot,
 } from "../BackgroundSyncProgress";
 import type { SharedFolder } from "../SharedFolder";
-import { formatUserFacingError } from "../UserFacingError";
+import { formatErrorText, formatUserFacingError } from "../UserFacingError";
 import type { SyncStatus } from "../merge-hsm/types";
 import type { MergeHSM } from "src/merge-hsm/MergeHSM";
 
@@ -204,7 +204,8 @@ export function buildFolderSyncStatusModel(
 			guid: failure.guid,
 			path: failure.path,
 			category: "error",
-			label: formatUserFacingError(failure.message),
+			// BackgroundSync already extracted the display message from the error.
+			label: formatErrorText(failure.message),
 			source: "backgroundSync",
 		});
 	}

@@ -426,12 +426,14 @@ class FilePillDecoration {
 				target: this.el,
 				props: {
 					text: tag,
+					label: this.file.uploadError ?? tag,
 					status,
 				},
 			});
 		} else {
 			this.pill.set({
 				text: tag,
+				label: this.file.uploadError ?? tag,
 				status,
 			});
 		}
