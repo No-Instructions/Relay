@@ -1,4 +1,4 @@
-import { isRetryableS3Error } from "../S3Error";
+import { isRetryableHttpError } from "../HttpError";
 
 /**
  * A provider-bound failure the engine may re-drive: the connection was not
@@ -42,7 +42,7 @@ export function isRetryableProviderSyncError(
 }
 
 export function isRetryableSyncError(error: unknown): error is Error {
-	return isRetryableProviderSyncError(error) || isRetryableS3Error(error);
+	return isRetryableProviderSyncError(error) || isRetryableHttpError(error);
 }
 
 /** The last path segment, for user-facing messages. */
