@@ -1,22 +1,28 @@
 import type { FolderRole, Relay, RelayRole, RelayUser, RemoteSharedFolder } from "../Relay";
 import { folderPath } from "./params";
 import { CliError, type CliContext, type CliSharedFolder } from "./types";
+import type { ServerContext } from "./server";
+export type Suggest = <T>(query: string, items: readonly T[], labels: (item: T) => readonly string[]) => T[];
+
+/** Portable fallback; host adapters can supply their own ranked matcher. */
+const matchingLabels: Suggest = (query, items, labels) => items.filter((item) =>
+	labels(item).some((label) => label.toLowerCase().includes(query.toLowerCase()))).slice(0, 3);
 
 interface Keys {
 	/** Matched exactly, case-sensitive: guids and ids. */
 	exact: string[];
-	/** Matched case-insensitively, then by substring: names and paths. */
+	/** Matched case-insensitively by complete name or path. */
 	names: string[];
 }
 
 interface Candidate {
 	name: string;
-	guid: string;
+	guid?: string;
 }
 
 /**
- * Resolve a pointer flag: a guid or id wins outright, then an exact name,
- * then a unique substring. Zero or several matches fail with candidates.
+ * Resolve an exact id or complete name. Zero or several matches fail with
+ * alternatives; a fragment must never select a mutation's target.
  */
 export function pick<T>(
 	kind: string,
@@ -24,6 +30,7 @@ export function pick<T>(
 	items: T[],
 	keys: (item: T) => Keys,
 	describe: (item: T) => Candidate,
+	suggest: Suggest = matchingLabels,
 ): T {
 	const wanted = ref.trim();
 	const lower = wanted.toLowerCase();
@@ -32,27 +39,24 @@ export function pick<T>(
 	const byName = items.filter((item) =>
 		keys(item).names.some((name) => name.toLowerCase() === lower),
 	);
-	if (byName.length === 1) return byName[0];
-	const bySubstring = items.filter((item) =>
-		keys(item).names.some((name) => name.toLowerCase().includes(lower)),
-	);
-	const matches = byName.length > 1 ? byName : bySubstring;
-	if (matches.length === 1) return matches[0];
-	const candidates = (matches.length > 1 ? matches : items).map(describe);
+	if (byId.length === 0 && byName.length === 1) return byName[0];
+	const matches = byId.length > 0 ? byId : byName;
 	const label = kind.replace(/_/g, " ");
 	if (matches.length > 1) {
-		throw new CliError(`ambiguous_${kind}`, `Several ${label}s match "${wanted}"`, { candidates });
+		throw new CliError(`ambiguous_${kind}`, `Several ${label}s match "${wanted}"`, { candidates: matches.map(describe) });
 	}
-	throw new CliError(`${kind}_not_found`, `No ${label} matches "${wanted}"`, { candidates });
+	const suggestions = suggest(wanted, items, (item) => [...keys(item).names, ...keys(item).exact]).map(describe);
+	throw new CliError(`${kind}_not_found`, `No ${label} matches "${wanted}"`, suggestions.length ? { suggestions } : {});
 }
 
-export function resolveRelay(ctx: CliContext, ref: string): Relay {
+export function resolveRelay(ctx: ServerContext, ref: string): Relay {
 	return pick(
 		"relay",
 		ref,
 		ctx.relayManager.relays.values(),
 		(relay) => ({ exact: [relay.guid, relay.id], names: [relay.name] }),
 		(relay) => ({ name: relay.name, guid: relay.guid }),
+		ctx.suggest,
 	);
 }
 
@@ -66,26 +70,28 @@ export function resolveSharedFolder(ctx: CliContext, ref: string): CliSharedFold
 			names: [folder.path, folder.path.split("/").pop() ?? folder.path],
 		}),
 		(folder) => ({ name: folder.path, guid: folder.guid }),
+		ctx.suggest,
 	);
 }
 
-export function resolveRemoteFolder(relay: Relay, ref: string): RemoteSharedFolder {
+export function resolveRemoteFolder(relay: Relay, ref: string, suggest?: Suggest): RemoteSharedFolder {
 	return pick(
 		"folder",
 		ref,
 		relay.folders.values(),
 		(remote) => ({ exact: [remote.guid, remote.id], names: [remote.name] }),
 		(remote) => ({ name: remote.name, guid: remote.guid }),
+		suggest,
 	);
 }
 
-export function rolesOnRelay(ctx: CliContext, relay: Relay): RelayRole[] {
+export function rolesOnRelay(ctx: ServerContext, relay: Relay): RelayRole[] {
 	return ctx.relayManager.relayRoles
 		.values()
 		.filter((role) => role.relayId === relay.id);
 }
 
-export function rolesOnFolder(ctx: CliContext, remote: RemoteSharedFolder): FolderRole[] {
+export function rolesOnFolder(ctx: ServerContext, remote: RemoteSharedFolder): FolderRole[] {
 	return ctx.relayManager.folderRoles
 		.values()
 		.filter((role) => role.sharedFolderId === remote.id);
@@ -100,16 +106,17 @@ const userCandidate = (user: RelayUser): Candidate => ({
 	guid: user.id,
 });
 
-export function resolveRelayRole(ctx: CliContext, relay: Relay, ref: string): RelayRole {
+export function resolveRelayRole(ctx: ServerContext, relay: Relay, ref: string): RelayRole {
 	return pick(
 		"user",
 		ref,
 		rolesOnRelay(ctx, relay),
 		(role) => userKeys(role.user),
 		(role) => userCandidate(role.user),
+		ctx.suggest,
 	);
 }
 
-export function resolveUser(ctx: CliContext, relay: Relay, ref: string): RelayUser {
+export function resolveUser(ctx: ServerContext, relay: Relay, ref: string): RelayUser {
 	return resolveRelayRole(ctx, relay, ref).user;
 }

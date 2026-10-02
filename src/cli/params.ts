@@ -1,10 +1,10 @@
-import type { CliData } from "obsidian";
+import type { CliData } from "./schema";
 import { CliError } from "./types";
 
-/** A value flag; a bare flag (value "true") counts as missing. */
+/** Read a normalized value after the host adapter validates its syntax. */
 export function optional(params: CliData, key: string): string | undefined {
 	const value = params[key];
-	if (value === undefined || value === "true") return undefined;
+	if (value === undefined) return undefined;
 	const trimmed = value.trim();
 	return trimmed === "" ? undefined : trimmed;
 }
@@ -12,38 +12,26 @@ export function optional(params: CliData, key: string): string | undefined {
 export function required(params: CliData, key: string): string {
 	const value = optional(params, key);
 	if (value === undefined) {
-		throw new CliError("missing_flag", `Missing required parameter: ${key}=<value>`);
+		throw new CliError("missing_option", `Missing required option: --${key}=<value>`);
 	}
 	return value;
 }
 
-/** A boolean flag: present means on; `key=off` means off. */
+/** Validated boolean options are represented by true or false strings. */
 export function flag(params: CliData, key: string): boolean {
-	const value = params[key];
-	if (value === undefined) return false;
-	return parseOnOff(key, value) ?? true;
-}
-
-/** Parse on|off style values. Undefined when the flag is absent. */
-export function parseOnOff(key: string, value: string | undefined): boolean | undefined {
-	if (value === undefined) return undefined;
-	const normalized = value.trim().toLowerCase();
-	if (["true", "on", "yes", "1", "enable", "enabled"].includes(normalized)) return true;
-	if (["false", "off", "no", "0", "disable", "disabled"].includes(normalized)) return false;
-	throw new CliError("invalid_value", `${key} must be on or off, got "${value}"`);
+	return params[key] === "true";
 }
 
 /** The debug surface addresses notes by vault path with a leading slash. */
 export function notePath(path: string): string {
-	const trimmed = path.trim().replace(/^\/+/, "");
-	return `/${trimmed}`;
+	return `/${folderPath(path)}`;
 }
 
 /** A vault-relative folder path without leading or trailing slashes. */
 export function folderPath(path: string): string {
 	const parts = path.trim().replace(/\\/g, "/").split("/").filter((part) => part !== "" && part !== ".");
 	if (parts.length === 0 || parts.includes("..")) {
-		throw new CliError("invalid_path", "Use a folder below the vault root without parent-directory segments");
+		throw new CliError("invalid_path", "Use a vault-relative path below its root without parent-directory segments");
 	}
 	return parts.join("/");
 }

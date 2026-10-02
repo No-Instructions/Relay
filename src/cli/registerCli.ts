@@ -1,49 +1,36 @@
 import type { CliData, CliFlags, CliHandler } from "obsidian";
 import { CLI_COMMANDS } from "./commands";
-import { formatOf, renderError, renderOk } from "./format";
-import type { CliCommand, CliContext } from "./types";
+import { renderError, renderOk } from "./format";
+import { commandHelp, nativeFlags, validateOptions } from "./tree";
+import { CliError, type CliContext, type CliRegisteredCommand } from "./types";
 
-const FORMAT_FLAG: CliFlags = {
-	format: { value: "text|json", description: "Output format (default: text)" },
-};
-
-/**
- * The registrar surface of a plugin on an app that exposes the CLI
- * (Obsidian 1.12.2 and later). Declared structurally: the caller confirms
- * the method exists at runtime before handing the plugin over, so an older
- * app never reaches this module.
- */
 type CliRegistrar = {
-	registerCliHandler(
-		command: string,
-		description: string,
-		flags: CliFlags | null,
-		handler: CliHandler,
-	): void;
+	registerCliHandler(command: string, description: string, flags: CliFlags | null, handler: CliHandler): void;
 };
 
-/** A handler never throws: failures come back as an envelope in the chosen format. */
-export function cliHandler(command: CliCommand, ctx: CliContext) {
-	return async (params: CliData): Promise<string> => {
-		const format = formatOf(params);
+export function cliHandler(command: CliRegisteredCommand, ctx: CliContext): CliHandler {
+	return async (raw: CliData): Promise<string> => {
+		const context = { vault: { name: ctx.vault.name, path: ctx.vault.path }, command: command.id };
+		const format = raw["--json"] === "true" || raw["--format"]?.trim() === "json" ? "json" : "text";
+		const outputContext = format === "text" && raw["--quiet"] === "true" ? undefined : context;
 		try {
-			return renderOk(await command.run(params, ctx), format);
+			const params = validateOptions(command, raw);
+			if (params.help === "true" || !command.run) {
+				const help = commandHelp(command);
+				return renderOk({ data: { help }, text: help }, format, outputContext);
+			}
+			return renderOk(await command.run(params, ctx), format, outputContext);
 		} catch (error) {
-			return renderError(error, format);
+			const output = renderError(error, format, outputContext, `obsidian ${command.id} --help`);
+			if (format === "json") return output;
+			throw new CliError(error instanceof CliError ? error.code : "error", output.replace(/^Error: /, ""));
 		}
 	};
 }
 
 export function registerRelayCli(plugin: CliRegistrar, ctx: CliContext, commands = CLI_COMMANDS): string[] {
-	const registered: string[] = [];
 	for (const command of commands) {
-		plugin.registerCliHandler(
-			command.id,
-			command.description,
-			{ ...(command.flags ?? {}), ...FORMAT_FLAG },
-			cliHandler(command, ctx),
-		);
-		registered.push(command.id);
+		plugin.registerCliHandler(command.id, command.description, nativeFlags(command), cliHandler(command, ctx));
 	}
-	return registered;
+	return commands.map((command) => command.id);
 }

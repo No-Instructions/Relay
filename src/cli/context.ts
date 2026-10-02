@@ -1,10 +1,12 @@
+import { suggest } from "./suggest";
+import { FileSystemAdapter } from "obsidian";
 import type { SyncParticipant } from "../background-sync/SyncParticipant";
 import { FeatureFlagDefaults, type FeatureFlags } from "../flags";
 import type Live from "../main";
 import type { MetadataHealthState } from "../MetadataHealth";
 import type { RelayDebugAPI } from "../RelayDebugAPI";
 import type { NamespacedSettings } from "../SettingsStorage";
-import type { CliContext, CliRelayManager } from "./types";
+import type { CliContext } from "./types";
 
 export interface CliContextDeps {
 	flags: NamespacedSettings<FeatureFlags>;
@@ -17,9 +19,23 @@ export interface CliContextDeps {
 export function buildCliContext(plugin: Live, deps: CliContextDeps): CliContext {
 	const { debugAPI } = deps;
 	return {
+		suggest,
+		localState: {
+			path: (guid) => plugin.sharedFolders.items().find((folder) => folder.guid === guid)?.path ?? null,
+			remoteDeleted: (guid) => {
+				const folder = plugin.sharedFolders.items().find((folder) => folder.guid === guid);
+				if (folder) { folder.remote = undefined; plugin.sharedFolders.notifyListeners(); }
+			},
+		},
 		version: plugin.version || plugin.manifest.version,
 		vault: {
+			get name() { return plugin.app.vault.getName(); },
+			get path() {
+				const adapter = plugin.app.vault.adapter;
+				return adapter instanceof FileSystemAdapter ? adapter.getBasePath() : null;
+			},
 			hasFolder: (path) => plugin.app.vault.getFolderByPath(path) !== null,
+			readFile: (path) => plugin.app.vault.adapter.read(path),
 			createFolder: async (path) => {
 				await plugin.app.vault.createFolder(path);
 			},
@@ -33,7 +49,7 @@ export function buildCliContext(plugin: Live, deps: CliContextDeps): CliContext 
 				return user ? { id: user.id, name: user.name, email: user.email } : undefined;
 			},
 		},
-		relayManager: plugin.relayManager as unknown as CliRelayManager,
+		relayManager: plugin.relayManager,
 		sharedFolders: {
 			items: () => plugin.sharedFolders.items(),
 			init: (path, remote) => plugin.sharedFolders.init(path, remote),

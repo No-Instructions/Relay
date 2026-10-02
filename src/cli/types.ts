@@ -1,44 +1,17 @@
-import type { CliData, CliFlags } from "obsidian";
 import type { ConflictInfoSnapshot } from "../merge-hsm/conflict";
 import type { BlockDecision } from "../merge-hsm/conflictValue";
 import type {
-	FolderRole,
-	Relay,
-	RelayRole,
-	RelayUser,
 	RemoteSharedFolder,
-	Role,
 } from "../Relay";
 import type { FeatureFlags } from "../flags";
 import type { SyncCategory, SyncCategoryKey, SyncFlags } from "../SyncSettings";
 
-export type CliFormat = "text" | "json";
-
-/** A failure the CLI reports as an envelope instead of a thrown error. */
-export class CliError extends Error {
-	constructor(
-		public readonly code: string,
-		message: string,
-		public readonly extra: Record<string, unknown> = {},
-	) {
-		super(message);
-		this.name = "CliError";
-	}
-}
-
-export interface CliResult {
-	/** Machine payload. Objects merge under `ok: true`; arrays become `items`. */
-	data: Record<string, unknown> | unknown[];
-	/** Human rendering for `format=text`. */
-	text: string;
-}
-
-export interface CliCommand {
-	id: string;
-	description: string;
-	flags: CliFlags | null;
-	run(params: CliData, ctx: CliContext): Promise<CliResult> | CliResult;
-}
+export { CliError } from "./schema";
+export type { CliData, CliOption, CliResult, CliFormat } from "./schema";
+import type { Command } from "./schema";
+import type { ServerContext } from "./server";
+export type CliCommand = Command<CliContext>;
+export interface CliRegisteredCommand extends CliCommand { id: string }
 
 /** The slice of a Shared Folder the commands touch. */
 export interface CliSharedFolder {
@@ -64,31 +37,7 @@ export interface CliFolderStatus {
 	actionable: { category: string; path: string; label: string }[];
 }
 
-export interface CliRelayManager {
-	relays: { values(): Relay[] };
-	remoteFolders: { values(): RemoteSharedFolder[] };
-	relayRoles: { values(): RelayRole[] };
-	folderRoles: { values(): FolderRole[] };
-	users: { values(): RelayUser[] };
-	createRelay(name: string): Promise<Relay>;
-	updateRelay(relay: Relay): Promise<Relay>;
-	leaveRelay(relay: Relay): Promise<void>;
-	destroyRelay(relay: Relay): Promise<boolean>;
-	kick(role: RelayRole): Promise<unknown>;
-	deleteRemote(remote: RemoteSharedFolder): Promise<boolean>;
-	createRemoteFolder(
-		guid: string,
-		name: string,
-		relay: Relay,
-		isPrivate?: boolean,
-	): Promise<RemoteSharedFolder>;
-	addFolderRole(
-		remote: RemoteSharedFolder,
-		userId: string,
-		role: Role,
-	): Promise<FolderRole>;
-	removeFolderRole(role: FolderRole): Promise<void>;
-}
+export type { ServerManager as CliRelayManager } from "./server";
 
 export interface CliNoteState {
 	statePath: string;
@@ -100,17 +49,19 @@ export interface CliNoteState {
 export type { BlockDecision } from "../merge-hsm/conflictValue";
 
 /** Everything a command may reach. Narrow on purpose so tests can fake it. */
-export interface CliContext {
+export interface CliContext extends ServerContext {
 	version: string;
 	vault: {
+		name: string;
+		path: string | null;
 		hasFolder(path: string): boolean;
 		createFolder(path: string): Promise<void>;
+		readFile(path: string): Promise<string>;
 	};
 	login: {
 		loggedIn: boolean;
 		user?: { id: string; name: string; email: string };
 	};
-	relayManager: CliRelayManager;
 	sharedFolders: {
 		items(): CliSharedFolder[];
 		init(path: string, remote?: RemoteSharedFolder): CliSharedFolder;
