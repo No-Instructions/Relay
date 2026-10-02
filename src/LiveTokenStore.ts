@@ -164,7 +164,7 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 		if (activePromise) {
 			return activePromise as Promise<FileToken>;
 		}
-		this.tokenMap.set(documentId, {
+		this.tokenMap.set(key, {
 			token: null,
 			expiryTime: 0,
 			attempts: 0,
@@ -181,7 +181,7 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 				}
 				const expiryTime = this.getJwtExpiry(newToken);
 				const existing = this.tokenMap.get(key)!;
-				this.tokenMap.set(fileHash, {
+				this.tokenMap.set(key, {
 					...existing,
 					token: newToken,
 					expiryTime,
