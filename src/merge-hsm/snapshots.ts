@@ -315,7 +315,30 @@ export function snapshotsEqual(a: YjsSnapshot, b: YjsSnapshot): boolean {
  * Check whether UPDATE is already covered by SNAPSHOT.
  */
 export function snapshotContainsUpdate(snapshot: YjsSnapshot, update: Uint8Array): boolean {
-	return Y.snapshotContainsUpdate(Y.decodeSnapshot(snapshot.snapshot), update);
+	return snapshotLikeContainsUpdate(decodeSnapshotData(snapshot), update);
+}
+
+/**
+ * Containment of an update in a decoded head, computed without
+ * `Y.snapshotContainsUpdate`. That helper merges the update's delete set
+ * into the head's by copying the per-client arrays but not the items, then
+ * coalesces in place — so an update that lengthens an existing tombstone
+ * range rewrites the head's own item and the equality check compares the
+ * item with itself. A delete-only update that removes more text therefore
+ * reads as "already contained", and a merge that trusts the answer never
+ * applies the deletion. The head here is read, never written.
+ */
+function snapshotLikeContainsUpdate(head: SnapshotLike, update: Uint8Array): boolean {
+	const decoded = decodeUpdateData(update);
+	for (const struct of decoded.structs) {
+		if ((head.sv.get(struct.id.client) ?? 0) < struct.id.clock + struct.length) {
+			return false;
+		}
+	}
+	return deleteSetContains(
+		normalizeDecodedDeleteSet(head.ds.clients),
+		normalizeDecodedDeleteSet(decoded.ds.clients),
+	);
 }
 
 /**
@@ -347,7 +370,7 @@ export function yjsDocIsAhead(ahead: Y.Doc, behind: Y.Doc): boolean {
  * Check whether UPDATE would change DOC.
  */
 export function yjsUpdateIsNoop(doc: Y.Doc, update: Uint8Array): boolean {
-	return Y.snapshotContainsUpdate(Y.snapshot(doc), update);
+	return snapshotLikeContainsUpdate(snapshotDataFromDoc(doc), update);
 }
 
 /**
@@ -380,19 +403,15 @@ function normalizeDeleteRanges(ranges: DeleteRange[]): DeleteRange[] {
  * re-decoding the update bytes that produced it.
  */
 export function decodeUpdateDeleteSet(update: Uint8Array): DecodedDeleteSet {
-	const raw = decodeUpdateData(update).ds.clients as Map<
-		number,
-		DeleteRange[]
-	>;
+	return normalizeDecodedDeleteSet(decodeUpdateData(update).ds.clients);
+}
+
+/** A sorted, coalesced copy of a delete set; the input is left untouched. */
+function normalizeDecodedDeleteSet(ds: DecodedDeleteSet): DecodedDeleteSet {
 	const out: DecodedDeleteSet = new Map();
-	for (const [client, ranges] of raw) {
+	for (const [client, ranges] of ds) {
 		if (ranges.length === 0) continue;
-		out.set(
-			client,
-			normalizeDeleteRanges(
-				ranges.map((r) => ({ clock: r.clock, len: r.len })),
-			),
-		);
+		out.set(client, normalizeDeleteRanges(ranges));
 	}
 	return out;
 }
