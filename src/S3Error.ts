@@ -1,4 +1,8 @@
+import { HttpError } from "./HttpError";
+import { parseProblemDetails, type ProblemDetails } from "./ProblemDetails";
+
 export interface S3ErrorDetails {
+	problem?: ProblemDetails;
 	code?: string;
 	message?: string;
 	requestId?: string;
@@ -19,33 +23,24 @@ const RETRYABLE_S3_CODES = new Set([
 	"TooManyRequestsException",
 ]);
 
-const RETRYABLE_HTTP_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
-
-export class S3ApiError extends Error {
+export class S3ApiError extends HttpError {
 	code?: string;
 	requestId?: string;
 	hostId?: string;
-	status?: number;
 	operation?: string;
-	retryable: boolean;
 
 	constructor(details: S3ErrorDetails, cause?: unknown) {
-		super(userMessageForS3Error(details));
+		super(details.status, userMessageForS3Error(details), details.problem);
 		this.name = "S3ApiError";
 		this.code = details.code;
 		this.requestId = details.requestId;
 		this.hostId = details.hostId;
-		this.status = details.status;
 		this.operation = details.operation;
-		this.retryable = isRetryableS3Details(details);
+		this.retryable ||= details.code !== undefined && RETRYABLE_S3_CODES.has(details.code);
 		if (cause !== undefined) {
 			(this as Error & { cause?: unknown }).cause = cause;
 		}
 	}
-}
-
-export function isRetryableS3Error(error: unknown): error is S3ApiError {
-	return error instanceof S3ApiError && error.retryable;
 }
 
 export function s3ApiErrorFromResponse(
@@ -53,9 +48,11 @@ export function s3ApiErrorFromResponse(
 	body: string,
 	operation?: string,
 ): S3ApiError {
-	const parsed = parseS3ErrorXml(body);
+	const problem = parseProblemDetails(body);
+	const parsed = problem ? null : parseS3ErrorXml(body);
 	return new S3ApiError({
 		...parsed,
+		problem,
 		status,
 		operation,
 		message: parsed?.message ?? jsonErrorMessage(body),
@@ -73,7 +70,7 @@ export function s3NetworkFailureFromUnknown(
 	error: unknown,
 	operation?: string,
 ): S3ApiError | null {
-	if (error instanceof S3ApiError) return null;
+	if (error instanceof HttpError) return null;
 	const text = errorText(error);
 	if (!text || !NETWORK_FAILURE_PATTERN.test(text)) return null;
 	return new S3ApiError(
@@ -98,6 +95,7 @@ export function s3ApiErrorFromUnknown(
 	error: unknown,
 	operation?: string,
 ): S3ApiError | null {
+	if (error instanceof HttpError) return null;
 	const text = errorText(error);
 	if (!text) return null;
 	const parsed = parseS3ErrorXml(text);
@@ -128,13 +126,6 @@ export function parseS3ErrorXml(body: string): S3ErrorDetails | null {
 		hostId: xmlText(error, "HostId"),
 	};
 	return details.code || details.message || details.requestId ? details : null;
-}
-
-function isRetryableS3Details(details: S3ErrorDetails): boolean {
-	return (
-		(details.code !== undefined && RETRYABLE_S3_CODES.has(details.code)) ||
-		(details.status !== undefined && RETRYABLE_HTTP_STATUSES.has(details.status))
-	);
 }
 
 function userMessageForS3Error(details: S3ErrorDetails): string {

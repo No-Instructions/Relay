@@ -113,7 +113,7 @@ import {
 import { RelayDebugAPI } from "./RelayDebugAPI";
 import { buildCliContext } from "./cli/context";
 import { registerRelayCli } from "./cli/registerCli";
-import { isRetryableS3Error } from "./S3Error";
+import { isRetryableHttpError } from "./HttpError";
 import { MetadataHealth } from "./MetadataHealth";
 import { createPublicApi, publishPublicApi, type Api } from "./PublicAPI";
 import {
@@ -1530,7 +1530,7 @@ export default class Live extends Plugin {
 							});
 							file.noteLocalModify(tfile.stat);
 							void file.sync().catch((error) => {
-								if (isRetryableS3Error(error)) {
+								if (isRetryableHttpError(error)) {
 									void folder.backgroundSync
 										.enqueueRetryableSync(file, error)
 										.catch((retryError) => {
