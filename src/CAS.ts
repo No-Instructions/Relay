@@ -1,3 +1,4 @@
+import { isRetryableHttpError } from "./HttpError";
 import { generateHash } from "./hashing";
 import { flags } from "./flagManager";
 import { checkAttachmentAbort, snapshotAttachment, streamAttachmentPut, desktopAttachmentIO, type AttachmentVersion } from "./AttachmentIO";
@@ -10,7 +11,6 @@ import { customFetch } from "./customFetch";
 import PocketBase from "pocketbase";
 import { HasLogging } from "./debug";
 import {
-	isRetryableS3Error,
 	s3ApiErrorFromResponse,
 	s3ApiErrorFromUnknown,
 	s3NetworkFailureFromUnknown,
@@ -126,7 +126,7 @@ export class ContentAddressedStore extends HasLogging {
 				const classified =
 					s3NetworkFailureFromUnknown(error, operation) ?? error;
 				const delayCapMs = this.transferRetryDelaysMs[attempt];
-				if (!isRetryableS3Error(classified) || delayCapMs === undefined) {
+				if (!isRetryableHttpError(classified) || delayCapMs === undefined) {
 					throw classified;
 				}
 				// Full jitter within the round's cap.
