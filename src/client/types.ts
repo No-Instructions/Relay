@@ -124,17 +124,19 @@ export interface WriteAccessSource {
 }
 
 /**
- * Resolve write access. A folder that answers false is final. Otherwise the
- * role policy answers when known, then the token's grant, and with neither
- * the answer is true.
+ * Resolve write access as the intersection of what is known: the token's
+ * grant is the ceiling, and the folder or its role policy can only lower
+ * it. A policy that grants writing never raises a token that withholds it,
+ * because the server refuses what that token cannot write; a policy that
+ * withholds writing lowers a token that still grants it, because that
+ * token predates the role change. With neither known the answer is true.
  */
 export function writeAccessUnder(
 	folder: WriteAccessSource | null | undefined,
 	token: { authorization?: string } | null | undefined,
 ): boolean {
 	if (folder && !folder.canWriteContent) return false;
-	const policy = folder?.canWriteContentAnswer ?? null;
-	if (policy !== null) return policy;
+	if (folder?.canWriteContentAnswer === false) return false;
 	if (token) return capabilitiesOf(token.authorization).writeContent;
 	return true;
 }
