@@ -1,4 +1,4 @@
-import { Compartment, EditorState } from "@codemirror/state";
+import { Compartment, EditorState, Prec } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 
 export const accessModeCompartment = new Compartment();
@@ -8,8 +8,13 @@ const editorOwners = new WeakMap<EditorView, EditorView>();
 function extensions(readOnly: boolean) {
 	return readOnly
 		? [
-				EditorView.editable.of(false),
-				EditorState.readOnly.of(true),
+				// Both facets take their highest-precedence value, and the host
+				// editor declares its own ahead of plugin extensions (a nested
+				// table-cell editor declares readOnly false); the read-only
+				// answer has to outrank them. CodeMirror refuses input on
+				// readOnly, so that is the one that keeps keystrokes out.
+				Prec.highest(EditorView.editable.of(false)),
+				Prec.highest(EditorState.readOnly.of(true)),
 				EditorView.theme({
 					".cm-cursorLayer": { display: "none" },
 					".cm-content": { caretColor: "transparent" },
