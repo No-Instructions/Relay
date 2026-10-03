@@ -6,6 +6,7 @@ import { matchRemoteFolder } from "./remoteFolderMatch";
 import {
 	FileManager,
 	type MetadataCache,
+	Notice,
 	TAbstractFile,
 	TFile,
 	TFolder,
@@ -213,6 +214,9 @@ export const DOWNLOAD_SWEEP_INTERVAL_MS = 10_000;
 // guid or enqueue an upload. Startup discovery and already-known files skip the
 // wait — only novel interactive creates settle.
 export const NEW_FILE_REGISTRATION_DEBOUNCE_MS = 500;
+
+/** How long a read-only folder gathers repaired notes before one restore notice. */
+export const READER_RESTORE_NOTICE_COALESCE_MS = 1_500;
 // Suspended registrations expire after this window so abandoned local state
 // does not remain eligible for restoration indefinitely.
 export const FOLDER_DELETION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -264,6 +268,9 @@ export class SharedFolder extends HasProvider {
 	// not synced; undefined means not derived yet.
 	private _canWriteContentAnswerCache: boolean | null | undefined = undefined;
 	private _canManageFilesAnswerCache: boolean | null | undefined = undefined;
+	/** Notes whose on-disk Reader edits a repair replaced, awaiting one notice. */
+	private _readerRestoredPaths: string[] = [];
+	private _readerRestoreNoticeTimer: number | null = null;
 	_shouldConnect: boolean;
 	private _localOnly: boolean;
 	private _detached = false;
@@ -644,6 +651,9 @@ export class SharedFolder extends HasProvider {
 					await this.handleIdleSyncToRemote(guid, effect.update);
 				} else if (effect.type === "READER_EDIT_OVERWRITTEN") {
 					this.recordReaderEditOverwrite(guid, effect.path);
+					if (effect.source === "disk") {
+						this.noticeReaderDiskEditRestored(guid, effect.path);
+					}
 				}
 			},
 			getPersistenceMetadata: (guid: string, path: string) => {
@@ -1957,6 +1967,10 @@ export class SharedFolder extends HasProvider {
 		return this.canWriteContentAnswer ?? this.persistedAccessAllows;
 	}
 
+	protected expectedWriteContent(): boolean | null {
+		return this.canWriteContentAnswer;
+	}
+
 	/** Peer editing presence is shown only when the synced role policy grants it. */
 	public canUserWriteContent(userId: string | undefined): boolean {
 		const remote = this.remote;
@@ -1993,7 +2007,7 @@ export class SharedFolder extends HasProvider {
 	private rejectReaderFolderChange(paths: string[]): boolean {
 		if (this.canManageFiles) return false;
 		for (const path of paths) {
-			this.recordReaderEditOverwrite("", this.getPath(path));
+			this.recordReaderFolderChangeRejected(this.getPath(path));
 		}
 		return true;
 	}
@@ -3503,14 +3517,58 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
+	/** The vault path a reader-side event names: the loaded file's, else the given one. */
+	private readerEventPath(guid: string, path: string): string {
+		const file = this.files.get(guid);
+		return file && (isDocument(file) || isCanvas(file))
+			? join(this.path, file.path)
+			: path || guid;
+	}
+
 	public recordReaderEditOverwrite(guid: string, path: string): void {
 		if (this.destroyed) return;
-		const file = this.files.get(guid);
-		const fullPath =
-			file && (isDocument(file) || isCanvas(file))
-				? join(this.path, file.path)
-				: path || guid;
-		this.log(`[read-only] reader edit overwritten: ${fullPath}`);
+		this.log(`[read-only] reader edit overwritten: ${this.readerEventPath(guid, path)}`);
+	}
+
+	/**
+	 * A read-only folder repaired a closed note after something wrote to it on
+	 * disk. The overwrite is never silent: the person learns which notes, why,
+	 * and where the replaced text can still be found. A bulk external change
+	 * (a git pull, a sync service catching up) coalesces into one notice
+	 * rather than one per note.
+	 */
+	private noticeReaderDiskEditRestored(guid: string, path: string): void {
+		if (this.destroyed) return;
+		const fullPath = this.readerEventPath(guid, path);
+		if (!this._readerRestoredPaths.includes(fullPath)) {
+			this._readerRestoredPaths.push(fullPath);
+		}
+		if (this._readerRestoreNoticeTimer !== null) return;
+		this._readerRestoreNoticeTimer = this.timeProvider.setTimeout(() => {
+			this._readerRestoreNoticeTimer = null;
+			if (this.destroyed) return;
+			const names = this._readerRestoredPaths
+				.splice(0)
+				.map((p) => p.split("/").pop() || p);
+			const listed =
+				names.slice(0, 3).join(", ") +
+				(names.length > 3 ? ` and ${names.length - 3} more` : "");
+			const subject =
+				names.length === 1
+					? `${listed} was changed on disk`
+					: `${names.length} notes (${listed}) were changed on disk`;
+			new Notice(
+				`${subject}, but ${this.name} is read-only: the shared version was restored. ` +
+					`Recover the replaced text from File Recovery or your version control.`,
+				10000,
+			);
+		}, READER_RESTORE_NOTICE_COALESCE_MS);
+	}
+
+	/** A Reader's local folder change was not published; membership is unchanged. */
+	private recordReaderFolderChangeRejected(path: string): void {
+		if (this.destroyed) return;
+		this.log(`[read-only] folder change rejected: ${path}`);
 	}
 	syncByType(
 		syncStore: SyncStore,
@@ -4145,7 +4203,7 @@ export class SharedFolder extends HasProvider {
 	) {
 		if (isSyncFolder(file) && !this.canManageFiles) {
 			if (this.pendingUpload.get(file.path) === file.guid) {
-				this.recordReaderEditOverwrite("", this.getPath(file.path));
+				this.recordReaderFolderChangeRejected(this.getPath(file.path));
 			}
 			return;
 		}
@@ -5501,6 +5559,11 @@ export class SharedFolder extends HasProvider {
 		this.folderMachine.close();
 		this.pendingCreates.forEach((timer) => this.timeProvider.clearTimeout(timer));
 		this.pendingCreates.clear();
+		if (this._readerRestoreNoticeTimer !== null) {
+			this.timeProvider.clearTimeout(this._readerRestoreNoticeTimer);
+			this._readerRestoreNoticeTimer = null;
+		}
+		this._readerRestoredPaths = [];
 		this.clearDownloadsDeferredByState();
 		this.unsubscribes.forEach((unsub) => {
 			unsub();

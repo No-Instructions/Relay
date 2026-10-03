@@ -1248,9 +1248,17 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		return this._fork !== null;
 	}
 
-	/** The access mode of the current lock cycle, or getAccessMode's answer while idle. */
+	/**
+	 * The access mode of the current lock cycle, or getAccessMode's answer
+	 * while idle. The host's answer is a ceiling: a write session reads the
+	 * moment the host says read, before DEMOTE_TO_READ reaches the machine,
+	 * so the replica replacement and reconnect that precede that event flush
+	 * nothing outbound.
+	 */
 	resolveAccessMode(): ActiveAccessMode {
-		return this._activeAccessMode ?? this._getAccessMode();
+		const host = this._getAccessMode();
+		if (host === "read") return "read";
+		return this._activeAccessMode ?? host;
 	}
 
 	/** SyncBridgeHost: gates every outbound path in the bridge. */
@@ -3407,6 +3415,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 					if (this._disk !== null) {
 						// The disk content this write replaces may be the reader's; report it.
 						this.raiseReaderEditOverwrittenNotice(
+							"disk",
 							this.pendingDiskContents,
 							result.mergedContent,
 							result.readAuthority === true,
@@ -4341,7 +4350,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 					return;
 				}
 				if (editorText !== this._lastRenderedReadSharedText) {
-					this.raiseReaderEditOverwrittenNotice(editorText, shared);
+					this.raiseReaderEditOverwrittenNotice("editor", editorText, shared);
 				}
 				const changes = this.computeDiffChanges(editorText, shared);
 				if (changes.length > 0) {
@@ -4357,7 +4366,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				if (shared === null) return;
 				if (typeof e.viewId === "string") {
 					if (e.docText !== shared) {
-						this.raiseReaderEditOverwrittenNotice(e.docText, shared);
+						this.raiseReaderEditOverwrittenNotice("editor", e.docText, shared);
 						this.emitEffect({
 							type: "SET_CM6",
 							targetView: e.viewId,
@@ -4365,7 +4374,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 						});
 					}
 				} else if (typeof e.docText === "string" && e.docText !== shared) {
-					this.raiseReaderEditOverwrittenNotice(e.docText, shared);
+					this.raiseReaderEditOverwrittenNotice("editor", e.docText, shared);
 					const changes = this.computeDiffChanges(e.docText, shared);
 					if (changes.length > 0) {
 						this.emitEffect({ type: "DISPATCH_CM6", changes });
@@ -6454,8 +6463,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		);
 	}
 
-	/** Emit READER_EDIT_OVERWRITTEN when text the user typed is about to be replaced. */
+	/**
+	 * Emit READER_EDIT_OVERWRITTEN when text the user typed is about to be
+	 * replaced; `source` names where that text lived.
+	 */
 	private raiseReaderEditOverwrittenNotice(
+		source: "disk" | "editor",
 		overwrittenText: string | null | undefined,
 		sharedText: string | null,
 		readAuthority = this.isReadMode(),
@@ -6474,14 +6487,15 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			guid: this._guid,
 			path: this.path,
 			contentHash,
+			source,
 		});
 		this.emitEffect({
 			type: "DIAGNOSTIC",
 			code: "READER_EDIT_OVERWRITTEN",
 			message:
-				`read repair overwrote a differing on-disk Reader edit | ` +
+				`read repair overwrote a differing ${source === "disk" ? "on-disk" : "editor"} Reader edit | ` +
 				`guid=${this._guid} path=${this.path}`,
-			detail: { path: this.path, contentHash },
+			detail: { path: this.path, contentHash, source },
 		});
 	}
 

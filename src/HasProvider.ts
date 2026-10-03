@@ -12,7 +12,7 @@ import { User } from "./User";
 import { HasLogging } from "./debug";
 import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
-import { capabilitiesOf, type ClientToken } from "./client/types";
+import { capabilitiesOf, type Capabilities, type ClientToken } from "./client/types";
 import { S3RN, type S3RNType } from "./S3RN";
 import { encodeClientToken } from "./client/types";
 import type { TimeProvider } from "./TimeProvider";
@@ -50,6 +50,7 @@ function localAwarenessState(user: User | undefined): Record<string, unknown> {
 
 function makeProvider(
 	clientToken: ClientToken,
+	capabilities: Capabilities,
 	ydoc: Y.Doc,
 	user: User | undefined,
 	timeProvider: TimeProvider,
@@ -75,7 +76,7 @@ function makeProvider(
 			awareness,
 			params: params,
 			disableBc: true,
-			capabilities: capabilitiesOf(clientToken.authorization),
+			capabilities,
 			timeProvider,
 		},
 	);
@@ -194,6 +195,7 @@ export class HasProvider extends HasLogging {
 
 		this._provider = makeProvider(
 			this.clientToken,
+			this.providerCapabilities(this.clientToken),
 			this._ydoc,
 			user,
 			this.timeProvider,
@@ -435,9 +437,9 @@ export class HasProvider extends HasLogging {
 
 	refreshProvider(clientToken: ClientToken) {
 		// updates the provider when a new token is received
-		const previousWrite = this.clientToken
-			? capabilitiesOf(this.clientToken.authorization).writeContent
-			: null;
+		// Before any token, access resolves as if the grant were full, so the
+		// first token that withholds writing is a change like any other.
+		const previousWrite = capabilitiesOf(this.clientToken?.authorization).writeContent;
 		this.clientToken = clientToken;
 		const capabilities = capabilitiesOf(clientToken.authorization);
 		this.onClientToken(clientToken);
@@ -447,7 +449,7 @@ export class HasProvider extends HasLogging {
 				clientToken.url,
 				clientToken.docId,
 				clientToken.token,
-				capabilities,
+				this.providerCapabilities(clientToken),
 			);
 
 			if (result.urlChanged) {
@@ -455,13 +457,36 @@ export class HasProvider extends HasLogging {
 			}
 		}
 
-		if (previousWrite !== null && previousWrite !== capabilities.writeContent) {
+		if (previousWrite !== capabilities.writeContent) {
 			this.onAccessModeChanged(!capabilities.writeContent);
 		}
 	}
 
 	/** Called when a token refresh flips content-write permission. */
 	protected onAccessModeChanged(_readOnly: boolean): void {}
+
+	/**
+	 * The role policy's content-write answer, or null while roles are
+	 * unknown. Subclasses name their policy source.
+	 */
+	protected expectedWriteContent(): boolean | null {
+		return null;
+	}
+
+	/**
+	 * What the provider may do on the wire: the token's capabilities, capped
+	 * by the role policy. The token is the ceiling; the policy can only
+	 * lower it. A connection opened under a write-scoped token stays
+	 * writable on the server until it closes, so after a demotion the
+	 * client is the only party that can stop publishing promptly.
+	 */
+	private providerCapabilities(clientToken: ClientToken): Capabilities {
+		const capabilities = capabilitiesOf(clientToken.authorization);
+		if (this.expectedWriteContent() === false && capabilities.writeContent) {
+			return { ...capabilities, writeContent: false };
+		}
+		return capabilities;
+	}
 
 	/** Called with every token this host receives. */
 	protected onClientToken(_clientToken: ClientToken): void {}

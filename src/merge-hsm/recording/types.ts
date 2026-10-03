@@ -189,7 +189,7 @@ export type SerializableEffect =
   | { type: 'PERSIST_STATE'; guid: string; state: SerializablePersistedState }
   | { type: 'SYNC_TO_REMOTE'; update: string } // base64
   | { type: 'STATUS_CHANGED'; guid: string; status: SerializableSyncStatus }
-  | { type: 'READER_EDIT_OVERWRITTEN'; guid: string; path: string; contentHash: string };
+  | { type: 'READER_EDIT_OVERWRITTEN'; guid: string; path: string; contentHash: string; source?: 'disk' | 'editor' };
 
 /**
  * Serializable LCA state.
