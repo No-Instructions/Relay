@@ -26,7 +26,11 @@ import { curryLog } from "../../debug";
 import { formatUserFacingError } from "../../UserFacingError";
 import { flags } from "../../flagManager";
 import type { PositionedChange } from "../types";
-import { registerOwnedEditor, unregisterOwnedEditor } from "../../readOnlyEditorState";
+import {
+  configureAccessMode,
+  registerOwnedEditor,
+  unregisterOwnedEditor,
+} from "../../readOnlyEditorState";
 import {
   buildBufferedCM6ReplayEvents,
   buildTextChanges,
@@ -55,6 +59,8 @@ export class HSMEditorPluginValue implements PluginValue {
   private document: Document | null = null;
   private cm6Integration: CM6Integration | null = null;
   private destroyed = false;
+  /** Drops the folder permission subscription a refused embed editor holds. */
+  private accessModeUnsubscribe: (() => void) | null = null;
   private embed = false;
   private pendingEdits: BufferedCM6Edit[] = [];
   private pendingEditBaseText: string | null = null;
@@ -301,7 +307,16 @@ export class HSMEditorPluginValue implements PluginValue {
     if (this.subEditor) return true;
     if (this.editor.dom.closest(".table-cell-wrapper")) {
       this.log("Refusing to bind an embedded table-cell editor");
-      return this.inertSubEditor();
+      // The cell editor never binds, but it is a surface a person types
+      // into inside the host note, so it inherits the host view's access
+      // mode. Its inherited info field names the host's EditorView as the
+      // owner; the registration outlives the refusal so a later role
+      // change reaches an open cell too.
+      const owner = this.ownerEditorView();
+      if (owner && owner !== this.editor) {
+        registerOwnedEditor(owner, this.editor);
+      }
+      return this.inertSubEditor(true);
     }
     const fileInfo = this.editor.state.field(editorInfoField, false);
     if (!fileInfo || typeof fileInfo !== "object") return false;
@@ -329,13 +344,42 @@ export class HSMEditorPluginValue implements PluginValue {
         ? `Refusing to bind a fragment-scoped embed editor (${String(subpath)})`
         : "Refusing to bind an embed-owned editor",
     );
+    this.inheritFileAccessMode();
     return this.inertSubEditor();
   }
 
-  /** Permanently inert this instance and drop any buffered fragment input. */
-  private inertSubEditor(): boolean {
+  /**
+   * An embed editor is its own owner, so no host view configures it. When
+   * the embedded note is read-only for this member, configure the editor
+   * read-only directly: the embed writes its buffer back to the file, and a
+   * Reader's keystrokes must not enter a surface that does that. The folder's
+   * permission changes keep the editor current while it stays open (the
+   * Footnotes pane outlives a role change); the configuration runs after the
+   * current CM6 update, which may be the one constructing this plugin.
+   */
+  private inheritFileAccessMode(): void {
+    const doc = this.document ?? this.resolveCurrentDocument();
+    if (!doc) return;
+    const apply = () => {
+      queueMicrotask(() => {
+        if (this.destroyed) return;
+        configureAccessMode(this.editor, !doc.canWriteContent);
+      });
+    };
+    if (!doc.canWriteContent) apply();
+    this.accessModeUnsubscribe?.();
+    this.accessModeUnsubscribe =
+      doc.sharedFolder?.subscribeToPermissionChanges(apply) ?? null;
+  }
+
+  /**
+   * Permanently inert this instance and drop any buffered fragment input.
+   * `inheritsAccessMode` keeps the editor registered to its host so the
+   * host's read-only configuration still reaches it.
+   */
+  private inertSubEditor(inheritsAccessMode = false): boolean {
     this.subEditor = true;
-    unregisterOwnedEditor(this.editor);
+    if (!inheritsAccessMode) unregisterOwnedEditor(this.editor);
     if (this.cm6Integration) {
       this.cm6Integration.destroy();
       this.cm6Integration = null;
@@ -951,6 +995,8 @@ export class HSMEditorPluginValue implements PluginValue {
    */
   destroy(): void {
     this.destroyed = true;
+    this.accessModeUnsubscribe?.();
+    this.accessModeUnsubscribe = null;
     unregisterOwnedEditor(this.editor);
     if (this.cm6Integration) {
       this.cm6Integration.destroy();
