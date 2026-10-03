@@ -800,6 +800,12 @@ export interface ReaderEditOverwrittenEffect {
 	guid: string;
 	path: string;
 	contentHash: string;
+	/**
+	 * Where the replaced text came from: a write to the closed note on disk,
+	 * or the buffer of an open editor. A disk overwrite is surfaced to the
+	 * person; an editor restore is already visible in the pane.
+	 */
+	source: "disk" | "editor";
 }
 
 export type MergeEffect =

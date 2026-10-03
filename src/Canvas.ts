@@ -900,6 +900,10 @@ export class Canvas
 		this.notifyAccessModeChanged();
 	}
 
+	protected expectedWriteContent(): boolean | null {
+		return this.sharedFolder?.canWriteContentAnswer ?? null;
+	}
+
 	private replaceRemoteDocForReadAccess(): void {
 		if (!this.isRemoteDocLoaded) return;
 		const reconnect = this.intent === "connected";

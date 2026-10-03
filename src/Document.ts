@@ -1117,6 +1117,10 @@ export class Document
 		return writeAccessUnder(this.sharedFolder, this.clientToken);
 	}
 
+	protected expectedWriteContent(): boolean | null {
+		return this.sharedFolder?.canWriteContentAnswer ?? null;
+	}
+
 	public get activeAccessMode(): ActiveAccessMode {
 		return this.canWriteContent ? "write" : "read";
 	}
