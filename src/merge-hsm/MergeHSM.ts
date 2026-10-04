@@ -3454,6 +3454,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			},
 			updateLCAFromInvokeResult: (_hsm, event) => {
 				const result = dataOf(event);
+				// An outcome that hands back the baseline already held has
+				// nothing to commit. Committing it anyway rewinds the recorded
+				// local and remote snapshots to that baseline, erasing the
+				// evidence that either side has moved past it.
+				if (result?.newLCA && result.newLCA === this._lca) return;
 				if (result?.newLCA) {
 					// WRITE_DISK is only an emitted request here. Disk metadata and
 					// a disk-bearing LCA advance when the executor directly confirms
