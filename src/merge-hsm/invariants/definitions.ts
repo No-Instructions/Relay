@@ -5,6 +5,25 @@
  */
 
 import type { InvariantDefinition, InvariantCheckContext, InvariantViolation } from './types';
+import type { YjsSnapshot } from '../snapshots';
+import { snapshotContains, snapshotStateVector } from '../snapshots';
+
+/**
+ * What `local` lacks of `target`: per client, the clock local stands at
+ * against the clock target reached. Equal clocks with containment failing
+ * mean the gap is tombstones only.
+ */
+function describeGap(local: YjsSnapshot, target: YjsSnapshot): Record<string, unknown> {
+  const localSv = snapshotStateVector(local);
+  const behind: Record<string, string> = {};
+  for (const [client, clock] of snapshotStateVector(target)) {
+    const have = localSv.get(client) ?? 0;
+    if (have < clock) behind[String(client)] = `${have}<${clock}`;
+  }
+  return Object.keys(behind).length > 0
+    ? { structsBehind: behind }
+    : { structsBehind: {}, gap: 'tombstones only' };
+}
 
 // =============================================================================
 // Active Mode Invariants
@@ -58,18 +77,68 @@ export const EDITOR_MATCHES_LOCAL_DOC: InvariantDefinition = {
 export const LOCAL_NOT_BEHIND_REMOTE: InvariantDefinition = {
   id: 'local-not-behind-remote',
   name: 'localDoc not behind remoteDoc',
-  description: 'In active.tracking, localDoc should have all updates that remoteDoc has',
+  description:
+    'In active.tracking and idle.synced, localDoc contains every op and deletion the loaded remoteDoc has, ' +
+    'unless a fork or the local-only gate is deliberately holding remote updates back',
   severity: 'warning',
-  trigger: 'periodic',
-  applicableStates: ['active.tracking'],
+  trigger: 'on-state',
+  applicableStates: ['active.tracking', 'idle.synced'],
   check: (ctx: InvariantCheckContext): InvariantViolation | null => {
-    // This would require state vector comparison
-    // For now, just check that both texts are available
-    if (ctx.localDocText !== null && ctx.remoteDocText !== null) {
-      // In tracking, they should be equal after merges
-      // (Note: This is a simplified check)
-    }
-    return null;
+    // Checked as the machine enters the state, which is when it claims
+    // convergence. Within the state a session can fill the replica before
+    // the machine processes it; that window is catch-up, not a violation.
+    if (ctx.previousStatePath === ctx.statePath) return null;
+    // A fork preserves local state against the remote, and the local-only
+    // gate withholds inbound updates: either keeps local behind by design.
+    if (ctx.hasFork || ctx.localOnly) return null;
+    const remote = ctx.remoteSnapshot();
+    const local = remote ? ctx.localSnapshot() : null;
+    if (!remote || !local) return null;
+    if (snapshotContains(local, remote)) return null;
+    return {
+      invariantId: 'local-not-behind-remote',
+      severity: 'warning',
+      timestamp: ctx.now(),
+      message: `localDoc is missing ops or deletions the remoteDoc has`,
+      statePath: ctx.statePath,
+      context: describeGap(local, remote),
+    };
+  },
+};
+
+/**
+ * idle.synced means neither side holds anything the merge base lacks, by the
+ * machine's own records. Classification at load requires exactly this; every
+ * other route into the state must honour it too, or a recorded change is
+ * dropped while the document reads as settled.
+ */
+export const SYNCED_MATCHES_MERGE_BASE: InvariantDefinition = {
+  id: 'synced-matches-merge-base',
+  name: 'Synced implies recorded heads within the merge base',
+  description:
+    'On entering idle.synced, the recorded local and remote heads hold no ops or deletions the LCA lacks',
+  severity: 'error',
+  trigger: 'on-state',
+  applicableStates: ['idle.synced'],
+  check: (ctx: InvariantCheckContext): InvariantViolation | null => {
+    if (ctx.previousStatePath === ctx.statePath) return null;
+    // A merge's baseline is held until the executor confirms the disk write
+    // that carries it; until then the recorded heads lead it by design.
+    if (ctx.diskWritePending) return null;
+    const { local, remote, lca } = ctx.recorded;
+    if (!lca) return null;
+    const ahead: string[] = [];
+    if (local && !snapshotContains(lca, local)) ahead.push('local');
+    if (remote && !snapshotContains(lca, remote)) ahead.push('remote');
+    if (ahead.length === 0) return null;
+    return {
+      invariantId: 'synced-matches-merge-base',
+      severity: 'error',
+      timestamp: ctx.now(),
+      message: `entered idle.synced with recorded ${ahead.join(' and ')} head ahead of the merge base`,
+      statePath: ctx.statePath,
+      context: { ahead, enteredFrom: ctx.previousStatePath },
+    };
   },
 };
 
@@ -91,6 +160,10 @@ export const SYNCED_MEANS_DISK_MATCHES_LCA: InvariantDefinition = {
     if (ctx.syncStatus !== 'synced') {
       return null; // Only applies when synced
     }
+    // TODO: idle.synced is entered before the executor confirms the write
+    // that brings disk to the LCA; until settling waits for confirmation,
+    // the window is exempt.
+    if (ctx.diskWritePending) return null;
 
     if (ctx.disk.hash === null || ctx.lca.hash === null) {
       return null; // Can't check without hashes
@@ -231,7 +304,8 @@ export const IDLE_NO_LOCAL_DOC: InvariantDefinition = {
 export const CONFLICT_HAS_DIVERGENCE: InvariantDefinition = {
   id: 'conflict-has-divergence',
   name: 'Conflict state has actual divergence',
-  description: 'When in conflict state, disk and local content should differ',
+  description:
+    'When in conflict state, something actually diverges: disk from the LCA, a fork, or local from remote',
   severity: 'warning',
   trigger: 'on-state',
   applicableStates: [
@@ -244,7 +318,16 @@ export const CONFLICT_HAS_DIVERGENCE: InvariantDefinition = {
       return null;
     }
 
-    // If we're in conflict but content is actually the same, that's suspicious
+    // A conflict between a fork, or the local CRDT, and the remote leaves
+    // disk at the LCA; only a conflict where nothing diverges is suspicious.
+    if (ctx.hasFork) return null;
+    if (
+      ctx.localDocText !== null &&
+      ctx.remoteDocText !== null &&
+      ctx.localDocText !== ctx.remoteDocText
+    ) {
+      return null;
+    }
     if (
       ctx.disk.hash !== null &&
       ctx.lca.hash !== null &&
@@ -254,7 +337,7 @@ export const CONFLICT_HAS_DIVERGENCE: InvariantDefinition = {
         invariantId: 'conflict-has-divergence',
         severity: 'warning',
         timestamp: ctx.now(),
-        message: `In conflict state but disk hash equals LCA hash (false conflict?)`,
+        message: `In conflict state but disk equals the LCA and local equals remote (false conflict?)`,
         statePath: ctx.statePath,
         context: {
           diskHash: ctx.disk.hash,
@@ -304,13 +387,17 @@ export const READING_EDITOR_MATCHES_SHARED: InvariantDefinition = {
 /**
  * All standard invariants to check.
  */
+//
+// Not standard: IDLE_NO_LOCAL_DOC predates warm idle — every idle state now
+// declares localDoc optional and the resource contracts enforce residency.
+// DISK_NOT_OLDER_THAN_LCA compares a filesystem mtime with this machine's
+// clock, which are not comparable (external tools, clock skew, restores).
 export const STANDARD_INVARIANTS: InvariantDefinition[] = [
   EDITOR_MATCHES_LOCAL_DOC,
   LOCAL_NOT_BEHIND_REMOTE,
+  SYNCED_MATCHES_MERGE_BASE,
   SYNCED_MEANS_DISK_MATCHES_LCA,
-  DISK_NOT_OLDER_THAN_LCA,
   ACTIVE_HAS_LOCAL_DOC,
-  IDLE_NO_LOCAL_DOC,
   CONFLICT_HAS_DIVERGENCE,
   READING_EDITOR_MATCHES_SHARED,
 ];
