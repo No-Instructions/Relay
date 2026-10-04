@@ -184,6 +184,24 @@ function hasRecordSubscription(x: unknown): x is HasRecordSubscription {
 	);
 }
 
+/**
+ * The roles a relay or folder grant can name. They are fixed records on the
+ * server, so the client holds them as values from the start rather than
+ * waiting for a record that happens to expand one: a role it has not seen
+ * yet could not be offered, assigned, or named on a grant that refers to it.
+ */
+const KNOWN_ROLES: readonly { id: string; name: Role }[] = [
+	{ id: "2arnubkcv7jpce8", name: "Owner" },
+	{ id: "x6lllh2qsf9lxk6", name: "Member" },
+	{ id: "egg56uavqlvdwgy", name: "Reader" },
+];
+
+function seedKnownRoles(roles: ObservableMap<string, RoleDAO>): void {
+	for (const role of KNOWN_ROLES) {
+		roles.set(role.id, { ...role } as RoleDAO);
+	}
+}
+
 class RoleCollection implements Collection<RoleDAO, RoleDAO> {
 	collectionName: string = "roles";
 	roles: ObservableMap<string, RoleDAO>;
@@ -197,7 +215,10 @@ class RoleCollection implements Collection<RoleDAO, RoleDAO> {
 	}
 
 	clear() {
+		// Clearing the store forgets everything learned from the server; the
+		// known roles are not learned, so they remain.
 		this.roles.clear();
+		seedKnownRoles(this.roles);
 	}
 
 	get(id: string) {
@@ -1565,14 +1586,7 @@ export class RelayManager extends HasLogging {
 		this.relayRoles = new ObservableMap<string, RelayRole>("relay roles");
 		this.folderRoles = new ObservableMap<string, FolderRole>("folder roles");
 		this.roles = new ObservableMap<string, RoleDAO>("roles");
-		this.roles.set("2arnubkcv7jpce8", {
-			name: "Owner",
-			id: "2arnubkcv7jpce8",
-		} as RoleDAO);
-		this.roles.set("x6lllh2qsf9lxk6", {
-			name: "Member",
-			id: "x6lllh2qsf9lxk6",
-		} as RoleDAO);
+		seedKnownRoles(this.roles);
 		this.subscriptions = new ObservableMap<string, RelaySubscription>(
 			"subscriptions",
 		);
