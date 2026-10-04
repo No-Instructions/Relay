@@ -28,6 +28,7 @@ import type {
 import { DEFAULT_INVARIANT_CONFIG } from './types';
 import { STANDARD_INVARIANTS, getInvariantsForState, getInvariantsByTrigger } from './definitions';
 import { curryLog } from '../../debug';
+import { snapshotFromDoc } from '../snapshots';
 
 const invariantWarn = curryLog("[Invariant]", "warn");
 
@@ -44,6 +45,8 @@ export interface CheckableHSM {
   getRemoteDoc(): Y.Doc | null;
   getSyncStatus(): SyncStatus;
   hasFork(): boolean;
+  readonly isLocalOnly: boolean;
+  hasPendingDiskConfirmation(): boolean;
   onStateChange(listener: (from: StatePath, to: StatePath, event: MergeEvent) => void): () => void;
 }
 
@@ -329,7 +332,7 @@ export class InvariantChecker {
   // Private Methods
   // ===========================================================================
 
-  private buildContext(): InvariantCheckContext {
+  private buildContext(previousStatePath?: StatePath): InvariantCheckContext {
     const state = this.hsm.state;
     const localDoc = this.hsm.getLocalDoc();
     const remoteDoc = this.hsm.getRemoteDoc();
@@ -337,6 +340,7 @@ export class InvariantChecker {
 
     return {
       statePath: state.statePath,
+      previousStatePath: previousStatePath ?? state.statePath,
       localDocText: localDoc?.getText('contents').toString() ?? null,
       remoteDocText: remoteDoc?.getText('contents').toString() ?? null,
       editorText: this.lastEditorText,
@@ -352,6 +356,15 @@ export class InvariantChecker {
       },
       syncStatus: syncStatus.status,
       hasFork: this.hsm.hasFork(),
+      localOnly: this.hsm.isLocalOnly,
+      diskWritePending: this.hsm.hasPendingDiskConfirmation(),
+      localSnapshot: () => (localDoc ? snapshotFromDoc(localDoc) : null),
+      remoteSnapshot: () => (remoteDoc ? snapshotFromDoc(remoteDoc) : null),
+      recorded: {
+        local: state.localSnapshot ? { snapshot: state.localSnapshot } : null,
+        remote: state.remoteSnapshot ? { snapshot: state.remoteSnapshot } : null,
+        lca: state.lca?.snapshot ? { snapshot: state.lca.snapshot } : null,
+      },
       now: () => this.timeProvider.now(),
     };
   }
@@ -367,7 +380,7 @@ export class InvariantChecker {
       return;
     }
 
-    const context = this.buildContext();
+    const context = this.buildContext(from);
 
     // Check 'always' invariants
     const alwaysInvariants = getInvariantsByTrigger('always', this.invariants);
