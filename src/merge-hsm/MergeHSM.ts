@@ -79,6 +79,7 @@ import type { TimeProvider } from "../TimeProvider";
 import { DefaultTimeProvider } from "../TimeProvider";
 import { curryLog, describeError, recordHSMEntry } from "../debug";
 import { flags } from "../flagManager";
+import { InvariantChecker, type InvariantViolation } from "./invariants";
 import { generateHash } from "../hashing";
 import { Lifetime } from "../promiseUtils";
 import { processEvent } from "../hsm/interpreter";
@@ -434,6 +435,13 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	// Minimum spacing between local-ahead flush attempts for a warm document.
 	private static readonly LOCAL_AHEAD_RETRY_INTERVAL_MS = 5 * 60_000;
 
+	// Runtime invariant checking, on while resource contracts are enabled.
+	private _invariantChecker: InvariantChecker | null = null;
+
+	// Hash of the last WRITE_DISK the executor has not yet confirmed. Disk
+	// reaches the content this machine committed to only once it lands.
+	private _unconfirmedWriteHash: string | null = null;
+
 	// Consecutive superseded idle reconciliations. A superseded outcome (the
 	// world moved mid-operation) re-enters idle.loading to re-classify; this
 	// counter bounds that loop so a livelock surfaces as a visible error instead
@@ -634,6 +642,31 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				);
 			}
 		}
+		const invariantChecks =
+			config.invariantChecks ?? (flags().enableHSMResourceContracts ? "log" : "off");
+		if (invariantChecks !== "off") {
+			this._invariantChecker = new InvariantChecker(
+				this,
+				{
+					logToConsole: false,
+					throwOnViolation: false,
+					onViolation: (violation) => {
+						this.reportInvariantViolation(violation);
+						config.onInvariantViolation?.(violation);
+					},
+				},
+				undefined,
+				this.timeProvider,
+			);
+		}
+	}
+
+	private reportInvariantViolation(violation: InvariantViolation): void {
+		this.hsmError(
+			`[HSM invariant] ${violation.invariantId}: ${violation.message} | ` +
+				`state=${violation.statePath} guid=${this._guid} path=${this.path} ` +
+				`context=${JSON.stringify(violation.context ?? {})}`,
+		);
 	}
 
 	private setPendingDiskContents(
@@ -1175,6 +1208,18 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	 */
 	isActive(): boolean {
 		return this._statePath.startsWith("active.");
+	}
+
+	/**
+	 * Whether disk has yet to reach content this machine committed to: a
+	 * merge base held for the executor's confirmation, or a write emitted and
+	 * not yet observed on disk.
+	 */
+	hasPendingDiskConfirmation(): boolean {
+		if (this._pendingDiskConfirmLCA !== null) return true;
+		// A write counts as landed once disk is observed carrying it, whether
+		// the executor's confirmation or a disk event reported it first.
+		return this._unconfirmedWriteHash !== null && this._unconfirmedWriteHash !== this._disk?.hash;
 	}
 
 	hasFork(): boolean {
@@ -5383,6 +5428,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		// arrived after the decision either restarted the invoke that decided
 		// it or superseded the record with a strictly fresher look at the file.
 		const expectedDisk = this._disk;
+		this._unconfirmedWriteHash = hash ?? null;
 		this.emitEffect({
 			type: "WRITE_DISK",
 			guid: this._guid,
@@ -5399,6 +5445,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	}): void {
 		this._disk = identity;
 		this._needsDiskContentLoad = false;
+		this._unconfirmedWriteHash = null;
 		this.discardSupersededPendingDiskContents();
 	}
 
