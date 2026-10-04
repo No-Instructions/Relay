@@ -958,6 +958,7 @@ import type { TimeProvider } from "../TimeProvider";
 export type { TimeProvider };
 
 import type { YjsSnapshot } from "./snapshots";
+import type { InvariantViolation } from "./invariants/types";
 export type { YjsSnapshot };
 
 // Import Y.Doc type for remoteDoc
@@ -1124,6 +1125,20 @@ export interface MergeHSMConfig {
 	 * If not provided, defaults to checking internal _syncGate state.
 	 */
 	isProviderSynced?: () => boolean;
+
+	/**
+	 * Runtime invariant checking: "log" reports each violation as an
+	 * "[HSM invariant]" error line, "off" skips the checker. Defaults to "log"
+	 * while resource contracts are enabled, "off" otherwise.
+	 */
+	invariantChecks?: "off" | "log";
+
+	/**
+	 * Called with each invariant violation after it is logged. The checker
+	 * never throws: a violation raised inside a transition must not change
+	 * the transition. Tests collect violations here and fail afterwards.
+	 */
+	onInvariantViolation?: (violation: InvariantViolation) => void;
 
 	/**
 	 * Query whether the owning shared folder is currently connected.
