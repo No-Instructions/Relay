@@ -5,6 +5,7 @@
  */
 
 import type { StatePath } from '../types';
+import type { YjsSnapshot } from '../snapshots';
 
 // =============================================================================
 // Invariant Definition Types
@@ -60,6 +61,8 @@ export interface InvariantDefinition {
 export interface InvariantCheckContext {
   /** Current HSM state path */
   statePath: StatePath;
+  /** The state the machine left on this change (equal to statePath on a self-transition or manual check) */
+  previousStatePath: StatePath;
 
   /** Local doc text (null if not in active mode) */
   localDocText: string | null;
@@ -89,6 +92,20 @@ export interface InvariantCheckContext {
 
   /** Whether a fork is active (preserved local state gating sync) */
   hasFork: boolean;
+  /** Whether the sync gate holds remote updates back (local-only / draft) */
+  localOnly: boolean;
+  /** Whether a disk write's merge base waits on the executor's confirmation */
+  diskWritePending: boolean;
+  /** Snapshot of localDoc, computed on demand (null when not loaded) */
+  localSnapshot: () => YjsSnapshot | null;
+  /** Snapshot of remoteDoc, computed on demand (null when not loaded) */
+  remoteSnapshot: () => YjsSnapshot | null;
+  /** The machine's recorded heads and baseline, as classification reads them */
+  recorded: {
+    local: YjsSnapshot | null;
+    remote: YjsSnapshot | null;
+    lca: YjsSnapshot | null;
+  };
 
   /** Time provider */
   now: () => number;
