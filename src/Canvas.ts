@@ -126,7 +126,7 @@ export class Canvas
 	private _pendingDocChangeOrigin: "bridge" | "ingest" | "unknown" =
 		"unknown";
 	private _viewReconciler: (() => void) | null = null;
-	private _localOnly = false;
+	private _draftMode = false;
 	/** Manager hook: warm-slot accounting on lazy materialization. */
 	onMaterialize: (() => void) | null = null;
 	/** Identity-guarded teardown for this canvas's sync-machine registration. */
@@ -212,6 +212,7 @@ export class Canvas
 		});
 		this.timeProvider = parent.timeProvider;
 		this._parent = parent;
+		this._draftMode = parent.isCanvasDraft(guid);
 		this.path = path;
 		this.name = "[CRDT] " + path.split("/").pop() || "";
 		this.setLoggers(this.name);
@@ -435,23 +436,43 @@ export class Canvas
 			skipOutboundOrigin: (origin) => origin === this._persistenceInstance,
 			canPublish: () => this.canPublishContent,
 		});
-		if (this._localOnly) {
+		if (this.isLocalOnly) {
 			this._bridge.setLocalOnly(true);
 		}
 	}
 
 	get isLocalOnly(): boolean {
-		return this._localOnly;
+		return this._draftMode || this.sharedFolder.localOnly;
+	}
+
+	get isDraft(): boolean {
+		return this._draftMode;
 	}
 
 	/**
-	 * Local-only gates the bridge in both directions; disk convergence
-	 * continues untouched (replication policy lives in the bridge, never
-	 * in the machine). Applies at materialization for cold canvases.
+	 * Keep the canvas's own draft choice separate from the folder pause.
+	 * Store it before changing the bridge so a reload cannot publish a draft.
 	 */
 	setLocalOnly(value: boolean): void {
-		this._localOnly = value;
-		this._bridge?.setLocalOnly(value);
+		if (this._draftMode === value) return;
+		const folder = this.sharedFolder;
+		folder.recordCanvasDraft(this.guid, value);
+		this._draftMode = value;
+		this.refreshLocalOnly();
+		if (folder.isPendingUpload(this.path)) {
+			if (value) {
+				folder.backgroundSync.cancelDocumentWork(this.guid);
+			} else if (!folder.localOnly) {
+				void folder.syncFileTree().catch((error) => {
+					this.warn("canvas draft upload retry failed", error);
+				});
+			}
+		}
+	}
+
+	refreshLocalOnly(): void {
+		this._bridge?.setLocalOnly(this.isLocalOnly);
+		this.notifyListeners();
 	}
 
 	private scheduleDocChanged(origin: unknown): void {

@@ -335,7 +335,12 @@ export class RelayCanvasView implements S3View {
 	}
 
 	toggleLocalOnly() {
-		this.toggleConnection();
+		if (this.canvas.sharedFolder.localOnly) return;
+		const wasDraft = this.canvas.isDraft;
+		this.canvas.setLocalOnly(!wasDraft);
+		if (wasDraft && !this.canvas.connected) {
+			void this.canvas.connect();
+		}
 	}
 
 	offlineBanner(): () => void {
@@ -385,7 +390,11 @@ export class RelayCanvasView implements S3View {
 						state: this.canvas.state,
 						remote: this.canvas.sharedFolder.remote,
 						tracking: this.tracking,
-						enableDraftMode: flags().enableDraftMode,
+						localOnly: this.canvas.isLocalOnly,
+						enableDraftMode: flags().enableDraftMode || this.canvas.isDraft,
+						folderConnected: this.canvas.sharedFolder.connected,
+						folderPaused: this.canvas.sharedFolder.localOnly,
+						isCanvas: true,
 					},
 				});
 				this.offConnectionStatusSubscription = this.canvas.subscribe(
@@ -396,7 +405,11 @@ export class RelayCanvasView implements S3View {
 							state: state,
 							remote: this.canvas.sharedFolder.remote,
 							tracking: this.tracking,
-							enableDraftMode: flags().enableDraftMode,
+							localOnly: this.canvas.isLocalOnly,
+							enableDraftMode: flags().enableDraftMode || this.canvas.isDraft,
+							folderConnected: this.canvas.sharedFolder.connected,
+							folderPaused: this.canvas.sharedFolder.localOnly,
+							isCanvas: true,
 						});
 					},
 				);
@@ -406,7 +419,11 @@ export class RelayCanvasView implements S3View {
 				state: this.canvas.state,
 				remote: this.canvas.sharedFolder.remote,
 				tracking: this.tracking,
-				enableDraftMode: flags().enableDraftMode,
+				localOnly: this.canvas.isLocalOnly,
+				enableDraftMode: flags().enableDraftMode || this.canvas.isDraft,
+				folderConnected: this.canvas.sharedFolder.connected,
+				folderPaused: this.canvas.sharedFolder.localOnly,
+				isCanvas: true,
 			});
 		}
 	}

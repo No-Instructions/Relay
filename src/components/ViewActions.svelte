@@ -1,11 +1,10 @@
 <script lang="ts">
-	import { LiveView } from "../LiveViews";
-	import type { ConnectionState, ConnectionStatus } from "../HasProvider";
-	import type { Document } from "src/Document";
+	import type { LiveView, RelayCanvasView } from "../LiveViews";
+	import type { ConnectionState } from "../HasProvider";
 	import type { RemoteSharedFolder } from "src/Relay";
 	import { CloudOff, Layers, Satellite, Unplug, UserRoundX } from "lucide-svelte";
 
-	export let view: LiveView;
+	export let view: LiveView | RelayCanvasView;
 	export let state: ConnectionState;
 	export let remote: RemoteSharedFolder;
 	export let tracking: boolean = false;
@@ -14,6 +13,8 @@
 	export let onLogin: (() => Promise<boolean>) | undefined = undefined;
 	export let enableDraftMode: boolean = false;
 	export let folderConnected: boolean = false;
+	export let folderPaused: boolean = false;
+	export let isCanvas: boolean = false;
 	export let pendingOutbound: number = 0;
 	export let pendingInbound: number = 0;
 
@@ -27,11 +28,19 @@
 		: draftActive
 			? "system3-connected"
 			: "system3-disconnected";
-	$: draftLabel = localOnly
-		? `${remote?.relay?.name || "Relay"} (draft)`
-		: draftActive
-			? `${remote?.relay?.name || "Relay"} (connected)`
-			: `${remote?.relay?.name || "Relay"} (disconnected)`;
+	$: draftLabel = isCanvas
+		? folderPaused
+			? "Folder sharing is paused. Resume the folder before changing this canvas."
+			: localOnly
+				? "Canvas draft: changes to this canvas stay on this device. Embedded notes sync separately. Click to resume canvas sync."
+				: draftActive
+					? "Canvas connected. Click to keep canvas changes on this device. Embedded notes sync separately."
+					: "Canvas disconnected. Click to keep canvas changes on this device. Embedded notes sync separately."
+		: localOnly
+			? `${remote?.relay?.name || "Relay"} (draft)`
+			: draftActive
+				? `${remote?.relay?.name || "Relay"} (connected)`
+				: `${remote?.relay?.name || "Relay"} (disconnected)`;
 
 	// Draft mode off: the satellite reflects the doc's own connection status
 	$: satelliteClass = opsFlowing
@@ -101,6 +110,7 @@
 		<button
 			class="{draftIconClass} clickable-icon view-action system3-view-action"
 			aria-label={draftLabel}
+			disabled={isCanvas && folderPaused}
 			tabindex="0"
 			on:click={handleClick}
 			on:keypress={handleKeyPress}
