@@ -36,10 +36,9 @@ const debug = process.argv[2] === "debug" || watch || staging || develop;
 const positionalArgs = process.argv.slice(3).filter((a) => !a.startsWith("--"));
 const out = positionalArgs[0] || ".";
 const outfile = out + "/main.js";
-const tld = staging ? "dev" : "md";
 
-const apiUrl = `https://api.system3.${tld}`;
-const authUrl = `https://auth.system3.${tld}`;
+const apiUrl = process.env.RELAY_API_URL ?? "https://relay-auth.infra.sentrisense.network";
+const authUrl = process.env.RELAY_AUTH_URL ?? apiUrl;
 const healthUrl = `${apiUrl}/health?version=${gitTag}`;
 console.log("git tag:", gitTag);
 console.log("health URL", healthUrl);
@@ -183,7 +182,7 @@ const context = await esbuild.context({
 		HEALTH_URL: `"${healthUrl}"`,
 		API_URL: `"${apiUrl}"`,
 		AUTH_URL: `"${authUrl}"`,
-		REPOSITORY: `"No-Instructions/Relay"`,
+		REPOSITORY: `"inakimalerba/syncthing-relay"`,
 	},
 	treeShaking: true,
 	outfile,
