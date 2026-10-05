@@ -1938,6 +1938,11 @@ export class SharedFolder extends HasProvider {
 		if (result.allowed) {
 			return true;
 		}
+		const ownRelayRole = this.relayManager.relayRoles.values().find(
+			(role) => role.relayId === remote.relayId && role.userId === userId,
+		);
+		// Relay Reader establishes a denial even while folder roles are still loading.
+		if (ownRelayRole?.role === "Reader") return false;
 		// A denial rests on what is absent. The user's own folder role and
 		// own relay role each decide it, so each must be present or be known
 		// to be absent because every role record has been fetched at least
@@ -1948,11 +1953,7 @@ export class SharedFolder extends HasProvider {
 			this.relayManager.folderRoles
 				.values()
 				.some((r) => r.sharedFolderId === remote.id && r.userId === userId);
-		const ownRelayRoleKnown =
-			hydrated ||
-			this.relayManager.relayRoles
-				.values()
-				.some((r) => r.relayId === remote.relayId && r.userId === userId);
+		const ownRelayRoleKnown = hydrated || !!ownRelayRole;
 		return ownFolderRoleKnown && ownRelayRoleKnown ? false : null;
 	}
 

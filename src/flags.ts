@@ -25,6 +25,7 @@ export interface FeatureFlags {
 	enableStreamerMode: boolean;
 	enableCanvasPresence: boolean;
 	enableReaderRole: boolean;
+	enableRelayReaderRole: boolean;
 	enableInNoteConflicts: boolean;
 }
 
@@ -231,6 +232,13 @@ export const FeatureFlagSchema: {
 		title: "Reader role",
 		description:
 			"Offer the Reader role when sharing folders and inviting users. Readers receive live updates without publishing changes.",
+	},
+	enableRelayReaderRole: {
+		default: false,
+		category: "danger",
+		title: "Relay Reader role",
+		description:
+			"Offer the Reader role for relay membership. Requires relay Reader support on the server.",
 	},
 	enableInNoteConflicts: {
 		default: false,

@@ -2,7 +2,7 @@
 	import SecretText from "./SecretText.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import { customFetch } from "../customFetch";
-	import { offeredRoles,
+	import { offeredRelayRoles,
 		hasPermissionParents,
 		type Relay,
 		type RelayInvitation,
@@ -149,13 +149,13 @@
 		return a.user.name > b.user.name ? 1 : -1;
 	}
 
-	// Dynamic role loading for forwards compatibility
+	// Offer only roles supported for relay membership.
 	const availableRoles = derived([plugin.relayManager.roles], ([$roles]) => {
-		return offeredRoles([...$roles.values()]).sort(rolePrioritySort);
+		return offeredRelayRoles($roles.values()).sort(rolePrioritySort);
 	});
 
-	function rolePrioritySort(a: { name: Role }, b: { name: Role }) {
-		const priority: Record<Role, number> = { Owner: 0, Member: 1, Reader: 2 };
+	function rolePrioritySort(a: { name: string }, b: { name: string }) {
+		const priority: Record<string, number> = { Owner: 0, Member: 1, Reader: 2 };
 		return (priority[a.name] ?? 999) - (priority[b.name] ?? 999);
 	}
 
@@ -405,6 +405,10 @@
 	}
 
 	// Permission stores - direct store subscriptions
+	const canCreateFolder = plugin.relayManager.userCan(
+		["relay", "create_folder"],
+		relay,
+	);
 	const canManageUsers = plugin.relayManager.userCan(
 		["relay", "manage_users"],
 		relay,
@@ -440,6 +444,7 @@
 		isPrivate?: boolean,
 		grants?: FolderRoleGrant[],
 	): Promise<SharedFolder> {
+		if (!$canCreateFolder) throw new Error("You cannot share folders on this relay.");
 		const normalizedPath = normalizePath(folderPath);
 		const pending = pendingFolderShares.get(normalizedPath);
 		if (pending) return pending;
@@ -656,33 +661,35 @@
 		{/if}
 	{/each}
 
-	<SettingItem description="" name="">
-		<button
-			class="mod-cta"
-			data-action="share-folder"
-			aria-label="Select a folder to share it with this Relay Server"
-			on:click={debounce(() => {
-				if (relay.version === 0 && !Platform.isMobile) {
-					// For relay version 0, go directly to folder selection.
-					// Mobile routes through the share modal instead, whose inline
-					// picker replaces the desktop-only suggest overlay.
-					const folderModal = new FolderSuggestModal(
-						plugin.app,
-						"Choose or create folder...",
-						new Set(
-							sharedFolders.filter((f) => !!f.relayId).map((f) => f.path),
-						).add("/"),
-						sharedFolders,
-						onChoose,
-					);
-					folderModal.open();
-				} else {
-					// For relay version > 0, use the full modal with privacy settings
-					shareFolderModal.open();
-				}
-			})}>Share local folder</button
-		>
-	</SettingItem>
+	{#if $canCreateFolder}
+		<SettingItem description="" name="">
+			<button
+				class="mod-cta"
+				data-action="share-folder"
+				aria-label="Select a folder to share it with this Relay Server"
+				on:click={debounce(() => {
+					if (relay.version === 0 && !Platform.isMobile) {
+						// For relay version 0, go directly to folder selection.
+						// Mobile routes through the share modal instead, whose inline
+						// picker replaces the desktop-only suggest overlay.
+						const folderModal = new FolderSuggestModal(
+							plugin.app,
+							"Choose or create folder...",
+							new Set(
+								sharedFolders.filter((f) => !!f.relayId).map((f) => f.path),
+							).add("/"),
+							sharedFolders,
+							onChoose,
+						);
+						folderModal.open();
+					} else {
+						// For relay version > 0, use the full modal with privacy settings
+						shareFolderModal.open();
+					}
+				})}>Share local folder</button
+			>
+		</SettingItem>
+	{/if}
 </SettingGroup>
 
 <div class="spacer" bind:this={rootEl}></div>
@@ -735,6 +742,9 @@
 							data-role-id={item.id}
 							on:change={handleRoleChangeEvent}
 						>
+							{#if !$availableRoles.some((role) => role.name === item.role)}
+								<option value={item.role} disabled>{item.role}</option>
+							{/if}
 							{#each $availableRoles as role}
 								<option value={role.name}>{role.name}</option>
 							{/each}
