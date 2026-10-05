@@ -1,25 +1,19 @@
 <script lang="ts">
-	import { offeredRoles, type Role } from "src/Relay";
-	import type { RelayManager } from "src/RelayManager";
-	import { derived } from "svelte/store";
+	import type { Role } from "src/Relay";
 
-	export let relayManager: RelayManager;
+	export let roles: { name: string }[];
 	export let value: Role = "Member";
 	export let excludeOwner = true;
 	export let onChange: (role: Role) => void = () => {};
 
-	function rolePrioritySort(a: { name: Role }, b: { name: Role }) {
-		const priority: Record<Role, number> = { Owner: 0, Member: 1, Reader: 2 };
+	function rolePrioritySort(a: { name: string }, b: { name: string }) {
+		const priority: Record<string, number> = { Owner: 0, Member: 1, Reader: 2 };
 		return (priority[a.name] ?? 999) - (priority[b.name] ?? 999);
 	}
 
-	// Roles come from the server's roles collection so new roles surface
-	// without a client release.
-	const availableRoles = derived([relayManager.roles], ([$roles]) => {
-		return offeredRoles($roles.values())
-			.filter((role) => !excludeOwner || role.name !== "Owner")
-			.sort(rolePrioritySort);
-	});
+	$: availableRoles = roles
+		.filter((role) => !excludeOwner || role.name !== "Owner")
+		.sort(rolePrioritySort);
 
 	function handleChange(e: Event) {
 		const role = (e.target as HTMLSelectElement).value as Role;
@@ -35,7 +29,7 @@
 	on:click|stopPropagation
 	on:keydown|stopPropagation
 >
-	{#each $availableRoles as role}
+	{#each availableRoles as role}
 		<option value={role.name}>{role.name}</option>
 	{/each}
 </select>

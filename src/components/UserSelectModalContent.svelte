@@ -1,10 +1,9 @@
 <script lang="ts">
-	import type { RelayUser, RemoteSharedFolder, Role } from "src/Relay";
+	import { offeredFolderRoles, selectedFolderRole, type RelayUser, type RemoteSharedFolder, type Role } from "src/Relay";
 	import type { FolderRoleGrant, RelayManager } from "src/RelayManager";
 	import { derived, writable } from "svelte/store";
 	import { handleServerError } from "src/utils/toastStore";
 	import RoleSelect from "./RoleSelect.svelte";
-	import { flags } from "src/flagManager";
 
 	export let relayManager: RelayManager;
 	export let folder: RemoteSharedFolder;
@@ -12,13 +11,13 @@
 		grants: FolderRoleGrant[],
 	) => Promise<void>;
 	export let preSelectedUserIds: string[] = [];
-	const readerRoleEnabled = flags().enableReaderRole;
 
 	interface UserSelection {
 		user: RelayUser;
 		hasAccess: boolean;
 		selected: boolean;
-		role: Role;
+		role: Role | null;
+		roles: { name: string }[];
 		isOwner: boolean;
 		isCurrentUser: boolean;
 	}
@@ -36,8 +35,7 @@
 		([$relayRoles]) => {
 			return $relayRoles
 				.values()
-				.filter((role) => role.relayId === folder.relayId)
-				.map((role) => role.user);
+				.filter((role) => role.relayId === folder.relayId);
 		}
 	);
 
@@ -51,8 +49,8 @@
 
 	// Create derived store for user selections
 	const users = derived(
-		[relayUsers, currentFolderRoles, selectedUsers],
-		([$relayUsers, $folderRoles, $selectedUsers]) => {
+		[relayUsers, currentFolderRoles, selectedUsers, relayManager.roles],
+		([$relayUsers, $folderRoles, $selectedUsers, $roles]) => {
 			const usersWithAccess = new Set($folderRoles.map((role) => role.userId));
 			const folderOwnerIds = new Set(
 				$folderRoles
@@ -61,15 +59,19 @@
 			);
 			const currentUserId = relayManager.user?.id;
 
-			return $relayUsers.map((user) => {
+			return $relayUsers.map((relayRole) => {
+				const user = relayRole.user;
+				const roles = offeredFolderRoles($roles.values(), relayRole.role);
+				const role = selectedFolderRole(roles, $selectedUsers.get(user.id));
 				const isFolderOwner = folderOwnerIds.has(user.id);
 				const isCurrentUser = currentUserId === user.id;
-				const selected = $selectedUsers.has(user.id);
+				const selected = $selectedUsers.has(user.id) && role !== null;
 				return {
 					user,
 					hasAccess: usersWithAccess.has(user.id),
 					selected,
-					role: $selectedUsers.get(user.id) ?? "Member",
+					role,
+					roles,
 					isOwner: isFolderOwner,
 					isCurrentUser,
 				};
@@ -101,19 +103,19 @@
 	);
 
 	const selectedCount = derived(
-		[selectedUsers],
-		([$selectedUsers]) => $selectedUsers.size
+		[users],
+		([$users]) => $users.filter((user) => user.selected && !user.hasAccess).length
 	);
 
 	function toggleUser(userSelection: UserSelection) {
-		if (userSelection.hasAccess) return;
+		if (userSelection.hasAccess || !userSelection.role) return;
 
 		selectedUsers.update(current => {
 			const newMap = new Map(current);
 			if (newMap.has(userSelection.user.id)) {
 				newMap.delete(userSelection.user.id);
 			} else {
-				newMap.set(userSelection.user.id, "Member");
+				newMap.set(userSelection.user.id, userSelection.role!);
 			}
 			return newMap;
 		});
@@ -131,12 +133,10 @@
 
 	async function handleAdd() {
 		if (adding) return;
-		const currentSelectedUsers = $selectedUsers;
-		if (currentSelectedUsers.size === 0) return;
-
-		const grants: FolderRoleGrant[] = Array.from(
-			currentSelectedUsers.entries(),
-		).map(([user, role]) => ({ user, role }));
+		const grants: FolderRoleGrant[] = $users
+			.filter((user) => user.selected && !user.hasAccess && user.role)
+			.map((user) => ({ user: user.user.id, role: user.role! }));
+		if (grants.length === 0) return;
 		adding = true;
 		try {
 			await onAdd(grants);
@@ -194,7 +194,7 @@
 					<input
 						type="checkbox"
 						checked={userSelection.selected}
-						disabled={userSelection.hasAccess}
+						disabled={userSelection.hasAccess || !userSelection.role}
 						class="user-checkbox"
 						on:click={(e) => {
 							e.stopPropagation();
@@ -219,9 +219,9 @@
 
 					{#if userSelection.hasAccess}
 						<div class="user-status">Already has access</div>
-					{:else if userSelection.selected && readerRoleEnabled}
+					{:else if userSelection.selected && userSelection.role && userSelection.roles.some((role) => role.name === "Reader")}
 						<RoleSelect
-							{relayManager}
+							roles={userSelection.roles}
 							value={userSelection.role}
 							onChange={(role) =>
 								setUserRole(userSelection.user.id, role)}

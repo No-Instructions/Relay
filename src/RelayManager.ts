@@ -2,6 +2,8 @@
 
 import { v4 as uuid } from "uuid";
 import {
+	offeredFolderRoles,
+	offeredRelayRoles,
 	type RelayRole,
 	type FolderRole,
 	type Relay,
@@ -561,6 +563,7 @@ class RemoteFolderAuto
 				role.sharedFolderId === this.remoteFolder.id &&
 				role.userId === this.user.id,
 		)?.role;
+		if (relayRole === "Reader") return "Reader";
 		if (!this.remoteFolder.private) {
 			if (!relayRole) {
 				this.warn("couldn't find role", this.relay.id, this.user, isCreator);
@@ -1604,6 +1607,7 @@ export class RelayManager extends HasLogging {
 		});
 		this._offFeatureFlags = FeatureFlagManager.getInstance().on(() => {
 			this.users.notifyListeners();
+			this.roles.notifyListeners();
 		});
 
 		// XXX this is so akward that the class behaves poorly if a user is unset.
@@ -1761,6 +1765,13 @@ export class RelayManager extends HasLogging {
 		// re-registers.
 		this._isSubscribed = false;
 		this._rolesHydrated = false;
+	}
+
+	getFolderRoleOptions(relayId: string, userId: string): RoleDAO[] {
+		const relayRole = this.relayRoles.find(
+			(role) => role.relayId === relayId && role.userId === userId,
+		)?.role;
+		return offeredFolderRoles(this.roles.values(), relayRole);
 	}
 
 	async rotateKey(relayInvitation: RelayInvitation): Promise<RelayInvitation> {
@@ -2206,6 +2217,7 @@ export class RelayManager extends HasLogging {
 
 	async deleteRemote(remoteFolder: RemoteSharedFolder): Promise<boolean> {
 		if (!this.pb) throw new Error("Failed to delete folder");
+		this.requireUserPermission(["folder", "delete"], remoteFolder, "You cannot delete this shared folder.");
 		await this.pb.collection("shared_folders").delete(remoteFolder.id);
 		// Reconcile before returning; the realtime deletion may arrive later.
 		this.store?.cascade("shared_folders", remoteFolder.id);
@@ -2219,6 +2231,7 @@ export class RelayManager extends HasLogging {
 		isPrivate: boolean = false,
 	): Promise<RemoteFolder> {
 		if (!this.pb) throw new Error("Failed to create folder");
+		this.requireUserPermission(["relay", "create_folder"], relay, "You cannot share folders on this relay.");
 		const record = await this.pb
 			.collection("shared_folders")
 			.create<RemoteFolderDAO>(
@@ -2265,9 +2278,11 @@ export class RelayManager extends HasLogging {
 		roleName: Role,
 	): Promise<RelayRole> {
 		if (!this.pb) throw new Error("Failed to update relay role");
-		const newRole = this.roles.find((role) => role.name === roleName);
+		const newRole = offeredRelayRoles(this.roles.values()).find(
+			(role) => role.name === roleName,
+		);
 		if (!newRole) {
-			throw new Error("Failed to update relay role");
+			throw new Error("This role is not available for relay membership.");
 		}
 		const record = await this.pb
 			.collection("relay_roles")
@@ -2286,8 +2301,13 @@ export class RelayManager extends HasLogging {
 		grant: FolderRoleGrant,
 	): Promise<FolderRole> {
 		if (!this.pb) throw new Error("Failed to add folder role");
-		const role = this.roles.find((item) => item.name === grant.role);
-		if (!role) throw new Error(`Failed to find role: ${grant.role}`);
+		this.requireUserPermission(["folder", "manage_users"], folder, "You cannot manage this folder's users.");
+		const role = this.getFolderRoleOptions(folder.relayId, grant.user).find(
+			(item) => item.name === grant.role,
+		);
+		if (!folder.private || !role) {
+			throw new Error("This folder role is not available for the user's relay access.");
+		}
 		const record = await this.pb
 			.collection("shared_folder_roles")
 			.create<FolderRoleDAO>({
@@ -2304,6 +2324,9 @@ export class RelayManager extends HasLogging {
 
 	async removeFolderRole(folderRole: FolderRole): Promise<void> {
 		if (!this.pb) throw new Error("Failed to remove folder role");
+		if (folderRole.userId !== this.user?.id) {
+			this.requireUserPermission(["folder", "manage_users"], folderRole.sharedFolder, "You cannot manage this folder's users.");
+		}
 		await this.pb.collection("shared_folder_roles").delete(folderRole.id);
 	}
 
@@ -2312,9 +2335,13 @@ export class RelayManager extends HasLogging {
 		roleName: Role,
 	): Promise<FolderRole> {
 		if (!this.pb) throw new Error("Failed to update folder role");
-		const newRole = this.roles.find((role) => role.name === roleName);
-		if (!newRole) {
-			throw new Error("Failed to update folder role");
+		const folder = folderRole.sharedFolder;
+		this.requireUserPermission(["folder", "manage_users"], folder, "You cannot manage this folder's users.");
+		const newRole = this.getFolderRoleOptions(folder.relayId, folderRole.userId).find(
+			(role) => role.name === roleName,
+		);
+		if (!folder.private || !newRole) {
+			throw new Error("This folder role is not available for the user's relay access.");
 		}
 		const record = await this.pb
 			.collection("shared_folder_roles")
@@ -2333,6 +2360,7 @@ export class RelayManager extends HasLogging {
 		isPrivate: boolean,
 	): Promise<RemoteFolder> {
 		if (!this.pb) throw new Error("Failed to update folder privacy");
+		this.requireUserPermission(["folder", "rename"], folder, "You cannot change this shared folder's settings.");
 		const record = await this.pb
 			.collection("shared_folders")
 			.update<RemoteFolderDAO>(folder.id, {
@@ -2350,6 +2378,7 @@ export class RelayManager extends HasLogging {
 		updates: Partial<{ name: string; private: boolean }>,
 	): Promise<RemoteSharedFolder> {
 		if (!this.pb) throw new Error("Failed to update folder");
+		this.requireUserPermission(["folder", "rename"], folder, "You cannot change this shared folder's settings.");
 		const record = await this.pb
 			.collection("shared_folders")
 			.update<RemoteFolderDAO>(folder.id, updates);
@@ -2358,6 +2387,20 @@ export class RelayManager extends HasLogging {
 			throw new Error("Failed to update folder");
 		}
 		return updated;
+	}
+
+	private requireUserPermission(
+		permission: Permission,
+		resource: Relay | RemoteSharedFolder,
+		message: string,
+	): void {
+		if (!this.user || !this.policyManager?.isAllowed({
+			principal: this.user.id,
+			action: permission[1],
+			resource: [permission[0], resource.id],
+		}).allowed) {
+			throw new Error(message);
+		}
 	}
 
 	/**
