@@ -437,6 +437,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 	// Runtime invariant checking, on while resource contracts are enabled.
 	private _invariantChecker: InvariantChecker | null = null;
+	// For the checker only: the remote head this machine has been handed,
+	// by remote update events and by completed sessions. A provider can
+	// write into the replica before the event that carries the write is
+	// processed; the live replica is not what the machine has seen.
+	private _processedRemoteHead: YjsSnapshot | null = null;
 
 	// Hash of the last WRITE_DISK the executor has not yet confirmed. Disk
 	// reaches the content this machine committed to only once it lands.
@@ -1208,6 +1213,23 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	 */
 	isActive(): boolean {
 		return this._statePath.startsWith("active.");
+	}
+
+	/** The remote head this machine has been handed (checker only). */
+	getProcessedRemoteHead(): YjsSnapshot | null {
+		return this._processedRemoteHead;
+	}
+
+	private noteProcessedRemoteUpdate(update: Uint8Array): void {
+		if (!this._invariantChecker) return;
+		try {
+			const head = snapshotMetaFromUpdate(update);
+			this._processedRemoteHead = this._processedRemoteHead
+				? mergeSnapshotHeads(this._processedRemoteHead, head)
+				: head;
+		} catch {
+			// Unparseable updates are reported where they are applied.
+		}
 	}
 
 	/**
@@ -3273,6 +3295,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			applyRemoteToRemoteDoc: (_hsm, event) => {
 				const update = payload(event).update as Uint8Array;
 				if (!update || update.byteLength === 0) return;
+				this.noteProcessedRemoteUpdate(update);
 				if (this.remoteDoc) {
 					Y.applyUpdate(this.remoteDoc, update, this.remoteDoc);
 					this._remoteSnapshot = snapshotFromDoc(this.remoteDoc).snapshot;
@@ -4042,6 +4065,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			markProviderSynced: () => {
 				this._providerSynced = true;
 				this._bridge.providerSynced = true;
+				// A completed session has handed over everything the replica holds.
+				if (this._invariantChecker && this.remoteDoc) {
+					this._processedRemoteHead = snapshotFromDoc(this.remoteDoc);
+				}
 			},
 			rememberServerAhead: (_hsm, event) => {
 				this._serverHead = (event as ServerAheadEvent).head;
