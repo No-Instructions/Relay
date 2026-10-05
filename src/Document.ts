@@ -78,6 +78,11 @@ export class Document
 	_tfile: TFile | null;
 	name: string;
 	userLock: boolean = false;
+
+	// An outbound update reached this note's replica while the editor held
+	// it, and the folder left publishing to the open editor's provider. If
+	// that provider never published, the push is owed when the lock goes.
+	private _remoteSyncOwed = false;
 	extension: string;
 	basename: string;
 	vault: Vault;
@@ -968,13 +973,42 @@ export class Document
 			const p = mergeManager.unload(this.guid);
 			const cleanup = p.finally(() => {
 				this.destroyProviderIntegrationIfUnused(false);
+				this.flushOwedRemoteSync();
 			});
 			trackAsyncCleanup(cleanup);
 			return cleanup;
 		}
 
 		this.destroyProviderIntegrationIfUnused(false);
+		this.flushOwedRemoteSync();
 		return Promise.resolve();
+	}
+
+	/**
+	 * Record that an outbound update reached the replica while the editor
+	 * held the note. The open editor's provider normally publishes it; when
+	 * that provider is offline and the editor closes, nothing else would.
+	 */
+	deferRemoteSync(): void {
+		this._remoteSyncOwed = true;
+	}
+
+	/**
+	 * Push an owed update once the editor has let go: a background session
+	 * carries the replica, which already holds the update, to the server.
+	 * When the provider did publish, the session finds nothing to send.
+	 */
+	private flushOwedRemoteSync(): void {
+		if (!this._remoteSyncOwed) return;
+		if (this.destroyed || this.userLock || !this.canWriteContent) return;
+		const sharedFolder = this.sharedFolder;
+		if (!sharedFolder) return;
+		this._remoteSyncOwed = false;
+		sharedFolder.backgroundSync
+			.enqueueSync(this, false, "owed-publish")
+			.catch((error) => {
+				this.warn(`owed publish failed for ${this.path}`, error);
+			});
 	}
 
 	protected shouldCompleteDeferredDisconnect(): boolean {
