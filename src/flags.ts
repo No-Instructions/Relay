@@ -26,6 +26,7 @@ export interface FeatureFlags {
 	enableCanvasPresence: boolean;
 	enableReaderRole: boolean;
 	enableInNoteConflicts: boolean;
+	enableBugReportUpload: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -238,6 +239,14 @@ export const FeatureFlagSchema: {
 		title: "Resolve conflicts in the note",
 		description:
 			"Show a merge conflict inside the note, with each side's lines to pick between, instead of the banner and the side-by-side view.",
+	},
+	enableBugReportUpload: {
+		default: false,
+		category: "labs",
+		title: "Bug report upload",
+		description:
+			"Let \"Send bug report\" upload the report, and logs if chosen, to the upstream Relay developers (bug-reports.system3.dev).",
+		requiresReload: false,
 	},
 };
 

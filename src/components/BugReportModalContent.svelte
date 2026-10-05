@@ -6,6 +6,7 @@
 	import type Live from "../main";
 	import { getAllLogFiles, getAllLogs } from "../debug";
 	import { requestUrlWithMetrics } from "../customFetch";
+	import { flags } from "../flagManager";
 
 	export let plugin: Live;
 
@@ -19,6 +20,8 @@
 	let sent = writable<boolean>(false);
 	let anyPb = writable<any>(plugin.loginManager.pb as any);
 	let logFiles = writable<string[]>([]);
+	// Off by default: the report goes to the upstream developers, not to us.
+	const uploadEnabled = flags().enableBugReportUpload;
 
 	getAllLogFiles().then((files) => {
 		logFiles.set(files);
@@ -121,9 +124,12 @@
 				{/if}
 			</div>
 
-			<SettingItem name="" description="">
+			<SettingItem
+				name=""
+				description={uploadEnabled ? "" : "Sending is off. Turn on \"Bug report upload\" in the Labs settings."}
+			>
 				<button
-					disabled={$sending}
+					disabled={$sending || !uploadEnabled}
 					on:click={async () => {
 						let bugReport = "Bug Report\n\n";
 						bugReport += JSON.stringify(
