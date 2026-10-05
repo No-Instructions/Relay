@@ -1,0 +1,44 @@
+diff --git a/crates/y-sign/src/main.rs b/crates/y-sign/src/main.rs
+index 69fe8aa..94b3c6c 100644
+--- a/crates/y-sign/src/main.rs
++++ b/crates/y-sign/src/main.rs
+@@ -157,6 +157,11 @@ async fn sign_stdin(
+         .unwrap_or("full");
+     let content_type = input.get("contentType").and_then(|v| v.as_str());
+     let content_length = input.get("contentLength").and_then(|v| v.as_u64());
++    let user = input.get("user").and_then(|v| v.as_str());
++    let channel = input
++        .get("channel")
++        .and_then(|v| v.as_str())
++        .map(|v| v.to_string());
+ 
+     if token_type != "document"
+         && token_type != "file"
+@@ -196,7 +201,7 @@ async fn sign_stdin(
+             let token = if key_type == "legacy" {
+                 auth.gen_doc_token(doc_id, authorization, expiration, None)?
+             } else {
+-                auth.gen_doc_token_cwt(doc_id, authorization, expiration, None, None)?
++                auth.gen_doc_token_cwt(doc_id, authorization, expiration, user, channel)?
+             };
+ 
+             output.insert(
+@@ -243,7 +248,7 @@ async fn sign_stdin(
+                     expiration,
+                     content_type,
+                     content_length,
+-                    None,
++                    user,
+                     None,
+                 )?
+             };
+@@ -1122,7 +1127,8 @@ async fn main() -> Result<()> {
+             key_type,
+             audience,
+         } => {
+-            let authenticator = create_authenticator_with_type(auth, key_type)?;
++            let authenticator =
++                create_authenticator_with_type_and_audience(auth, key_type, audience)?;
+             sign_stdin(&authenticator, key_type, audience, auth).await?;
+         }
+         SignSubcommand::Verify {

@@ -48,6 +48,10 @@ build.d/*
 !build.d/production.json
 # CI scripts run from the workflow checkout.
 !.github/ci/*.js
+# Control plane hooks and migrations; the rest is local run state.
+!control-plane/**/*.js
+control-plane/pb_data/
+control-plane/relay.local.toml
 scripts/
 tickets/
 specs/

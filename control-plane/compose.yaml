@@ -1,0 +1,21 @@
+# Local pilot run; see README.md. Needs relay.local.toml and the env vars below.
+services:
+  relay-server:
+    image: docker.system3.md/relay-server:0.12.7
+    ports: ["8080:8080"]
+    volumes: ["./relay.local.toml:/app/relay.toml:ro", "relay-data:/app/data"]
+
+  control-plane:
+    build: .
+    ports: ["8090:8090"]
+    environment:
+      RELAY_SERVER_URL: http://127.0.0.1:8080
+      RELAY_SERVER_AUTH: ${RELAY_SERVER_AUTH:?private_key from gen-auth}
+      OIDC_CLIENT_ID: relay
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?from tofu output relay_oidc_client_secret}
+      OIDC_ISSUER: https://auth.sentrisense.network/application/o/
+    volumes: ["cp-data:/data"]
+
+volumes:
+  relay-data: {}
+  cp-data: {}
