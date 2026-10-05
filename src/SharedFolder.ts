@@ -280,7 +280,6 @@ export class SharedFolder extends HasProvider {
 	private syncRequestedDuringSync: boolean = false;
 	private authoritative: boolean;
 	private pendingUpload: LocalStorage<string>;
-	private canvasDrafts: LocalStorage<boolean>;
 	private unsubscribes: Unsubscriber[] = [];
 	private storageQuota?: number;
 	/**
@@ -420,9 +419,6 @@ export class SharedFolder extends HasProvider {
 		this.fset = new Files();
 		this.pendingUpload = new LocalStorage<string>(
 			`${appId}-system3-relay/folders/${this.guid}/pendingUploads`,
-		);
-		this.canvasDrafts = new LocalStorage<boolean>(
-			`${appId}-system3-relay/folders/${this.guid}/canvasDrafts`,
 		);
 		this.pendingUpload.forEach((guid, vpath) => {
 			if (!this.existsSync(vpath)) {
@@ -1626,15 +1622,6 @@ export class SharedFolder extends HasProvider {
 		return this._localOnly;
 	}
 
-	public isCanvasDraft(guid: string): boolean {
-		return this.canvasDrafts.get(guid) === true;
-	}
-
-	public recordCanvasDraft(guid: string, draft: boolean): void {
-		if (draft) this.canvasDrafts.set(guid, true);
-		else this.canvasDrafts.delete(guid);
-	}
-
 	public set localOnly(value: boolean) {
 		if (this._localOnly === value) return;
 		this._localOnly = value;
@@ -2793,8 +2780,7 @@ export class SharedFolder extends HasProvider {
 		// does not hold, but edit history under the old guid is gone. This
 		// mirrors the document-remap precedent.
 		const existing = this.files.get(fromGuid);
-		const preserveDraft = this.isCanvasDraft(fromGuid);
-		if (preserveDraft) this.recordCanvasDraft(toGuid, true);
+		const preserveDraft = isCanvas(existing) && existing.isDraft;
 		try {
 			indexedDB.deleteDatabase(`${this.appId}-relay-canvas-${fromGuid}`);
 		} catch { /* best effort stale database cleanup */ }
@@ -2813,7 +2799,6 @@ export class SharedFolder extends HasProvider {
 
 		const canvas = this.getOrCreateCanvas(toGuid, path);
 		if (preserveDraft) canvas.setLocalOnly(true);
-		this.recordCanvasDraft(fromGuid, false);
 		this.files.set(toGuid, canvas);
 		this.fset.add(canvas);
 		canvas.wake();
@@ -4294,7 +4279,6 @@ export class SharedFolder extends HasProvider {
 		if (isCanvas(file)) {
 			const meta = makeCanvasMeta(file.guid);
 			mark(file, meta);
-			file.notifyListeners();
 			return;
 		}
 		if (isSyncFolder(file)) {

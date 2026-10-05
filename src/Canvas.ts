@@ -126,7 +126,7 @@ export class Canvas
 	private _pendingDocChangeOrigin: "bridge" | "ingest" | "unknown" =
 		"unknown";
 	private _viewReconciler: (() => void) | null = null;
-	private _draftMode = false;
+	private _localOnly = false;
 	/** Manager hook: warm-slot accounting on lazy materialization. */
 	onMaterialize: (() => void) | null = null;
 	/** Identity-guarded teardown for this canvas's sync-machine registration. */
@@ -212,7 +212,6 @@ export class Canvas
 		});
 		this.timeProvider = parent.timeProvider;
 		this._parent = parent;
-		this._draftMode = parent.isCanvasDraft(guid);
 		this.path = path;
 		this.name = "[CRDT] " + path.split("/").pop() || "";
 		this.setLoggers(this.name);
@@ -442,22 +441,21 @@ export class Canvas
 	}
 
 	get isLocalOnly(): boolean {
-		return this._draftMode || this.sharedFolder.localOnly;
+		return this._localOnly || this.sharedFolder.localOnly;
 	}
 
 	get isDraft(): boolean {
-		return this._draftMode;
+		return this._localOnly;
 	}
 
 	/**
-	 * Keep the canvas's own draft choice separate from the folder pause.
-	 * Store it before changing the bridge so a reload cannot publish a draft.
+	 * Gate canvas replication in both directions while disk convergence
+	 * continues. The folder pause is applied separately by isLocalOnly.
 	 */
 	setLocalOnly(value: boolean): void {
-		if (this._draftMode === value) return;
+		if (this._localOnly === value) return;
 		const folder = this.sharedFolder;
-		folder.recordCanvasDraft(this.guid, value);
-		this._draftMode = value;
+		this._localOnly = value;
 		this.refreshLocalOnly();
 		if (folder.isPendingUpload(this.path)) {
 			if (value) {

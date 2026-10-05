@@ -32,10 +32,10 @@
 		? folderPaused
 			? "Folder sharing is paused. Resume the folder before changing this canvas."
 			: localOnly
-				? "Canvas draft: changes to this canvas stay on this device. Embedded notes sync separately. Click to resume canvas sync."
+				? "Canvas draft: syncing this canvas is paused. Embedded notes sync separately. Click to resume canvas sync."
 				: draftActive
-					? "Canvas connected. Click to keep canvas changes on this device. Embedded notes sync separately."
-					: "Canvas disconnected. Click to keep canvas changes on this device. Embedded notes sync separately."
+					? "Canvas connected. Click to pause canvas sync. Embedded notes sync separately."
+					: "Canvas disconnected. Click to pause canvas sync. Embedded notes sync separately."
 		: localOnly
 			? `${remote?.relay?.name || "Relay"} (draft)`
 			: draftActive
