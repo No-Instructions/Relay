@@ -4972,10 +4972,14 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			// Check if this remote update carries an edit already applied by
 			// fork-reconcile (machine edit). The LCA was set to the merged
 			// result by fork-reconcile. If any pending machine edit's
-			// expectedText matches the current LCA, the remote CRDT is
-			// delivering the same edit we already have — skip to prevent
-			// CRDT duplication.
-				if (this._lca) {
+			// expectedText matches the current LCA and merging the update
+			// would change that text, the remote CRDT is delivering the same
+			// edit we already have — skip to prevent CRDT duplication. An
+			// update that leaves the text as it is duplicates nothing: a peer
+			// that cancelled its own copy of the edit republishes those ops
+			// as tombstones, and skipping them leaves localDoc missing ops
+			// the server holds until a later session delivers them again.
+				if (this._lca && mergedContent !== this._lca.contents) {
 					const machineIdx = this._pendingMachineEdits.findIndex(entry =>
 						entry.expectedText === this._lca!.contents
 					);
