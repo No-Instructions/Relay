@@ -22,6 +22,16 @@ function getJwtExpiryFromClientToken(clientToken: ClientToken): number {
 	return clientToken.expiryTime || 0;
 }
 
+function fileTokenKey(
+	documentId: string,
+	fileHash: string,
+	contentType: string,
+	contentLength: number,
+): string {
+	// Read and upload grants can differ even for identical file content.
+	return JSON.stringify([documentId, fileHash, contentType, contentLength]);
+}
+
 function withLoginManager<Args extends unknown[]>(
 	loginManager: LoginManager,
 	deviceId: string,
@@ -159,12 +169,12 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 		if (this.isDestroyed()) {
 			return Promise.reject(this.getDestroyedError());
 		}
-		const key = `${documentId}${fileHash}`;
+		const key = fileTokenKey(documentId, fileHash, contentType, contentLength);
 		const activePromise = this._activePromises.get(key);
 		if (activePromise) {
 			return activePromise as Promise<FileToken>;
 		}
-		this.tokenMap.set(documentId, {
+		this.tokenMap.set(key, {
 			token: null,
 			expiryTime: 0,
 			attempts: 0,
@@ -181,7 +191,7 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 				}
 				const expiryTime = this.getJwtExpiry(newToken);
 				const existing = this.tokenMap.get(key)!;
-				this.tokenMap.set(fileHash, {
+				this.tokenMap.set(key, {
 					...existing,
 					token: newToken,
 					expiryTime,
@@ -268,9 +278,14 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 		if (this.isDestroyed()) {
 			return Promise.reject(this.getDestroyedError());
 		}
-		const key = `${documentId}${fileHash}`;
+		const key = fileTokenKey(documentId, fileHash, contentType, contentLength);
 		const tokenInfo = this.tokenMap.get(key);
-		if (tokenInfo && tokenInfo.token && this.isTokenValid(tokenInfo)) {
+		// Leave time to exchange the cached token for a transfer URL.
+		if (
+			tokenInfo?.token &&
+			this.isTokenValid(tokenInfo) &&
+			!this.shouldRefresh(tokenInfo)
+		) {
 			this.log("token was valid, cache hit!");
 			this._activePromises.delete(key);
 			return Promise.resolve(tokenInfo.token as FileToken);
