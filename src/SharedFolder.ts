@@ -1218,10 +1218,14 @@ export class SharedFolder extends HasProvider {
 			return;
 		}
 
-		// Skip if the editor has the file open — active mode syncs via ProviderIntegration.
+		// The editor has the file open: the update is already in the replica
+		// and active mode publishes it through the provider integration. If
+		// that provider is offline when the editor closes, nothing else
+		// would, so the push is held for the lock release, not dropped.
 		if (file.userLock) {
+			file.deferRemoteSync();
 			this.debug?.(
-				`[handleIdleSyncToRemote] Document ${guid} has user lock, skipping`,
+				`[handleIdleSyncToRemote] Document ${guid} has user lock, deferring publish to release`,
 			);
 			return;
 		}
