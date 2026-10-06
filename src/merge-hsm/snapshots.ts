@@ -170,6 +170,37 @@ export function classifyUpdate(
 }
 
 /**
+ * Advance a tracked state vector by an applied update, client by client.
+ *
+ * Y.encodeStateVectorFromUpdate cannot be used for this: it only counts a
+ * client whose run in the update starts at clock zero, so every incremental
+ * update encodes an empty state vector. Instead each client's runs are
+ * walked in clock order; a run that starts at or before the tracked clock
+ * extends it, and a run that starts beyond it (or a skip) is a hole that the
+ * tracked state cannot cross.
+ */
+export function advanceSVByUpdate(tracked: DecodedSV, update: Uint8Array): void {
+	const decoded = decodeUpdateData(update);
+	const blocked = new Set<number>();
+	for (const struct of decoded.structs) {
+		const { client, clock } = struct.id;
+		if (blocked.has(client)) continue;
+		const length = struct.length ?? 1;
+		if (struct instanceof Y.Skip) {
+			blocked.add(client);
+			continue;
+		}
+		const current = tracked.get(client) ?? 0;
+		if (clock > current) {
+			blocked.add(client);
+			continue;
+		}
+		const end = clock + length;
+		if (end > current) tracked.set(client, end);
+	}
+}
+
+/**
  * Check whether a Y.Doc is empty (no CRDT operations from any client).
  * An empty Y.Doc has a zero-entry state vector.
  */
