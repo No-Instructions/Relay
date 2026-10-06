@@ -28,7 +28,7 @@ import type {
 import { DEFAULT_INVARIANT_CONFIG } from './types';
 import { STANDARD_INVARIANTS, getInvariantsForState, getInvariantsByTrigger } from './definitions';
 import { curryLog } from '../../debug';
-import { snapshotFromDoc } from '../snapshots';
+import { snapshotFromDoc, type YjsSnapshot } from '../snapshots';
 
 const invariantWarn = curryLog("[Invariant]", "warn");
 
@@ -46,6 +46,7 @@ export interface CheckableHSM {
   getSyncStatus(): SyncStatus;
   hasFork(): boolean;
   readonly isLocalOnly: boolean;
+  getProcessedRemoteHead(): YjsSnapshot | null;
   hasPendingDiskConfirmation(): boolean;
   onStateChange(listener: (from: StatePath, to: StatePath, event: MergeEvent) => void): () => void;
 }
@@ -357,6 +358,7 @@ export class InvariantChecker {
       syncStatus: syncStatus.status,
       hasFork: this.hsm.hasFork(),
       localOnly: this.hsm.isLocalOnly,
+      processedRemote: this.hsm.getProcessedRemoteHead(),
       diskWritePending: this.hsm.hasPendingDiskConfirmation(),
       localSnapshot: () => (localDoc ? snapshotFromDoc(localDoc) : null),
       remoteSnapshot: () => (remoteDoc ? snapshotFromDoc(remoteDoc) : null),
