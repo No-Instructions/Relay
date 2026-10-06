@@ -78,7 +78,7 @@ export const LOCAL_NOT_BEHIND_REMOTE: InvariantDefinition = {
   id: 'local-not-behind-remote',
   name: 'localDoc not behind remoteDoc',
   description:
-    'In active.tracking and idle.synced, localDoc contains every op and deletion the loaded remoteDoc has, ' +
+    'In active.tracking and idle.synced, localDoc contains every op and deletion of the remote head the machine has processed, ' +
     'unless a fork or the local-only gate is deliberately holding remote updates back',
   severity: 'warning',
   trigger: 'on-state',
@@ -91,10 +91,16 @@ export const LOCAL_NOT_BEHIND_REMOTE: InvariantDefinition = {
     // A fork preserves local state against the remote, and the local-only
     // gate withholds inbound updates: either keeps local behind by design.
     if (ctx.hasFork || ctx.localOnly) return null;
-    const remote = ctx.remoteSnapshot();
-    const local = remote ? ctx.localSnapshot() : null;
-    if (!remote || !local) return null;
-    if (snapshotContains(local, remote)) return null;
+    // Compared with the remote head the machine has been handed, and only
+    // where the live replica holds it. A provider can write the next update
+    // into the replica while the merge of the previous one is finishing,
+    // and that update's own event merges it; a head the replica does not
+    // hold describes nothing local could have merged.
+    const remote = ctx.processedRemote;
+    const replica = remote ? ctx.remoteSnapshot() : null;
+    if (!remote || !replica || !snapshotContains(replica, remote)) return null;
+    const local = ctx.localSnapshot();
+    if (!local || snapshotContains(local, remote)) return null;
     return {
       invariantId: 'local-not-behind-remote',
       severity: 'warning',
