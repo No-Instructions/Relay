@@ -42,6 +42,7 @@ import { DefaultTimeProvider } from '../TimeProvider';
 import { ObservableMap } from '../observable/ObservableMap';
 import { validateUpdate } from '../storage/yjs-validation';
 import {
+  advanceSVByUpdate,
   classifyUpdate as classifyUpdateSV,
   type DecodedDeleteSet,
   decodeUpdateDeleteSet,
@@ -1356,8 +1357,8 @@ export class MergeManager {
 
 
   /**
-   * After successfully applying an incremental update, merge its per-client
-   * clocks into the applied remote SV (taking the max for each client).
+   * After successfully applying an incremental update, advance the applied
+   * remote SV through every run of the update that follows on from it.
    */
   advanceAppliedRemoteUpdate(guid: string, update: Uint8Array): void {
     let applied = this._appliedRemoteSV.get(guid);
@@ -1367,13 +1368,7 @@ export class MergeManager {
     }
 
     try {
-      const updateSVBytes = Y.encodeStateVectorFromUpdate(update);
-      const updateSV = Y.decodeStateVector(updateSVBytes);
-
-      for (const [clientId, clock] of updateSV) {
-        const existing = applied.get(clientId) ?? 0;
-        applied.set(clientId, Math.max(existing, clock));
-      }
+      advanceSVByUpdate(applied, update);
 
       const appliedDS = this._appliedRemoteDS.get(guid);
       if (appliedDS) {
