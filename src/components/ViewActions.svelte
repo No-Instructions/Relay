@@ -14,7 +14,6 @@
 	export let enableDraftMode: boolean = false;
 	export let folderConnected: boolean = false;
 	export let folderPaused: boolean = false;
-	export let isCanvas: boolean = false;
 	export let pendingOutbound: number = 0;
 	export let pendingInbound: number = 0;
 
@@ -28,14 +27,8 @@
 		: draftActive
 			? "system3-connected"
 			: "system3-disconnected";
-	$: draftLabel = isCanvas
-		? folderPaused
-			? "Folder sharing is paused. Resume the folder before changing this canvas."
-			: localOnly
-				? "Canvas draft: syncing this canvas is paused. Embedded notes sync separately. Click to resume canvas sync."
-				: draftActive
-					? "Canvas connected. Click to pause canvas sync. Embedded notes sync separately."
-					: "Canvas disconnected. Click to pause canvas sync. Embedded notes sync separately."
+	$: draftLabel = folderPaused
+		? "Folder sharing is paused. Resume the folder before changing this file."
 		: localOnly
 			? `${remote?.relay?.name || "Relay"} (draft)`
 			: draftActive
@@ -110,7 +103,7 @@
 		<button
 			class="{draftIconClass} clickable-icon view-action system3-view-action"
 			aria-label={draftLabel}
-			disabled={isCanvas && folderPaused}
+			disabled={folderPaused}
 			tabindex="0"
 			on:click={handleClick}
 			on:keypress={handleKeyPress}

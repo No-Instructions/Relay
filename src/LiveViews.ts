@@ -394,7 +394,8 @@ export class RelayCanvasView implements S3View {
 						enableDraftMode: flags().enableDraftMode || this.canvas.isDraft,
 						folderConnected: this.canvas.sharedFolder.connected,
 						folderPaused: this.canvas.sharedFolder.localOnly,
-						isCanvas: true,
+						pendingOutbound: this.canvas.pendingOutbound,
+						pendingInbound: this.canvas.pendingInbound,
 					},
 				});
 				this.offConnectionStatusSubscription = this.canvas.subscribe(
@@ -409,7 +410,8 @@ export class RelayCanvasView implements S3View {
 							enableDraftMode: flags().enableDraftMode || this.canvas.isDraft,
 							folderConnected: this.canvas.sharedFolder.connected,
 							folderPaused: this.canvas.sharedFolder.localOnly,
-							isCanvas: true,
+							pendingOutbound: this.canvas.pendingOutbound,
+							pendingInbound: this.canvas.pendingInbound,
 						});
 					},
 				);
@@ -423,7 +425,8 @@ export class RelayCanvasView implements S3View {
 				enableDraftMode: flags().enableDraftMode || this.canvas.isDraft,
 				folderConnected: this.canvas.sharedFolder.connected,
 				folderPaused: this.canvas.sharedFolder.localOnly,
-				isCanvas: true,
+				pendingOutbound: this.canvas.pendingOutbound,
+				pendingInbound: this.canvas.pendingInbound,
 			});
 		}
 	}
@@ -663,11 +666,12 @@ export class LiveView<ViewType extends TextFileView>
 	}
 
 	toggleLocalOnly() {
+		if (this.document.sharedFolder.localOnly) return;
 		const hsm = this.document.hsm;
 		if (hsm) {
-			const wasLocalOnly = hsm.isLocalOnly;
-			hsm.setLocalOnly(!wasLocalOnly);
-			if (wasLocalOnly && !this.document.connected) {
+			const wasDraft = this.document.isDraft;
+			this.document.setDraftMode(!wasDraft);
+			if (wasDraft && !this.document.connected) {
 				void this.document.connect();
 			}
 			void this.attach().catch((error) => {
@@ -992,8 +996,9 @@ export class LiveView<ViewType extends TextFileView>
 						remote: this.document.sharedFolder.remote,
 						tracking: this.live,
 						localOnly: this.document.hsm?.isLocalOnly ?? false,
-						enableDraftMode: flags().enableDraftMode,
+						enableDraftMode: flags().enableDraftMode || this.document.isDraft,
 						folderConnected: this.document.sharedFolder.connected,
+						folderPaused: this.document.sharedFolder.localOnly,
 						pendingOutbound: this.document.hsm?.pendingOutbound ?? 0,
 						pendingInbound: this.document.hsm?.pendingInbound ?? 0,
 					},
@@ -1007,8 +1012,9 @@ export class LiveView<ViewType extends TextFileView>
 							remote: this.document.sharedFolder.remote,
 							tracking: this.live,
 							localOnly: this.document.hsm?.isLocalOnly ?? false,
-							enableDraftMode: flags().enableDraftMode,
+							enableDraftMode: flags().enableDraftMode || this.document.isDraft,
 							folderConnected: this.document.sharedFolder.connected,
+							folderPaused: this.document.sharedFolder.localOnly,
 							pendingOutbound: this.document.hsm?.pendingOutbound ?? 0,
 							pendingInbound: this.document.hsm?.pendingInbound ?? 0,
 						});
@@ -1024,8 +1030,9 @@ export class LiveView<ViewType extends TextFileView>
 					this._viewActions?.set({
 						tracking: this.live,
 						localOnly: this.document.hsm?.isLocalOnly ?? false,
-						enableDraftMode: currentFlags.enableDraftMode,
+						enableDraftMode: currentFlags.enableDraftMode || this.document.isDraft,
 						folderConnected: this.document.sharedFolder.connected,
+						folderPaused: this.document.sharedFolder.localOnly,
 						pendingOutbound: this.document.hsm?.pendingOutbound ?? 0,
 						pendingInbound: this.document.hsm?.pendingInbound ?? 0,
 					});
@@ -1040,8 +1047,9 @@ export class LiveView<ViewType extends TextFileView>
 				remote: this.document.sharedFolder.remote,
 				tracking: this.live,
 				localOnly: this.document.hsm?.isLocalOnly ?? false,
-				enableDraftMode: flags().enableDraftMode,
+				enableDraftMode: flags().enableDraftMode || this.document.isDraft,
 				folderConnected: this.document.sharedFolder.connected,
+				folderPaused: this.document.sharedFolder.localOnly,
 				pendingOutbound: this.document.hsm?.pendingOutbound ?? 0,
 				pendingInbound: this.document.hsm?.pendingInbound ?? 0,
 			});

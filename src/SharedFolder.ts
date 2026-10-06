@@ -1629,10 +1629,8 @@ export class SharedFolder extends HasProvider {
 			...current,
 			localOnly: value,
 		}));
-		const guids = Array.from(this.files.keys());
-		this.mergeManager?.setLocalOnly(guids, value);
 		for (const file of this.files.values()) {
-			if (isCanvas(file)) {
+			if (isDocument(file) || isCanvas(file)) {
 				file.refreshLocalOnly();
 			}
 		}
@@ -2780,7 +2778,6 @@ export class SharedFolder extends HasProvider {
 		// does not hold, but edit history under the old guid is gone. This
 		// mirrors the document-remap precedent.
 		const existing = this.files.get(fromGuid);
-		const preserveDraft = isCanvas(existing) && existing.isDraft;
 		try {
 			indexedDB.deleteDatabase(`${this.appId}-relay-canvas-${fromGuid}`);
 		} catch { /* best effort stale database cleanup */ }
@@ -2798,7 +2795,6 @@ export class SharedFolder extends HasProvider {
 		this.syncStore.pendingUpload.delete(path);
 
 		const canvas = this.getOrCreateCanvas(toGuid, path);
-		if (preserveDraft) canvas.setLocalOnly(true);
 		this.files.set(toGuid, canvas);
 		this.fset.add(canvas);
 		canvas.wake();
@@ -3651,10 +3647,6 @@ export class SharedFolder extends HasProvider {
 			if (run) run.decision = "noop";
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
-		if (isCanvas(file) && file.isDraft) {
-			if (run) run.decision = "noop";
-			return { op: "noop", path, promise: Promise.resolve() };
-		}
 		if (run) run.decision = "publish";
 		return {
 			op: "update",
@@ -3663,9 +3655,8 @@ export class SharedFolder extends HasProvider {
 				// Checked before the transfer as well as at publication, so a
 				// held claim does not upload content nothing will reference.
 				if (!(await this.caseVariantsClearedForClaim(path, pendingGuid))) return;
-				if (isCanvas(file) && file.isDraft) return;
 				await this.preparePendingFileForPublication(file);
-				if (this.destroyed || run?.cancelled || (isCanvas(file) && file.isDraft)) return;
+				if (this.destroyed || run?.cancelled) return;
 				const latestMeta = this.syncStore.getCommittedMeta(path);
 				if (latestMeta && latestMeta.id !== pendingGuid) {
 					if (run) {
@@ -3677,7 +3668,7 @@ export class SharedFolder extends HasProvider {
 					return;
 				}
 				const outcome = await this.backgroundSync.enqueueUpload(file);
-				if (run?.cancelled || (isCanvas(file) && file.isDraft)) {
+				if (run?.cancelled) {
 					this.backgroundSync.cancelDocumentWork(pendingGuid);
 					return;
 				}
@@ -4152,7 +4143,6 @@ export class SharedFolder extends HasProvider {
 		outcome: SyncCompletionOutcome = "completed",
 		uploaded?: AttachmentVersion,
 	) {
-		if (isCanvas(file) && file.isDraft) return;
 		if (isSyncFolder(file) && !this.canManageFiles) {
 			if (this.pendingUpload.get(file.path) === file.guid) {
 				this.recordReaderEditOverwrite("", this.getPath(file.path));
@@ -4176,7 +4166,6 @@ export class SharedFolder extends HasProvider {
 		}
 		const cleared = await this.caseVariantsClearedForClaim(file.path, file.guid);
 		if (!cleared) return;
-		if (isCanvas(file) && file.isDraft) return;
 		const mark = (file: IFile, meta: Meta) => {
 			if (!this.syncStore) {
 				return;
@@ -4192,7 +4181,6 @@ export class SharedFolder extends HasProvider {
 			let contestedMeta: Meta | undefined = undefined;
 			let unvettedVariant: string | undefined = undefined;
 			this.folderDoc.transact(() => {
-				if (isCanvas(file) && file.isDraft) return;
 				const committedMeta = this.syncStore.getCommittedMeta(file.path);
 				if (committedMeta && committedMeta.id !== meta.id) {
 					contestedMeta = committedMeta;
@@ -4688,9 +4676,7 @@ export class SharedFolder extends HasProvider {
 		this.files.set(guid, doc);
 		doc.move(vpath, this);
 
-		if (this._localOnly && doc.hsm) {
-			doc.hsm.setLocalOnly(true);
-		}
+		doc.refreshLocalOnly();
 
 		return doc;
 	}
