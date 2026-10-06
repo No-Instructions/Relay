@@ -764,12 +764,19 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 		if (this._enrolledLocalSnapshot) {
 			try {
-				if (
-					snapshotsEqual(
-						snapshotFromDoc(this.localDoc),
-						{ snapshot: this._enrolledLocalSnapshot },
-					)
-				) {
+				// A loaded doc that holds everything the stored head records is
+				// the truth: IndexedDB can run ahead of the persisted record (a
+				// quit between the two writes), and requiring equality left such
+				// a note untrusted for good — its stored head never advanced, so
+				// a closed note compared ahead of the server on every index
+				// push. A load missing part of the stored head (partial or
+				// mid-replay) stays untrusted.
+				const loaded = snapshotFromDoc(this.localDoc);
+				const stored = { snapshot: this._enrolledLocalSnapshot };
+				if (snapshotContains(loaded, stored)) {
+					if (!snapshotsEqual(loaded, stored)) {
+						this.rememberEnrolledLocalHead(loaded.snapshot);
+					}
 					this._localDocSnapshotSafe = true;
 					return true;
 				}
