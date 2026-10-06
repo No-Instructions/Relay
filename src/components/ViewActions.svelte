@@ -8,40 +8,37 @@
 	export let state: ConnectionState;
 	export let remote: RemoteSharedFolder;
 	export let tracking: boolean = false;
-	export let localOnly: boolean = false;
+	export let draftMode: boolean = false;
 	export let isLoggedOut: boolean = false;
 	export let onLogin: (() => Promise<boolean>) | undefined = undefined;
 	export let enableDraftMode: boolean = false;
 	export let folderConnected: boolean = false;
-	export let folderPaused: boolean = false;
 	export let pendingOutbound: number = 0;
 	export let pendingInbound: number = 0;
 
-	$: opsFlowing = state.status === "connected" && !localOnly;
+	$: opsFlowing = state.status === "connected" && !draftMode;
 
 	// Draft mode: use folder-level connection as the default so the icon
 	// doesn't flash CloudOff while the individual doc is still connecting.
-	$: draftActive = !localOnly && (opsFlowing || folderConnected);
-	$: draftIconClass = localOnly
+	$: draftActive = !draftMode && (opsFlowing || folderConnected);
+	$: draftIconClass = draftMode
 		? "system3-paused"
 		: draftActive
 			? "system3-connected"
 			: "system3-disconnected";
-	$: draftLabel = folderPaused
-		? "Folder sharing is paused. Resume the folder before changing this file."
-		: localOnly
-			? `${remote?.relay?.name || "Relay"} (draft)`
-			: draftActive
-				? `${remote?.relay?.name || "Relay"} (connected)`
-				: `${remote?.relay?.name || "Relay"} (disconnected)`;
+	$: draftLabel = draftMode
+		? `${remote?.relay?.name || "Relay"} (draft)`
+		: draftActive
+			? `${remote?.relay?.name || "Relay"} (connected)`
+			: `${remote?.relay?.name || "Relay"} (disconnected)`;
 
 	// Draft mode off: the satellite reflects the doc's own connection status
 	$: satelliteClass = opsFlowing
 		? "system3-connected"
-		: localOnly ? "system3-paused" : `system3-${state.status}`;
+		: draftMode ? "system3-paused" : `system3-${state.status}`;
 	$: satelliteLabel = opsFlowing
 		? `${remote?.relay?.name || "Relay"} (connected)`
-		: localOnly
+		: draftMode
 			? `${remote?.relay?.name || "Relay"} (paused)`
 			: `${remote?.relay?.name || "Relay"} (${state.status})`;
 
@@ -103,12 +100,11 @@
 		<button
 			class="{draftIconClass} clickable-icon view-action system3-view-action"
 			aria-label={draftLabel}
-			disabled={folderPaused}
 			tabindex="0"
 			on:click={handleClick}
 			on:keypress={handleKeyPress}
 		>
-			{#if localOnly}
+			{#if draftMode}
 				<Unplug class="svg-icon inline-icon" />
 			{:else if draftActive}
 				<Satellite class="svg-icon inline-icon" />

@@ -337,16 +337,17 @@ export class Document
 	setDraftMode(value: boolean): void {
 		if (this._draftMode === value) return;
 		this._draftMode = value;
-		this.refreshLocalOnly();
+		if (!this.refreshLocalOnly()) this.notifyListeners();
 	}
 
-	refreshLocalOnly(): void {
+	refreshLocalOnly(): boolean {
 		const hsm = this._hsm;
-		if (!hsm) return;
+		if (!hsm) return false;
 		const localOnly = this._draftMode || this.sharedFolder.localOnly;
-		if (hsm.isLocalOnly === localOnly) return;
+		if (hsm.isLocalOnly === localOnly) return false;
 		hsm.setLocalOnly(localOnly);
 		this.notifyListeners();
+		return true;
 	}
 
 	/**
