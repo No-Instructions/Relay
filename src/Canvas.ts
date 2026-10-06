@@ -434,6 +434,7 @@ export class Canvas
 			// converges from the server through the provider and reconcile().
 			skipOutboundOrigin: (origin) => origin === this._persistenceInstance,
 			canPublish: () => this.canPublishContent,
+			onPendingChange: () => this.notifyListeners(),
 		});
 		if (this.isLocalOnly) {
 			this._bridge.setLocalOnly(true);
@@ -448,24 +449,22 @@ export class Canvas
 		return this._localOnly;
 	}
 
+	get pendingOutbound(): number {
+		return this._bridge?.pendingOutbound ?? 0;
+	}
+
+	get pendingInbound(): number {
+		return this._bridge?.pendingInbound ?? 0;
+	}
+
 	/**
 	 * Gate canvas replication in both directions while disk convergence
 	 * continues. The folder pause is applied separately by isLocalOnly.
 	 */
 	setLocalOnly(value: boolean): void {
 		if (this._localOnly === value) return;
-		const folder = this.sharedFolder;
 		this._localOnly = value;
 		this.refreshLocalOnly();
-		if (folder.isPendingUpload(this.path)) {
-			if (value) {
-				folder.backgroundSync.cancelDocumentWork(this.guid);
-			} else if (!folder.localOnly) {
-				void folder.syncFileTree().catch((error) => {
-					this.warn("canvas draft upload retry failed", error);
-				});
-			}
-		}
 	}
 
 	refreshLocalOnly(): void {

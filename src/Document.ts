@@ -97,6 +97,7 @@ export class Document
 	 * Created in the constructor and cleared on destroy().
 	 */
 	private _hsm: MergeHSM | null;
+	private _draftMode = false;
 
 	/**
 	 * ProviderIntegration instance for bridging HSM with the provider.
@@ -322,6 +323,25 @@ export class Document
 	 */
 	public get hsm(): MergeHSM | null {
 		return this._hsm;
+	}
+
+	get isDraft(): boolean {
+		return this._draftMode;
+	}
+
+	setDraftMode(value: boolean): void {
+		if (this._draftMode === value) return;
+		this._draftMode = value;
+		this.refreshLocalOnly();
+	}
+
+	refreshLocalOnly(): void {
+		const hsm = this._hsm;
+		if (!hsm) return;
+		const localOnly = this._draftMode || this.sharedFolder.localOnly;
+		if (hsm.isLocalOnly === localOnly) return;
+		hsm.setLocalOnly(localOnly);
+		this.notifyListeners();
 	}
 
 	/**
