@@ -105,6 +105,11 @@ function connectionCloseDetails(event: CloseEventLike): ConnectionCloseDetails {
 
 type Listener = (state: ConnectionState) => void;
 
+/** The token a host holds before any has been fetched: it grants nothing it would refuse. */
+function noToken(): ClientToken {
+	return { token: "", url: "", docId: "-", expiryTime: 0 } as ClientToken;
+}
+
 export class HasProvider extends HasLogging {
 	_provider: YSweetProvider | null = null;
 	path?: string;
@@ -151,8 +156,17 @@ export class HasProvider extends HasLogging {
 
 		this.tokenStore = tokenStore;
 		this.clientToken =
-			this.tokenStore.getTokenSync(S3RN.encode(this.s3rn)) ||
-			({ token: "", url: "", docId: "-", expiryTime: 0 } as ClientToken);
+			this.tokenStore.getTokenSync(S3RN.encode(this.s3rn)) || noToken();
+	}
+
+	/**
+	 * Forget the token this host last held, when it can no longer describe
+	 * the member's access: a role change reached a host that is not
+	 * connected, so no fresh token is coming until it connects. Until then
+	 * the role policy answers for it alone.
+	 */
+	dropStaleToken(): void {
+		this.clientToken = noToken();
 	}
 
 	/**

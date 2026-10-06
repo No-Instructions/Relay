@@ -348,18 +348,30 @@ export class TokenStore<TokenType extends HasToken> {
 
 	/**
 	 * Refresh a document's token now, with the reconcile signal, and deliver
-	 * it to the registered callback. No-op without a registered callback.
+	 * it to the registered callback. Returns whether a refresh was scheduled.
+	 *
+	 * A document without a callback is not connected, so there is no one to
+	 * deliver a token to; its cached token is expired instead and keeps the
+	 * reconcile signal, so its next connect fetches from the relay with the
+	 * held token rather than reusing a token minted under the old role.
 	 */
-	forceRefresh(documentId: string): void {
+	forceRefresh(documentId: string): boolean {
 		if (this.destroyed) {
-			return;
+			return false;
 		}
 		if (!this.callbacks.has(documentId)) {
-			return;
+			const cached = this.tokenMap.get(documentId);
+			if (cached) {
+				this.log(`expiring the cached token of released ${documentId}`);
+				this.tokenMap.set(documentId, { ...cached, expiryTime: 0 });
+				this.reconcileRequests.add(documentId);
+			}
+			return false;
 		}
 		this.log(`force refresh of ${documentId}`);
 		this.reconcileRequests.add(documentId);
 		this.addToRefreshQueue(documentId);
+		return true;
 	}
 
 	log(text: string) {

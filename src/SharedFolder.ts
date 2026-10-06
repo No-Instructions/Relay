@@ -2060,10 +2060,14 @@ export class SharedFolder extends HasProvider {
 		this.tokenStore.forceRefresh(S3RN.encode(this.s3rn));
 		this.files.forEach((file) => {
 			const s3rn = (file as unknown as { s3rn?: HasProvider["s3rn"] }).s3rn;
-			if (s3rn) {
-				this.tokenStore.forceRefresh(S3RN.encode(s3rn));
-			}
+			const refreshing = s3rn
+				? this.tokenStore.forceRefresh(S3RN.encode(s3rn))
+				: false;
 			if (isDocument(file) || isCanvas(file)) {
+				// A file that is not connected gets no fresh token until it
+				// connects; the token it last held predates the change, so
+				// the new policy answers for it in the meantime.
+				if (!refreshing) file.dropStaleToken();
 				file.notifyAccessModeChanged();
 			}
 		});
