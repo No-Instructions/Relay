@@ -10,7 +10,7 @@ import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import type { EditorState } from "@codemirror/state";
 import type { ConflictSituation, ConflictSource } from "../merge-hsm/conflictValue";
 import { type Copy, type View, conflictField, decideAll, diffBlocks, remaining, setPreview, setReview } from "./fields";
-import { type Side, isMerged } from "./pick";
+import { type Side, isDisagreement, isMerged } from "./pick";
 
 /** How the conflict is shown and worded, from what it is and what its sides are. */
 export function situationCopy(
@@ -143,7 +143,6 @@ export const situationBox = ViewPlugin.fromClass(
 		box: HTMLDivElement;
 		head: HTMLDivElement;
 		body: HTMLDivElement;
-		total = 0;
 		host: HTMLElement | null = null;
 		/** The last decision was a whole-file choice: that document is the answer, and Done is the next step. */
 		whole: Side | null = null;
@@ -191,21 +190,22 @@ export const situationBox = ViewPlugin.fromClass(
 			const doc = this.view.dom.ownerDocument;
 			const s = state.field(conflictField, false) ?? null;
 			this.mount(!!s);
-			if (!s) {
-				this.total = 0;
-				return;
-			}
+			if (!s) return;
 			const title = this.head.querySelector(".relay-conflict-title")!;
 			const status = this.head.querySelector(".relay-conflict-status")!;
 			this.body.replaceChildren();
 			const diff = s.view === "diff";
 			// A diff is taken whole or left: nothing has to be decided one by one, so either button finishes it.
 			const left = diff ? 0 : remaining(s);
-			this.total = Math.max(this.total, left);
+			// The total describes the conflict on screen, not what this box has
+			// seen: a rebuilt conflict carries decisions over, and counting the
+			// disagreements it holds stays right across decisions, undo, a
+			// carried decision and a fresh plugin instance.
+			const total = s.blocks.filter(isDisagreement).length;
 			const settled = left === 0;
 			title.textContent = s.copy.title;
 			const changes = diffBlocks(s).length;
-			status.textContent = diff ? `${changes} change${changes === 1 ? "" : "s"}` : `${left} of ${this.total} conflict${this.total === 1 ? "" : "s"} to resolve`;
+			status.textContent = diff ? `${changes} change${changes === 1 ? "" : "s"}` : `${left} of ${total} conflict${total === 1 ? "" : "s"} to resolve`;
 			this.body.append(linked(doc, s.copy.text, s.session.report));
 			if (!diff) this.body.append(el(doc, "p", "relay-conflict-hint", "Choose for each conflict below, or for the whole file:"));
 			const options = el(doc, "div", "relay-conflict-options");
