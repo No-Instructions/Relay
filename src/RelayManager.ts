@@ -1565,6 +1565,12 @@ export class RelayManager extends HasLogging {
 	_offFeatureFlags: Unsubscriber;
 	private _isSubscribed = false;
 	private _rolesHydrated = false;
+	// Private folders this client created whose creator grant has not arrived
+	// yet. The server writes that grant itself and delivers it over the
+	// realtime feed, not in the create response, so until the first role record
+	// for this user on the folder is ingested the creator stands in for it.
+	private pendingCreatorGrants = new Set<string>();
+	private _offFolderRoles?: () => void;
 	private pb: PocketBase | null;
 	destroyed = false;
 	private getProfileFileUrl: ProfileFileUrl = (record, filename, options) =>
@@ -1608,6 +1614,9 @@ export class RelayManager extends HasLogging {
 		this._offFeatureFlags = FeatureFlagManager.getInstance().on(() => {
 			this.users.notifyListeners();
 			this.roles.notifyListeners();
+		});
+		this._offFolderRoles = this.folderRoles.on(() => {
+			this.settlePendingCreatorGrants();
 		});
 
 		// XXX this is so akward that the class behaves poorly if a user is unset.
@@ -2248,7 +2257,38 @@ export class RelayManager extends HasLogging {
 		if (!folder) {
 			throw new Error("Failed to create folder");
 		}
+		if (isPrivate) {
+			this.expectCreatorGrant(folder);
+		}
 		return folder;
+	}
+
+	// Called when this client has just created a private folder: its creator
+	// grant is on its way from the server. Clears itself when the first role
+	// record for this user on the folder arrives, whatever that record says.
+	expectCreatorGrant(folder: RemoteFolder | RemoteSharedFolder): void {
+		this.pendingCreatorGrants.add(folder.id);
+		this.settlePendingCreatorGrants();
+	}
+
+	hasPendingCreatorGrant(folderId: string): boolean {
+		// Listener delivery is deferred, so settle against the records as they
+		// stand right now before answering.
+		this.settlePendingCreatorGrants();
+		return this.pendingCreatorGrants.has(folderId);
+	}
+
+	private settlePendingCreatorGrants(): void {
+		if (this.pendingCreatorGrants.size === 0) return;
+		const userId = this.user?.id;
+		for (const folderId of this.pendingCreatorGrants) {
+			const arrived = this.folderRoles.find(
+				(role) => role.sharedFolderId === folderId && role.userId === userId,
+			);
+			if (arrived) {
+				this.pendingCreatorGrants.delete(folderId);
+			}
+		}
 	}
 
 	async destroyRelay(relay: Relay): Promise<boolean> {
@@ -2457,6 +2497,9 @@ export class RelayManager extends HasLogging {
 		this._offLoginManager = null as unknown as typeof this._offLoginManager;
 		this._offFeatureFlags?.();
 		this._offFeatureFlags = null as unknown as typeof this._offFeatureFlags;
+		this._offFolderRoles?.();
+		this._offFolderRoles = undefined;
+		this.pendingCreatorGrants.clear();
 		this.pb?.cancelAllRequests();
 		void this.pb?.realtime?.unsubscribe();
 		this._isSubscribed = false;
