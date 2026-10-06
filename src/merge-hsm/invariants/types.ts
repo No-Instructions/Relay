@@ -100,6 +100,8 @@ export interface InvariantCheckContext {
   localSnapshot: () => YjsSnapshot | null;
   /** Snapshot of remoteDoc, computed on demand (null when not loaded) */
   remoteSnapshot: () => YjsSnapshot | null;
+  /** The remote head the machine has been handed: remote updates and completed sessions */
+  processedRemote: YjsSnapshot | null;
   /** The machine's recorded heads and baseline, as classification reads them */
   recorded: {
     local: YjsSnapshot | null;
