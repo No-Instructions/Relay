@@ -1629,11 +1629,9 @@ export class SharedFolder extends HasProvider {
 			...current,
 			localOnly: value,
 		}));
-		const guids = Array.from(this.files.keys());
-		this.mergeManager?.setLocalOnly(guids, value);
 		for (const file of this.files.values()) {
-			if (isCanvas(file)) {
-				file.setLocalOnly(value);
+			if (isDocument(file) || isCanvas(file)) {
+				file.refreshLocalOnly();
 			}
 		}
 	}
@@ -4474,9 +4472,6 @@ export class SharedFolder extends HasProvider {
 			throw new Error("getOrCreateCanvas(): unexpected ifile type");
 		}
 		canvas.move(vpath, this);
-		if (this._localOnly) {
-			canvas.setLocalOnly(true);
-		}
 		if (this.mergeManager) {
 			const mergeManager = this.mergeManager;
 			mergeManager.registerManagedFile(canvas);
@@ -4681,9 +4676,7 @@ export class SharedFolder extends HasProvider {
 		this.files.set(guid, doc);
 		doc.move(vpath, this);
 
-		if (this._localOnly && doc.hsm) {
-			doc.hsm.setLocalOnly(true);
-		}
+		doc.refreshLocalOnly();
 
 		return doc;
 	}
