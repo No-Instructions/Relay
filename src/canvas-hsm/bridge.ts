@@ -39,11 +39,15 @@ export interface CanvasDocBridgeOptions {
 	skipInboundOrigin?: (origin: unknown) => boolean;
 	/** Whether local ops may reach the remoteDoc; false holds them in the localDoc. */
 	canPublish?: () => boolean;
+	/** Called when the number of held updates changes. */
+	onPendingChange?: () => void;
 }
 
 export class CanvasDocBridge {
 	private destroyed = false;
 	private _localOnly = false;
+	private _pendingOutbound = 0;
+	private _pendingInbound = 0;
 	private readonly outboundFn: (
 		update: Uint8Array,
 		origin: unknown,
@@ -56,16 +60,26 @@ export class CanvasDocBridge {
 		private readonly opts: CanvasDocBridgeOptions = {},
 	) {
 		this.outboundFn = (update, origin) => {
-			if (this.destroyed || this._localOnly) return;
+			if (this.destroyed) return;
 			if (origin === CANVAS_BRIDGE_IN_ORIGIN) return;
 			if (this.opts.skipOutboundOrigin?.(origin)) return;
 			if (this.opts.canPublish?.() === false) return;
+			if (this._localOnly) {
+				this._pendingOutbound++;
+				this.opts.onPendingChange?.();
+				return;
+			}
 			Y.applyUpdate(this.remoteDoc, update, CANVAS_BRIDGE_OUT_ORIGIN);
 		};
 		this.inboundFn = (update, origin) => {
-			if (this.destroyed || this._localOnly) return;
+			if (this.destroyed) return;
 			if (origin === CANVAS_BRIDGE_OUT_ORIGIN) return;
 			if (this.opts.skipInboundOrigin?.(origin)) return;
+			if (this._localOnly) {
+				this._pendingInbound++;
+				this.opts.onPendingChange?.();
+				return;
+			}
 			Y.applyUpdate(this.localDoc, update, CANVAS_BRIDGE_IN_ORIGIN);
 		};
 		localDoc.on("update", this.outboundFn);
@@ -74,6 +88,14 @@ export class CanvasDocBridge {
 
 	get isLocalOnly(): boolean {
 		return this._localOnly;
+	}
+
+	get pendingOutbound(): number {
+		return this._pendingOutbound;
+	}
+
+	get pendingInbound(): number {
+		return this._pendingInbound;
 	}
 
 	/**
@@ -87,6 +109,9 @@ export class CanvasDocBridge {
 		this._localOnly = value;
 		if (!value) {
 			this.reconcile();
+			this._pendingOutbound = 0;
+			this._pendingInbound = 0;
+			this.opts.onPendingChange?.();
 		}
 	}
 

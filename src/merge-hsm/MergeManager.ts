@@ -526,21 +526,6 @@ export class MergeManager {
   }
 
   /**
-   * Set local-only mode on multiple HSMs.
-   * When enabled, ops accumulate instead of syncing between localDoc and remoteDoc.
-   * When disabled, accumulated ops are flushed.
-   */
-  setLocalOnly(guids: string[], localOnly: boolean): void {
-    for (const guid of guids) {
-      const doc = this._getDocument(guid);
-      const hsm = doc?.hsm;
-      if (hsm) {
-        hsm.setLocalOnly(localOnly);
-      }
-    }
-  }
-
-  /**
    * Prepare an idle conflict for API access without opening an editor view.
    * Hibernated conflicts keep HSM metadata but detach their Yjs docs; the
    * normal wake path recreates those docs and drains any buffered remote data.
