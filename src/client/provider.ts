@@ -6,7 +6,6 @@
 
 import * as Y from "yjs";
 import * as bc from "lib0/broadcastchannel";
-import * as time from "lib0/time";
 import * as encoding from "lib0/encoding";
 import * as decoding from "lib0/decoding";
 import * as syncProtocol from "y-protocols/sync";
@@ -229,6 +228,49 @@ function scheduleReconnect(provider: YSweetProvider): void {
 	}, delay);
 }
 
+/**
+ * Record that the provider's socket is gone and schedule its replacement.
+ * The browser's close event arrives here, and so does the liveness check
+ * when it drops a socket the browser has not closed yet.
+ */
+function handleSocketClosed(provider: YSweetProvider, event: CloseEvent): void {
+	metrics.recordNetworkWebSocketConnection("relay", "closed");
+	provider.emit("connection-close", [event, provider]);
+	provider.ws = null;
+	provider.wsconnecting = false;
+	provider.wsConnectStartTime = 0;
+	provider._clearStableTimeout();
+	if (provider.wsconnected) {
+		provider.wsconnected = false;
+		provider.synced = false;
+		// update awareness (all users except local left)
+		awarenessProtocol.removeAwarenessStates(
+			provider.awareness,
+			Array.from(provider.awareness.getStates().keys()).filter(
+				(client) => client !== provider.doc.clientID,
+			),
+			provider,
+		);
+	}
+	// Every close counts against the backoff schedule until a connection
+	// proves stable: a live drop and a never-opened attempt both grow the
+	// delay, so a flapping socket cannot reconnect in a tight loop. The
+	// counter resets once a connection holds (onopen arms _stableTimeout).
+	provider.wsUnsuccessfulReconnects++;
+	provider.emit("status", [
+		{
+			status: "disconnected",
+			intent: provider.intent,
+		},
+	]);
+	// Reconnection continues indefinitely while intent is connected;
+	// canReconnect() only stops the schedule when the user disconnects
+	// (shouldConnect false) or no url is available.
+	if (provider.canReconnect()) {
+		scheduleReconnect(provider);
+	}
+}
+
 function setupReconnect(provider: YSweetProvider): void {
 	if (!provider.shouldConnect || provider.ws !== null) {
 		return;
@@ -291,14 +333,14 @@ const setupWS = (provider: YSweetProvider) => {
 		provider.ws = websocket;
 		provider.wsconnecting = true;
 		provider.wsconnected = false;
-		provider.wsConnectStartTime = time.getUnixTime();
+		provider.wsConnectStartTime = provider._now();
 		provider.synced = false;
 
 		websocket.onmessage = (event) => {
 			if (provider.ws !== websocket) {
 				return;
 			}
-			provider.wsLastMessageReceived = time.getUnixTime();
+			provider.wsLastMessageReceived = provider._now();
 			const encoder = readMessage(
 				provider,
 				new Uint8Array(event.data as ArrayBuffer),
@@ -319,49 +361,14 @@ const setupWS = (provider: YSweetProvider) => {
 			if (provider.ws !== websocket) {
 				return;
 			}
-			metrics.recordNetworkWebSocketConnection("relay", "closed");
-			provider.emit("connection-close", [event, provider]);
-			provider.ws = null;
-			provider.wsconnecting = false;
-			provider.wsConnectStartTime = 0;
-			provider._clearStableTimeout();
-			if (provider.wsconnected) {
-				provider.wsconnected = false;
-				provider.synced = false;
-				// update awareness (all users except local left)
-				awarenessProtocol.removeAwarenessStates(
-					provider.awareness,
-					Array.from(provider.awareness.getStates().keys()).filter(
-						(client) => client !== provider.doc.clientID,
-					),
-					provider,
-				);
-			}
-			// Every close counts against the backoff schedule until a
-			// connection proves stable: a live drop and a never-opened attempt
-			// both grow the delay, so a flapping socket cannot reconnect in a
-			// tight loop. The counter resets once a connection holds (onopen
-			// arms _stableTimeout).
-			provider.wsUnsuccessfulReconnects++;
-			provider.emit("status", [
-				{
-					status: "disconnected",
-					intent: provider.intent,
-				},
-			]);
-			// Reconnection continues indefinitely while intent is connected;
-			// canReconnect() only stops the schedule when the user disconnects
-			// (shouldConnect false) or no url is available.
-			if (provider.canReconnect()) {
-				scheduleReconnect(provider);
-			}
+			handleSocketClosed(provider, event);
 		};
 		websocket.onopen = () => {
 			if (provider.ws !== websocket) {
 				return;
 			}
 			metrics.recordNetworkWebSocketConnection("relay", "connected");
-			provider.wsLastMessageReceived = time.getUnixTime();
+			provider.wsLastMessageReceived = provider._now();
 			provider.wsconnecting = false;
 			provider.wsconnected = true;
 			provider.wsConnectStartTime = 0;
@@ -881,18 +888,16 @@ export class YSweetProvider extends ObservableV2<YSweetProviderEvents> {
 			if (
 				this.wsconnected &&
 				messageReconnectTimeout <
-					time.getUnixTime() - this.wsLastMessageReceived
+					this._now() - this.wsLastMessageReceived
 			) {
-				// no message received in a long time - not even your own awareness
-				// updates (which are updated every 15 seconds)
-				this.ws?.close();
+				this._dropSilentSocket();
 			}
 			if (
 				this.wsconnecting &&
 				this.ws?.readyState === WebSocket.CONNECTING &&
 				this.wsConnectStartTime > 0 &&
 				messageReconnectTimeout <
-					time.getUnixTime() - this.wsConnectStartTime
+					this._now() - this.wsConnectStartTime
 			) {
 				// Connection attempt is stuck in CONNECTING with no transition.
 				// Force-close so onclose can run backoff/retry logic.
@@ -904,6 +909,46 @@ export class YSweetProvider extends ObservableV2<YSweetProviderEvents> {
 		if (connect) {
 			this.connect();
 		}
+	}
+
+	/**
+	 * The clock the liveness checks run on. Reads the injected time provider
+	 * so a test clock moves it; the default is the wall clock.
+	 */
+	_now(): number {
+		return this._timeProvider ? this._timeProvider.now() : Date.now();
+	}
+
+	/**
+	 * Drop a socket that has delivered nothing for messageReconnectTimeout,
+	 * not even the awareness echoes a live connection carries every 15s. A
+	 * plain close() starts the closing handshake and waits for the server's
+	 * close frame; over a dead path that frame never comes, and Chromium fires
+	 * onclose only after its own 60s handshake timeout. Detach the socket so
+	 * that late event is ignored, then run the close bookkeeping now so the
+	 * reconnect schedule starts immediately.
+	 */
+	_dropSilentSocket(): void {
+		const ws = this.ws;
+		if (!ws) return;
+		providerDebug(
+			`[${this.roomname}] no message in ${messageReconnectTimeout}ms; dropping the socket`,
+		);
+		ws.onopen = null;
+		ws.onmessage = null;
+		ws.onerror = null;
+		ws.onclose = null;
+		try {
+			ws.close();
+		} catch {
+			// The socket is detached either way; a close refused mid-handshake
+			// changes nothing below.
+		}
+		handleSocketClosed(this, {
+			code: 4000,
+			reason: "no message received",
+			wasClean: false,
+		} as CloseEvent);
 	}
 
 	/**
