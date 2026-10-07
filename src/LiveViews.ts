@@ -335,7 +335,11 @@ export class RelayCanvasView implements S3View {
 	}
 
 	toggleLocalOnly() {
-		this.toggleConnection();
+		const wasDraft = this.canvas.isDraft;
+		this.canvas.setLocalOnly(!wasDraft);
+		if (wasDraft && !this.canvas.connected) {
+			void this.canvas.connect();
+		}
 	}
 
 	offlineBanner(): () => void {
@@ -385,7 +389,11 @@ export class RelayCanvasView implements S3View {
 						state: this.canvas.state,
 						remote: this.canvas.sharedFolder.remote,
 						tracking: this.tracking,
-						enableDraftMode: flags().enableDraftMode,
+						draftMode: this.canvas.isDraft,
+						enableDraftMode: flags().enableDraftMode || this.canvas.isDraft,
+						folderConnected: this.canvas.sharedFolder.connected,
+						pendingOutbound: this.canvas.pendingOutbound,
+						pendingInbound: this.canvas.pendingInbound,
 					},
 				});
 				this.offConnectionStatusSubscription = this.canvas.subscribe(
@@ -396,7 +404,11 @@ export class RelayCanvasView implements S3View {
 							state: state,
 							remote: this.canvas.sharedFolder.remote,
 							tracking: this.tracking,
-							enableDraftMode: flags().enableDraftMode,
+							draftMode: this.canvas.isDraft,
+							enableDraftMode: flags().enableDraftMode || this.canvas.isDraft,
+							folderConnected: this.canvas.sharedFolder.connected,
+							pendingOutbound: this.canvas.pendingOutbound,
+							pendingInbound: this.canvas.pendingInbound,
 						});
 					},
 				);
@@ -406,7 +418,11 @@ export class RelayCanvasView implements S3View {
 				state: this.canvas.state,
 				remote: this.canvas.sharedFolder.remote,
 				tracking: this.tracking,
-				enableDraftMode: flags().enableDraftMode,
+				draftMode: this.canvas.isDraft,
+				enableDraftMode: flags().enableDraftMode || this.canvas.isDraft,
+				folderConnected: this.canvas.sharedFolder.connected,
+				pendingOutbound: this.canvas.pendingOutbound,
+				pendingInbound: this.canvas.pendingInbound,
 			});
 		}
 	}
@@ -648,9 +664,9 @@ export class LiveView<ViewType extends TextFileView>
 	toggleLocalOnly() {
 		const hsm = this.document.hsm;
 		if (hsm) {
-			const wasLocalOnly = hsm.isLocalOnly;
-			hsm.setLocalOnly(!wasLocalOnly);
-			if (wasLocalOnly && !this.document.connected) {
+			const wasDraft = this.document.isDraft;
+			this.document.setDraftMode(!wasDraft);
+			if (wasDraft && !this.document.connected) {
 				void this.document.connect();
 			}
 			void this.attach().catch((error) => {
@@ -974,8 +990,8 @@ export class LiveView<ViewType extends TextFileView>
 						state: this.document.state,
 						remote: this.document.sharedFolder.remote,
 						tracking: this.live,
-						localOnly: this.document.hsm?.isLocalOnly ?? false,
-						enableDraftMode: flags().enableDraftMode,
+						draftMode: this.document.isDraft,
+						enableDraftMode: flags().enableDraftMode || this.document.isDraft,
 						folderConnected: this.document.sharedFolder.connected,
 						pendingOutbound: this.document.hsm?.pendingOutbound ?? 0,
 						pendingInbound: this.document.hsm?.pendingInbound ?? 0,
@@ -989,8 +1005,8 @@ export class LiveView<ViewType extends TextFileView>
 							state: state,
 							remote: this.document.sharedFolder.remote,
 							tracking: this.live,
-							localOnly: this.document.hsm?.isLocalOnly ?? false,
-							enableDraftMode: flags().enableDraftMode,
+							draftMode: this.document.isDraft,
+							enableDraftMode: flags().enableDraftMode || this.document.isDraft,
 							folderConnected: this.document.sharedFolder.connected,
 							pendingOutbound: this.document.hsm?.pendingOutbound ?? 0,
 							pendingInbound: this.document.hsm?.pendingInbound ?? 0,
@@ -1006,8 +1022,8 @@ export class LiveView<ViewType extends TextFileView>
 					const currentFlags = flags();
 					this._viewActions?.set({
 						tracking: this.live,
-						localOnly: this.document.hsm?.isLocalOnly ?? false,
-						enableDraftMode: currentFlags.enableDraftMode,
+						draftMode: this.document.isDraft,
+						enableDraftMode: currentFlags.enableDraftMode || this.document.isDraft,
 						folderConnected: this.document.sharedFolder.connected,
 						pendingOutbound: this.document.hsm?.pendingOutbound ?? 0,
 						pendingInbound: this.document.hsm?.pendingInbound ?? 0,
@@ -1022,8 +1038,8 @@ export class LiveView<ViewType extends TextFileView>
 				state: this.document.state,
 				remote: this.document.sharedFolder.remote,
 				tracking: this.live,
-				localOnly: this.document.hsm?.isLocalOnly ?? false,
-				enableDraftMode: flags().enableDraftMode,
+				draftMode: this.document.isDraft,
+				enableDraftMode: flags().enableDraftMode || this.document.isDraft,
 				folderConnected: this.document.sharedFolder.connected,
 				pendingOutbound: this.document.hsm?.pendingOutbound ?? 0,
 				pendingInbound: this.document.hsm?.pendingInbound ?? 0,
