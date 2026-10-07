@@ -434,24 +434,42 @@ export class Canvas
 			// converges from the server through the provider and reconcile().
 			skipOutboundOrigin: (origin) => origin === this._persistenceInstance,
 			canPublish: () => this.canPublishContent,
+			onPendingChange: () => this.notifyListeners(),
 		});
-		if (this._localOnly) {
+		if (this.isLocalOnly) {
 			this._bridge.setLocalOnly(true);
 		}
 	}
 
 	get isLocalOnly(): boolean {
+		return this._localOnly || this.sharedFolder.localOnly;
+	}
+
+	get isDraft(): boolean {
 		return this._localOnly;
 	}
 
+	get pendingOutbound(): number {
+		return this._bridge?.pendingOutbound ?? 0;
+	}
+
+	get pendingInbound(): number {
+		return this._bridge?.pendingInbound ?? 0;
+	}
+
 	/**
-	 * Local-only gates the bridge in both directions; disk convergence
-	 * continues untouched (replication policy lives in the bridge, never
-	 * in the machine). Applies at materialization for cold canvases.
+	 * Gate canvas replication in both directions while disk convergence
+	 * continues. The folder pause is applied separately by isLocalOnly.
 	 */
 	setLocalOnly(value: boolean): void {
+		if (this._localOnly === value) return;
 		this._localOnly = value;
-		this._bridge?.setLocalOnly(value);
+		this.refreshLocalOnly();
+	}
+
+	refreshLocalOnly(): void {
+		this._bridge?.setLocalOnly(this.isLocalOnly);
+		this.notifyListeners();
 	}
 
 	private scheduleDocChanged(origin: unknown): void {
