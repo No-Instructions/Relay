@@ -1,15 +1,14 @@
 <script lang="ts">
-	import { LiveView } from "../LiveViews";
-	import type { ConnectionState, ConnectionStatus } from "../HasProvider";
-	import type { Document } from "src/Document";
+	import type { LiveView, RelayCanvasView } from "../LiveViews";
+	import type { ConnectionState } from "../HasProvider";
 	import type { RemoteSharedFolder } from "src/Relay";
 	import { CloudOff, Layers, Satellite, Unplug, UserRoundX } from "lucide-svelte";
 
-	export let view: LiveView;
+	export let view: LiveView | RelayCanvasView;
 	export let state: ConnectionState;
 	export let remote: RemoteSharedFolder;
 	export let tracking: boolean = false;
-	export let localOnly: boolean = false;
+	export let draftMode: boolean = false;
 	export let isLoggedOut: boolean = false;
 	export let onLogin: (() => Promise<boolean>) | undefined = undefined;
 	export let enableDraftMode: boolean = false;
@@ -17,17 +16,17 @@
 	export let pendingOutbound: number = 0;
 	export let pendingInbound: number = 0;
 
-	$: opsFlowing = state.status === "connected" && !localOnly;
+	$: opsFlowing = state.status === "connected" && !draftMode;
 
 	// Draft mode: use folder-level connection as the default so the icon
 	// doesn't flash CloudOff while the individual doc is still connecting.
-	$: draftActive = !localOnly && (opsFlowing || folderConnected);
-	$: draftIconClass = localOnly
+	$: draftActive = !draftMode && (opsFlowing || folderConnected);
+	$: draftIconClass = draftMode
 		? "system3-paused"
 		: draftActive
 			? "system3-connected"
 			: "system3-disconnected";
-	$: draftLabel = localOnly
+	$: draftLabel = draftMode
 		? `${remote?.relay?.name || "Relay"} (draft)`
 		: draftActive
 			? `${remote?.relay?.name || "Relay"} (connected)`
@@ -36,10 +35,10 @@
 	// Draft mode off: the satellite reflects the doc's own connection status
 	$: satelliteClass = opsFlowing
 		? "system3-connected"
-		: localOnly ? "system3-paused" : `system3-${state.status}`;
+		: draftMode ? "system3-paused" : `system3-${state.status}`;
 	$: satelliteLabel = opsFlowing
 		? `${remote?.relay?.name || "Relay"} (connected)`
-		: localOnly
+		: draftMode
 			? `${remote?.relay?.name || "Relay"} (paused)`
 			: `${remote?.relay?.name || "Relay"} (${state.status})`;
 
@@ -105,7 +104,7 @@
 			on:click={handleClick}
 			on:keypress={handleKeyPress}
 		>
-			{#if localOnly}
+			{#if draftMode}
 				<Unplug class="svg-icon inline-icon" />
 			{:else if draftActive}
 				<Satellite class="svg-icon inline-icon" />
