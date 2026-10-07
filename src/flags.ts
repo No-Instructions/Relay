@@ -27,6 +27,7 @@ export interface FeatureFlags {
 	enableReaderRole: boolean;
 	enableRelayReaderRole: boolean;
 	enableInNoteConflicts: boolean;
+	enableSilentSocketDrop: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -246,6 +247,13 @@ export const FeatureFlagSchema: {
 		title: "Resolve conflicts in the note",
 		description:
 			"Show a merge conflict inside the note, with each side's lines to pick between, instead of the banner and the side-by-side view.",
+	},
+	enableSilentSocketDrop: {
+		default: true,
+		category: "danger",
+		title: "Drop a silent connection without waiting",
+		description:
+			"Give up on a connection that has gone quiet and reconnect at once, instead of waiting up to a minute for the other end to answer the close.",
 	},
 };
 
