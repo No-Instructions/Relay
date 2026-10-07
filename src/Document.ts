@@ -95,6 +95,7 @@ export class Document
 	private lifetime = new Lifetime();
 	private _destroyedError: DocumentDestroyedError | null = null;
 	unsubscribes: Unsubscriber[] = [];
+	private accessModeSubscribers?: Set<() => void>;
 	pendingOps: ((data: string) => string)[] = [];
 
 	/**
@@ -1172,6 +1173,10 @@ export class Document
 		return writeAccessUnder(this.sharedFolder, this.clientToken);
 	}
 
+	protected expectedWriteContent(): boolean | null {
+		return this.sharedFolder?.canWriteContentAnswer ?? null;
+	}
+
 	public get activeAccessMode(): ActiveAccessMode {
 		return this.canWriteContent ? "write" : "read";
 	}
@@ -1417,6 +1422,7 @@ export class Document
 		}
 		const destroyedError = this.destroyedError();
 		this.destroyed = true;
+		this.accessModeSubscribers?.clear();
 		const hsm = this._hsm;
 		this.lifetime.end(destroyedError);
 		(this.requestSave as unknown as { cancel?: () => void }).cancel?.();
@@ -1865,6 +1871,13 @@ export class Document
 		this.destroyIdleProviderIntegration();
 	}
 
+	/** Observe effective access after either a role update or a token refresh. */
+	public subscribeToAccessModeChanges(callback: () => void): Unsubscriber {
+		if (this.destroyed) return () => {};
+		(this.accessModeSubscribers ??= new Set()).add(callback);
+		return () => this.accessModeSubscribers?.delete(callback);
+	}
+
 	/**
 	 * Called when write access changes. Entering read access replaces
 	 * remoteDoc first, since one used under write access holds local ops.
@@ -1873,6 +1886,7 @@ export class Document
 	 */
 	public notifyAccessModeChanged(): void {
 		const accessMode = this.activeAccessMode;
+		for (const subscriber of [...(this.accessModeSubscribers ?? [])]) subscriber();
 		if (accessMode === "read" && this._remoteDocAccessMode !== "read") {
 			this.replaceRemoteDocForReadAccess();
 		}

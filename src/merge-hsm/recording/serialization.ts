@@ -281,6 +281,11 @@ export function deserializeEffect(effect: SerializableEffect): MergeEffect {
         status: _deserializeSyncStatus(effect.status),
       };
 
+    case 'READER_EDIT_OVERWRITTEN':
+      // Recordings made before the effect named its source describe the
+      // disk repair, the only path that recorded it.
+      return { ...effect, source: effect.source ?? 'disk' };
+
     default:
       return effect;
   }

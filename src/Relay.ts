@@ -39,6 +39,7 @@ export type Permission =
 	| readonly ["folder", "rename"]
 	| readonly ["folder", "delete"]
 	| readonly ["relay", "rename"]
+	| readonly ["relay", "create_folder"]
 	| readonly ["relay", "manage_users"]
 	| readonly ["relay", "manage_sharing"]
 	| readonly ["relay", "delete"]
@@ -193,7 +194,39 @@ export interface FileInfoSend extends FileInfo {
 }
 
 /** The roles the client offers in role menus; Reader only when its flag is on. */
-export function offeredRoles<T extends { name: Role }>(roles: T[]): T[] {
-	if (flags().enableReaderRole) return roles;
-	return roles.filter((role) => role.name !== "Reader");
+export function offeredRoles<T extends { name: string }>(roles: T[]): T[] {
+	return roles.filter((role) =>
+		role.name === "Owner" || role.name === "Member" ||
+		(role.name === "Reader" && flags().enableReaderRole),
+	);
+}
+
+/** Relay Reader is offered independently of the folder Reader flag. */
+export function offeredRelayRoles<T extends { name: string }>(roles: T[]): T[] {
+	return roles.filter((role) =>
+		role.name === "Owner" || role.name === "Member" ||
+		(role.name === "Reader" && flags().enableRelayReaderRole),
+	);
+}
+
+/** Members may own folders; Readers may only receive folder Reader access. */
+export function offeredFolderRoles<T extends { name: string }>(
+	roles: T[],
+	relayRole: Role | null | undefined,
+): T[] {
+	if (relayRole === "Reader") {
+		return offeredRoles(roles).filter((role) => role.name === "Reader");
+	}
+	return relayRole === "Owner" || relayRole === "Member" ? offeredRoles(roles) : [];
+}
+
+/** Keep a valid selection, or choose a non-owner role within the available grant. */
+export function selectedFolderRole(
+	roles: { name: string }[],
+	selected?: Role,
+): Role | null {
+	if (selected && roles.some((role) => role.name === selected)) return selected;
+	if (roles.some((role) => role.name === "Member")) return "Member";
+	if (roles.some((role) => role.name === "Reader")) return "Reader";
+	return null;
 }

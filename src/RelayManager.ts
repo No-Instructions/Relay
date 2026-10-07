@@ -2,6 +2,8 @@
 
 import { v4 as uuid } from "uuid";
 import {
+	offeredFolderRoles,
+	offeredRelayRoles,
 	type RelayRole,
 	type FolderRole,
 	type Relay,
@@ -184,6 +186,24 @@ function hasRecordSubscription(x: unknown): x is HasRecordSubscription {
 	);
 }
 
+/**
+ * The roles a relay or folder grant can name. They are fixed records on the
+ * server, so the client holds them as values from the start rather than
+ * waiting for a record that happens to expand one: a role it has not seen
+ * yet could not be offered, assigned, or named on a grant that refers to it.
+ */
+const KNOWN_ROLES: readonly { id: string; name: Role }[] = [
+	{ id: "2arnubkcv7jpce8", name: "Owner" },
+	{ id: "x6lllh2qsf9lxk6", name: "Member" },
+	{ id: "egg56uavqlvdwgy", name: "Reader" },
+];
+
+function seedKnownRoles(roles: ObservableMap<string, RoleDAO>): void {
+	for (const role of KNOWN_ROLES) {
+		roles.set(role.id, { ...role } as RoleDAO);
+	}
+}
+
 class RoleCollection implements Collection<RoleDAO, RoleDAO> {
 	collectionName: string = "roles";
 	roles: ObservableMap<string, RoleDAO>;
@@ -197,7 +217,10 @@ class RoleCollection implements Collection<RoleDAO, RoleDAO> {
 	}
 
 	clear() {
+		// Clearing the store forgets everything learned from the server; the
+		// known roles are not learned, so they remain.
 		this.roles.clear();
+		seedKnownRoles(this.roles);
 	}
 
 	get(id: string) {
@@ -540,6 +563,7 @@ class RemoteFolderAuto
 				role.sharedFolderId === this.remoteFolder.id &&
 				role.userId === this.user.id,
 		)?.role;
+		if (relayRole === "Reader") return "Reader";
 		if (!this.remoteFolder.private) {
 			if (!relayRole) {
 				this.warn("couldn't find role", this.relay.id, this.user, isCreator);
@@ -1541,6 +1565,12 @@ export class RelayManager extends HasLogging {
 	_offFeatureFlags: Unsubscriber;
 	private _isSubscribed = false;
 	private _rolesHydrated = false;
+	// Private folders this client created whose creator grant has not arrived
+	// yet. The server writes that grant itself and delivers it over the
+	// realtime feed, not in the create response, so until the first role record
+	// for this user on the folder is ingested the creator stands in for it.
+	private pendingCreatorGrants = new Set<string>();
+	private _offFolderRoles?: () => void;
 	private pb: PocketBase | null;
 	destroyed = false;
 	private getProfileFileUrl: ProfileFileUrl = (record, filename, options) =>
@@ -1565,14 +1595,7 @@ export class RelayManager extends HasLogging {
 		this.relayRoles = new ObservableMap<string, RelayRole>("relay roles");
 		this.folderRoles = new ObservableMap<string, FolderRole>("folder roles");
 		this.roles = new ObservableMap<string, RoleDAO>("roles");
-		this.roles.set("2arnubkcv7jpce8", {
-			name: "Owner",
-			id: "2arnubkcv7jpce8",
-		} as RoleDAO);
-		this.roles.set("x6lllh2qsf9lxk6", {
-			name: "Member",
-			id: "x6lllh2qsf9lxk6",
-		} as RoleDAO);
+		seedKnownRoles(this.roles);
 		this.subscriptions = new ObservableMap<string, RelaySubscription>(
 			"subscriptions",
 		);
@@ -1590,6 +1613,10 @@ export class RelayManager extends HasLogging {
 		});
 		this._offFeatureFlags = FeatureFlagManager.getInstance().on(() => {
 			this.users.notifyListeners();
+			this.roles.notifyListeners();
+		});
+		this._offFolderRoles = this.folderRoles.on(() => {
+			this.settlePendingCreatorGrants();
 		});
 
 		// XXX this is so akward that the class behaves poorly if a user is unset.
@@ -1747,6 +1774,13 @@ export class RelayManager extends HasLogging {
 		// re-registers.
 		this._isSubscribed = false;
 		this._rolesHydrated = false;
+	}
+
+	getFolderRoleOptions(relayId: string, userId: string): RoleDAO[] {
+		const relayRole = this.relayRoles.find(
+			(role) => role.relayId === relayId && role.userId === userId,
+		)?.role;
+		return offeredFolderRoles(this.roles.values(), relayRole);
 	}
 
 	async rotateKey(relayInvitation: RelayInvitation): Promise<RelayInvitation> {
@@ -2192,6 +2226,7 @@ export class RelayManager extends HasLogging {
 
 	async deleteRemote(remoteFolder: RemoteSharedFolder): Promise<boolean> {
 		if (!this.pb) throw new Error("Failed to delete folder");
+		this.requireUserPermission(["folder", "delete"], remoteFolder, "You cannot delete this shared folder.");
 		await this.pb.collection("shared_folders").delete(remoteFolder.id);
 		// Reconcile before returning; the realtime deletion may arrive later.
 		this.store?.cascade("shared_folders", remoteFolder.id);
@@ -2205,6 +2240,7 @@ export class RelayManager extends HasLogging {
 		isPrivate: boolean = false,
 	): Promise<RemoteFolder> {
 		if (!this.pb) throw new Error("Failed to create folder");
+		this.requireUserPermission(["relay", "create_folder"], relay, "You cannot share folders on this relay.");
 		const record = await this.pb
 			.collection("shared_folders")
 			.create<RemoteFolderDAO>(
@@ -2221,7 +2257,38 @@ export class RelayManager extends HasLogging {
 		if (!folder) {
 			throw new Error("Failed to create folder");
 		}
+		if (isPrivate) {
+			this.expectCreatorGrant(folder);
+		}
 		return folder;
+	}
+
+	// Called when this client has just created a private folder: its creator
+	// grant is on its way from the server. Clears itself when the first role
+	// record for this user on the folder arrives, whatever that record says.
+	expectCreatorGrant(folder: RemoteFolder | RemoteSharedFolder): void {
+		this.pendingCreatorGrants.add(folder.id);
+		this.settlePendingCreatorGrants();
+	}
+
+	hasPendingCreatorGrant(folderId: string): boolean {
+		// Listener delivery is deferred, so settle against the records as they
+		// stand right now before answering.
+		this.settlePendingCreatorGrants();
+		return this.pendingCreatorGrants.has(folderId);
+	}
+
+	private settlePendingCreatorGrants(): void {
+		if (this.pendingCreatorGrants.size === 0) return;
+		const userId = this.user?.id;
+		for (const folderId of this.pendingCreatorGrants) {
+			const arrived = this.folderRoles.find(
+				(role) => role.sharedFolderId === folderId && role.userId === userId,
+			);
+			if (arrived) {
+				this.pendingCreatorGrants.delete(folderId);
+			}
+		}
 	}
 
 	async destroyRelay(relay: Relay): Promise<boolean> {
@@ -2251,9 +2318,11 @@ export class RelayManager extends HasLogging {
 		roleName: Role,
 	): Promise<RelayRole> {
 		if (!this.pb) throw new Error("Failed to update relay role");
-		const newRole = this.roles.find((role) => role.name === roleName);
+		const newRole = offeredRelayRoles(this.roles.values()).find(
+			(role) => role.name === roleName,
+		);
 		if (!newRole) {
-			throw new Error("Failed to update relay role");
+			throw new Error("This role is not available for relay membership.");
 		}
 		const record = await this.pb
 			.collection("relay_roles")
@@ -2272,8 +2341,13 @@ export class RelayManager extends HasLogging {
 		grant: FolderRoleGrant,
 	): Promise<FolderRole> {
 		if (!this.pb) throw new Error("Failed to add folder role");
-		const role = this.roles.find((item) => item.name === grant.role);
-		if (!role) throw new Error(`Failed to find role: ${grant.role}`);
+		this.requireUserPermission(["folder", "manage_users"], folder, "You cannot manage this folder's users.");
+		const role = this.getFolderRoleOptions(folder.relayId, grant.user).find(
+			(item) => item.name === grant.role,
+		);
+		if (!folder.private || !role) {
+			throw new Error("This folder role is not available for the user's relay access.");
+		}
 		const record = await this.pb
 			.collection("shared_folder_roles")
 			.create<FolderRoleDAO>({
@@ -2290,6 +2364,9 @@ export class RelayManager extends HasLogging {
 
 	async removeFolderRole(folderRole: FolderRole): Promise<void> {
 		if (!this.pb) throw new Error("Failed to remove folder role");
+		if (folderRole.userId !== this.user?.id) {
+			this.requireUserPermission(["folder", "manage_users"], folderRole.sharedFolder, "You cannot manage this folder's users.");
+		}
 		await this.pb.collection("shared_folder_roles").delete(folderRole.id);
 	}
 
@@ -2298,9 +2375,13 @@ export class RelayManager extends HasLogging {
 		roleName: Role,
 	): Promise<FolderRole> {
 		if (!this.pb) throw new Error("Failed to update folder role");
-		const newRole = this.roles.find((role) => role.name === roleName);
-		if (!newRole) {
-			throw new Error("Failed to update folder role");
+		const folder = folderRole.sharedFolder;
+		this.requireUserPermission(["folder", "manage_users"], folder, "You cannot manage this folder's users.");
+		const newRole = this.getFolderRoleOptions(folder.relayId, folderRole.userId).find(
+			(role) => role.name === roleName,
+		);
+		if (!folder.private || !newRole) {
+			throw new Error("This folder role is not available for the user's relay access.");
 		}
 		const record = await this.pb
 			.collection("shared_folder_roles")
@@ -2319,6 +2400,7 @@ export class RelayManager extends HasLogging {
 		isPrivate: boolean,
 	): Promise<RemoteFolder> {
 		if (!this.pb) throw new Error("Failed to update folder privacy");
+		this.requireUserPermission(["folder", "rename"], folder, "You cannot change this shared folder's settings.");
 		const record = await this.pb
 			.collection("shared_folders")
 			.update<RemoteFolderDAO>(folder.id, {
@@ -2336,6 +2418,7 @@ export class RelayManager extends HasLogging {
 		updates: Partial<{ name: string; private: boolean }>,
 	): Promise<RemoteSharedFolder> {
 		if (!this.pb) throw new Error("Failed to update folder");
+		this.requireUserPermission(["folder", "rename"], folder, "You cannot change this shared folder's settings.");
 		const record = await this.pb
 			.collection("shared_folders")
 			.update<RemoteFolderDAO>(folder.id, updates);
@@ -2344,6 +2427,20 @@ export class RelayManager extends HasLogging {
 			throw new Error("Failed to update folder");
 		}
 		return updated;
+	}
+
+	private requireUserPermission(
+		permission: Permission,
+		resource: Relay | RemoteSharedFolder,
+		message: string,
+	): void {
+		if (!this.user || !this.policyManager?.isAllowed({
+			principal: this.user.id,
+			action: permission[1],
+			resource: [permission[0], resource.id],
+		}).allowed) {
+			throw new Error(message);
+		}
 	}
 
 	/**
@@ -2400,6 +2497,9 @@ export class RelayManager extends HasLogging {
 		this._offLoginManager = null as unknown as typeof this._offLoginManager;
 		this._offFeatureFlags?.();
 		this._offFeatureFlags = null as unknown as typeof this._offFeatureFlags;
+		this._offFolderRoles?.();
+		this._offFolderRoles = undefined;
+		this.pendingCreatorGrants.clear();
 		this.pb?.cancelAllRequests();
 		void this.pb?.realtime?.unsubscribe();
 		this._isSubscribed = false;
