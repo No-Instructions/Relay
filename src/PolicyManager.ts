@@ -441,6 +441,19 @@ export class PolicyManager implements IPolicyManager {
 
 		// Relay Management Policies
 		this.registerPolicy({
+			permission: ["relay", "create_folder"],
+			description: "Share a new folder on a relay",
+			dependencies: {
+				relay_roles: (role: RelayRole, request) =>
+					role.relayId === this.getResourceId(request.resource) &&
+					role.userId === request.principal,
+			},
+			evaluate: (request) => this.hasRelayRole(
+				request.principal, this.getResourceId(request.resource), ["Owner", "Member"],
+			),
+		});
+
+		this.registerPolicy({
 			permission: ["relay", "delete"],
 			description: "Delete a relay server",
 			dependencies: {
@@ -605,28 +618,19 @@ export class PolicyManager implements IPolicyManager {
 
 	private hasFolderWriteAccess(userId: string, folderId: string): boolean {
 		const folder = this.relayManager.remoteFolders.get(folderId);
-		if (!folder) return false;
-
-		// Check folder role first (for both private and public folders)
-		const folderRole = this.getUserFolderRole(userId, folderId);
-		if (folderRole && this.roleHasWritePermission(folderRole)) {
-			return true;
+		if (!folder || !this.hasRelayRole(userId, folder.relayId, ["Owner", "Member"])) {
+			return false;
 		}
 
-		// For public folders, check relay role
-		if (!folder.private) {
-			const relayRole = this.getUserRelayRole(userId, folder.relayId);
-			if (relayRole && this.roleHasWritePermission(relayRole)) {
-				return true;
-			}
-		}
-
-		return false;
+		// Public folders inherit the relay grant; private folders also require a folder grant.
+		return !folder.private || this.hasFolderRole(userId, folderId, ["Owner", "Member"]);
 	}
 
 	private hasFolderManagementAccess(userId: string, folderId: string): boolean {
 		const folder = this.relayManager.remoteFolders.get(folderId);
-		if (!folder) return false;
+		if (!folder || !this.hasRelayRole(userId, folder.relayId, ["Owner", "Member"])) {
+			return false;
+		}
 
 		// Relay owner always has management access
 		if (this.isRelayOwnerForFolder(userId, folderId)) {
@@ -635,7 +639,7 @@ export class PolicyManager implements IPolicyManager {
 
 		// For private folders, only folder owners can manage
 		if (folder.private) {
-			return this.hasFolderRole(userId, folderId, ["Owner"]);
+			return this.ownsPrivateFolder(userId, folderId);
 		}
 
 		// For public folders, creator can manage
@@ -658,12 +662,6 @@ export class PolicyManager implements IPolicyManager {
 				role.userId === userId
 		);
 		return relayRole?.role || null;
-	}
-
-	private roleHasWritePermission(roleName: string): boolean {
-		// Explicit write permission mapping - extensible for future roles
-		const writeRoles = ["Owner", "Member"]; // Reader deliberately excluded
-		return writeRoles.includes(roleName);
 	}
 
 	private hasStorageQuota(folderId: string, fileSize: number): boolean {
@@ -748,7 +746,9 @@ export class PolicyManager implements IPolicyManager {
 	private evaluateFolderManageUsers(request: AuthorizationRequest): boolean {
 		const folderId = this.getResourceId(request.resource);
 		const folder = this.relayManager.remoteFolders.get(folderId);
-		if (!folder) return false;
+		if (!folder || !this.hasRelayRole(request.principal, folder.relayId, ["Owner", "Member"])) {
+			return false;
+		}
 
 		// Relay owner can always manage users (to add themselves to private folders)
 		if (this.isRelayOwnerForFolder(request.principal, folderId)) {
@@ -756,6 +756,25 @@ export class PolicyManager implements IPolicyManager {
 		}
 
 		// For any private folder, folder owners can manage users
-		return this.hasFolderRole(request.principal, folderId, ["Owner"]);
+		return folder.private && this.ownsPrivateFolder(request.principal, folderId);
+	}
+
+	// A private folder's creator owns it from the moment it exists, but the
+	// server writes that grant on its own and it reaches the client over the
+	// realtime feed, not in the create response. While that first record is
+	// still on its way, the creator stands in for it. The pending marker is
+	// what makes this a window and not a standing right: a creator whose grant
+	// was later removed, or who starts a fresh session before roles hydrate,
+	// has no marker and is bound by the records alone.
+	private ownsPrivateFolder(userId: string, folderId: string): boolean {
+		// Asked first so that a check which sees the user's record also retires
+		// the marker, whichever way the check then answers.
+		const pending = this.relayManager.hasPendingCreatorGrant(folderId);
+		if (this.hasFolderRole(userId, folderId, ["Owner"])) return true;
+		return (
+			pending &&
+			this.getUserFolderRole(userId, folderId) === null &&
+			this.isFolderCreator(userId, folderId)
+		);
 	}
 }

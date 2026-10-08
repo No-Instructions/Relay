@@ -18,6 +18,8 @@ export interface FeatureFlags {
 	enableFrontmatterDuplicateRecovery: boolean;
 	enableSingleUserHistory: boolean;
 	enableStreamerMode: boolean;
+	enableReaderRole: boolean;
+	enableRelayReaderRole: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -183,6 +185,20 @@ export const FeatureFlagSchema: {
 		description:
 			"Show only chosen display names and uploaded avatars; hide account names, profile pictures, and email addresses.",
 		requiresReload: false,
+	},
+	enableReaderRole: {
+		default: true,
+		category: "labs",
+		title: "Reader role",
+		description:
+			"Offer the Reader role when sharing folders and inviting users. Readers receive live updates without publishing changes.",
+	},
+	enableRelayReaderRole: {
+		default: false,
+		category: "danger",
+		title: "Relay Reader role",
+		description:
+			"Offer the Reader role for relay membership. Requires relay Reader support on the server.",
 	},
 };
 
