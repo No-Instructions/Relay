@@ -1,4 +1,4 @@
-import type { FolderRole, Relay, RelayRole, RelayUser, RemoteSharedFolder } from "../Relay";
+import type { FolderRole, Relay, RelayRole, RelayUser, RemoteSharedFolder, Role } from "../Relay";
 import type { RelayManager } from "../RelayManager";
 import { CliError, type Command, type CliData, type CliOption } from "./schema";
 import { kv, table } from "./format";
@@ -19,6 +19,7 @@ export interface ServerManager {
 	kick: RelayManager["kick"];
 	deleteRemote: RelayManager["deleteRemote"];
 	createRemoteFolder: RelayManager["createRemoteFolder"];
+	getFolderRoleOptions: RelayManager["getFolderRoleOptions"];
 	addFolderRole: RelayManager["addFolderRole"];
 	removeFolderRole: RelayManager["removeFolderRole"];
 }
@@ -289,22 +290,39 @@ function folderAccess(action: "add" | "remove"): ServerCommand {
 	return {
 		name: action === "add" ? "grant" : "revoke",
 		description: action === "add" ? "Grant server member access to private folder" : "Revoke access to private folder",
-		options: { ...RELAY_OPTION, ...REMOTE_FOLDER_OPTION, user: { value: "<name|email|id>", description: "Relay member", required: true } },
+		options: {
+			...RELAY_OPTION, ...REMOTE_FOLDER_OPTION,
+			user: { value: "<name|email|id>", description: "Relay member", required: true },
+			...(action === "add" ? { role: {
+				value: "Reader|Member|Owner", choices: ["Reader", "Member", "Owner"],
+				description: "Folder role (default: Member; Reader for relay Readers). Must be allowed by relay access and enabled roles",
+			} } : {}),
+		},
 		async run(params, ctx) {
 			const relay = resolveRelay(ctx, required(params, "relay"));
 			const remote = resolveRemoteFolder(relay, required(params, "folder"), ctx.suggest);
 			if (!remote.private) throw new CliError("not_private", "Everyone on this server has access; explicit access applies to private folders");
 			const ref = required(params, "user");
+			const data = { relay: relay.name, folder: remote.name, guid: remote.guid, user: ref, action };
 			if (action === "add") {
 				const user = resolveUser(ctx, remote.relay, ref);
-				await ctx.relayManager.addFolderRole(remote, { user: user.id, role: "Member" });
-			} else {
-				const role = pick("user", ref, rolesOnFolder(ctx, remote),
-					(r) => ({ exact: [r.userId], names: [r.user.name, r.user.email].filter(Boolean) }),
-					(r) => ({ name: r.user.name, guid: r.userId }), ctx.suggest);
-				await ctx.relayManager.removeFolderRole(role);
+				const options = ctx.relayManager.getFolderRoleOptions(remote.relayId, user.id);
+				const requested = optional(params, "role");
+				const role = requested ?? ["Member", "Reader"].find((name) => options.some((option) => option.name === name));
+				if (!role || !options.some((option) => option.name === role)) {
+					const allowedRoles = options.map((option) => option.name);
+					throw new CliError("role_unavailable", requested
+						? `Cannot grant ${requested} access to ${ref}. Available roles: ${allowedRoles.join(", ") || "none"}.`
+						: "No folder role is available for this user's relay access", { allowedRoles });
+				}
+				const granted = await ctx.relayManager.addFolderRole(remote, { user: user.id, role: role as Role });
+				return { data: { ...data, role: granted.role }, text: `Granted ${granted.role} access for ${ref} on ${remote.name}` };
 			}
-			return { data: { relay: relay.name, folder: remote.name, guid: remote.guid, user: ref, action }, text: `${action === "add" ? "Granted" : "Removed"} access for ${ref} on ${remote.name}` };
+			const role = pick("user", ref, rolesOnFolder(ctx, remote),
+				(r) => ({ exact: [r.userId], names: [r.user.name, r.user.email].filter(Boolean) }),
+				(r) => ({ name: r.user.name, guid: r.userId }), ctx.suggest);
+			await ctx.relayManager.removeFolderRole(role);
+			return { data, text: `Removed access for ${ref} on ${remote.name}` };
 		},
 	};
 }
