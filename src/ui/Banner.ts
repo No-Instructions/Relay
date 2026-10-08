@@ -1,19 +1,24 @@
 "use strict";
-import { Platform, requireApiVersion, TextFileView } from "obsidian";
+import { Platform, requireApiVersion, setIcon, TextFileView } from "obsidian";
 import type { CanvasView } from "src/CanvasView";
 
-export type BannerText = string | { short: string; long: string };
+export type BannerText = string | {
+	short: string;
+	long: string;
+	context?: { name: string; icon: string };
+};
 
 export class Banner {
 	view: TextFileView | CanvasView;
 	text: BannerText;
-	onClick: () => Promise<boolean>;
+	onClick?: () => Promise<boolean>;
 	private useHeaderButton: boolean;
 
 	constructor(
 		view: TextFileView | CanvasView,
 		text: BannerText,
-		onClick: () => Promise<boolean>,
+		onClick?: () => Promise<boolean>,
+		private namespace = "system3",
 	) {
 		this.view = view;
 		this.text = text;
@@ -32,6 +37,7 @@ export class Banner {
 	}
 
 	private handleClick(): void {
+		if (!this.onClick) return;
 		void this.onClick()
 			.then((destroy) => {
 				if (destroy) {
@@ -52,29 +58,38 @@ export class Banner {
 		}
 
 		if (this.useHeaderButton) {
-			return this.displayHeaderButton();
+			return this.displayHeaderItem();
 		}
 
 		const contentEl = this.view.containerEl.querySelector(".view-content");
 
 		// container to enable easy removal of the banner
-		let bannerBox = leafContentEl.querySelector(".system3-banner-box");
+		let bannerBox = leafContentEl.querySelector(`.${this.namespace}-banner-box`);
 		if (!bannerBox) {
-			bannerBox = leafContentEl.createDiv({ cls: "system3-banner-box" });
+			bannerBox = leafContentEl.createDiv({ cls: `${this.namespace}-banner-box` });
 			leafContentEl.insertBefore(bannerBox, contentEl);
 			leafContentEl.addClass("system3-has-banner");
 		}
 
-		let banner = leafContentEl.querySelector(".system3-banner");
+		let banner = leafContentEl.querySelector(`.${this.namespace}-banner`);
 		if (!banner) {
-			banner = bannerBox.createDiv({ cls: "system3-banner" });
-			banner.createSpan({ text: this.longText });
-			banner.addEventListener("click", () => this.handleClick());
+			banner = bannerBox.createDiv({ cls: `${this.namespace}-banner` });
+			const context = typeof this.text === "string" ? undefined : this.text.context;
+			if (context) {
+				const content = banner.createSpan();
+				const label = content.createSpan({ cls: "relay-banner-context" });
+				setIcon(label.createSpan({ cls: "relay-banner-context-icon" }), context.icon);
+				label.createSpan({ text: context.name });
+				content.createSpan({ text: ` ${this.longText}` });
+			} else {
+				banner.createSpan({ text: this.longText });
+			}
+			if (this.onClick) banner.addEventListener("click", () => this.handleClick());
 		}
 		return true;
 	}
 
-	private displayHeaderButton() {
+	private displayHeaderItem() {
 		const leafContentEl = this.view.containerEl;
 		const viewHeaderLeftElement =
 			leafContentEl.querySelector(".view-header-left");
@@ -83,18 +98,17 @@ export class Banner {
 			return;
 		}
 
-		// Remove existing button if any
-		leafContentEl.querySelector(".system3-header-button")?.remove();
+		leafContentEl.querySelector(`.${this.namespace}-header-button, .${this.namespace}-header-label`)?.remove();
 
-		const button = leafContentEl.createEl("button", {
-			cls: "view-header-left system3-header-button",
+		const item = leafContentEl.createEl(this.onClick ? "button" : "span", {
+			cls: `view-header-left ${this.namespace}-header-${this.onClick ? "button" : "label"}`,
 			text: this.shortText,
-			attr: { "aria-label": this.longText, tabindex: "0" },
+			attr: this.onClick ? { "aria-label": this.longText, tabindex: "0" } : {},
 		});
 
-		button.addEventListener("click", () => this.handleClick());
+		if (this.onClick) item.addEventListener("click", () => this.handleClick());
 
-		viewHeaderLeftElement.insertAdjacentElement("afterend", button);
+		viewHeaderLeftElement.insertAdjacentElement("afterend", item);
 		return true;
 	}
 
@@ -105,14 +119,14 @@ export class Banner {
 		}
 
 		if (this.useHeaderButton) {
-			leafContentEl.querySelector(".system3-header-button")?.remove();
+			leafContentEl.querySelector(`.${this.namespace}-header-button, .${this.namespace}-header-label`)?.remove();
 		} else {
-			const bannerBox = leafContentEl.querySelector(".system3-banner-box");
+			const bannerBox = leafContentEl.querySelector(`.${this.namespace}-banner-box`);
 			if (bannerBox) {
 				bannerBox.replaceChildren();
 			}
 		}
-		this.onClick = async () => true;
+		this.onClick = undefined;
 		return true;
 	}
 }

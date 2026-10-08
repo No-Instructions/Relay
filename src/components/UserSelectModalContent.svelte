@@ -1,23 +1,31 @@
 <script lang="ts">
-	import type { RelayUser, RemoteSharedFolder, Role } from "src/Relay";
-	import type { RelayManager } from "src/RelayManager";
+	import { offeredFolderRoles, selectedFolderRole, type RelayUser, type RemoteSharedFolder, type Role } from "src/Relay";
+	import type { FolderRoleGrant, RelayManager } from "src/RelayManager";
 	import { derived, writable } from "svelte/store";
 	import { handleServerError } from "src/utils/toastStore";
+	import RoleSelect from "./RoleSelect.svelte";
 
 	export let relayManager: RelayManager;
 	export let folder: RemoteSharedFolder;
-	export let onAdd: (userIds: string[], role: Role) => Promise<void>;
+	export let onAdd: (
+		grants: FolderRoleGrant[],
+	) => Promise<void>;
 	export let preSelectedUserIds: string[] = [];
 
 	interface UserSelection {
 		user: RelayUser;
 		hasAccess: boolean;
 		selected: boolean;
+		role: Role | null;
+		roles: { name: string }[];
 		isOwner: boolean;
 		isCurrentUser: boolean;
 	}
 
-	const selectedUsers = writable(new Set([...preSelectedUserIds]));
+	// Selected users with the role each will be granted.
+	const selectedUsers = writable(
+		new Map<string, Role>(preSelectedUserIds.map((id) => [id, "Member"])),
+	);
 	const searchQuery = writable("");
 	let adding = false;
 
@@ -27,8 +35,7 @@
 		([$relayRoles]) => {
 			return $relayRoles
 				.values()
-				.filter((role) => role.relayId === folder.relayId)
-				.map((role) => role.user);
+				.filter((role) => role.relayId === folder.relayId);
 		}
 	);
 
@@ -42,8 +49,8 @@
 
 	// Create derived store for user selections
 	const users = derived(
-		[relayUsers, currentFolderRoles, selectedUsers],
-		([$relayUsers, $folderRoles, $selectedUsers]) => {
+		[relayUsers, currentFolderRoles, selectedUsers, relayManager.roles],
+		([$relayUsers, $folderRoles, $selectedUsers, $roles]) => {
 			const usersWithAccess = new Set($folderRoles.map((role) => role.userId));
 			const folderOwnerIds = new Set(
 				$folderRoles
@@ -52,14 +59,19 @@
 			);
 			const currentUserId = relayManager.user?.id;
 
-			return $relayUsers.map((user) => {
+			return $relayUsers.map((relayRole) => {
+				const user = relayRole.user;
+				const roles = offeredFolderRoles($roles.values(), relayRole.role);
+				const role = selectedFolderRole(roles, $selectedUsers.get(user.id));
 				const isFolderOwner = folderOwnerIds.has(user.id);
 				const isCurrentUser = currentUserId === user.id;
-				const selected = $selectedUsers.has(user.id);
+				const selected = $selectedUsers.has(user.id) && role !== null;
 				return {
 					user,
 					hasAccess: usersWithAccess.has(user.id),
 					selected,
+					role,
+					roles,
 					isOwner: isFolderOwner,
 					isCurrentUser,
 				};
@@ -91,32 +103,43 @@
 	);
 
 	const selectedCount = derived(
-		[selectedUsers],
-		([$selectedUsers]) => $selectedUsers.size
+		[users],
+		([$users]) => $users.filter((user) => user.selected && !user.hasAccess).length
 	);
 
 	function toggleUser(userSelection: UserSelection) {
-		if (userSelection.hasAccess) return;
+		if (userSelection.hasAccess || !userSelection.role) return;
 
 		selectedUsers.update(current => {
-			const newSet = new Set(current);
-			if (newSet.has(userSelection.user.id)) {
-				newSet.delete(userSelection.user.id);
+			const newMap = new Map(current);
+			if (newMap.has(userSelection.user.id)) {
+				newMap.delete(userSelection.user.id);
 			} else {
-				newSet.add(userSelection.user.id);
+				newMap.set(userSelection.user.id, userSelection.role!);
 			}
-			return newSet;
+			return newMap;
+		});
+	}
+
+	function setUserRole(userId: string, role: Role) {
+		selectedUsers.update(current => {
+			const newMap = new Map(current);
+			if (newMap.has(userId)) {
+				newMap.set(userId, role);
+			}
+			return newMap;
 		});
 	}
 
 	async function handleAdd() {
 		if (adding) return;
-		const currentSelectedUsers = $selectedUsers;
-		if (currentSelectedUsers.size === 0) return;
-
+		const grants: FolderRoleGrant[] = $users
+			.filter((user) => user.selected && !user.hasAccess && user.role)
+			.map((user) => ({ user: user.user.id, role: user.role! }));
+		if (grants.length === 0) return;
 		adding = true;
 		try {
-		    await onAdd(Array.from(currentSelectedUsers), "Member");
+			await onAdd(grants);
 		} catch (error) {
 			handleServerError(error, "Failed to add users to folder.");
 		} finally {
@@ -171,7 +194,7 @@
 					<input
 						type="checkbox"
 						checked={userSelection.selected}
-						disabled={userSelection.hasAccess}
+						disabled={userSelection.hasAccess || !userSelection.role}
 						class="user-checkbox"
 						on:click={(e) => {
 							e.stopPropagation();
@@ -196,6 +219,13 @@
 
 					{#if userSelection.hasAccess}
 						<div class="user-status">Already has access</div>
+					{:else if userSelection.selected && userSelection.role && userSelection.roles.some((role) => role.name === "Reader")}
+						<RoleSelect
+							roles={userSelection.roles}
+							value={userSelection.role}
+							onChange={(role) =>
+								setUserRole(userSelection.user.id, role)}
+						/>
 					{:else if userSelection.isCurrentUser}
 						<div class="user-status">(You)</div>
 					{/if}

@@ -20,6 +20,8 @@ import {
 type RelayCanvasViewBridge = {
 	canvas: {
 		path: string;
+		canEditContent?: boolean;
+		rejectReaderEdit?(): void;
 		textNode(node: CanvasNodeData): YText | undefined;
 	};
 };
@@ -177,6 +179,28 @@ export class LiveNodePluginValue implements PluginValue {
 		}
 		const ytext = this.getYText();
 		if (!ytext) {
+			return;
+		}
+		if (this.view?.canvas.canEditContent === false) {
+			this.view.canvas.rejectReaderEdit?.();
+			// Restore after this update, since CM6 forbids dispatching inside one.
+			queueMicrotask(() => {
+				if (this.destroyed || this.getYText() !== ytext) return;
+				this.editor.dispatch({
+					changes: {
+						from: 0,
+						to: this.editor.state.doc.length,
+						insert:
+							ytext.toString() ||
+							ytext.doc?.getMap<CanvasNodeData>("nodes").get(this.node?.id ?? "")?.text ||
+							"",
+					},
+					annotations: syncDispatchAnnotations(
+						this.editor,
+						flags().enableSingleUserHistory,
+					),
+				});
+			});
 			return;
 		}
 		ytext.doc?.transact(() => {
