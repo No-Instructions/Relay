@@ -2,6 +2,7 @@
 // License
 // [The MIT License](./LICENSE) © Kevin Jahns
 
+import { applyTextChanges, type TextChange } from "../textChanges";
 import type { ChangeSpec } from "@codemirror/state";
 import { EditorView, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
@@ -203,21 +204,12 @@ export class LiveNodePluginValue implements PluginValue {
 			});
 			return;
 		}
+		const changes: TextChange[] = [];
+		update.changes.iterChanges((from, to, _fromB, _toB, insert) => {
+			changes.push({ from, to, insert: insert.sliceString(0, insert.length, "\n") });
+		});
 		ytext.doc?.transact(() => {
-			/**
-			 * This variable adjusts the fromA position to the current position in the Y.Text type.
-			 */
-			let adj = 0;
-			update.changes.iterChanges((fromA, toA, fromB, toB, insert) => {
-				const insertText = insert.sliceString(0, insert.length, "\n");
-				if (fromA !== toA) {
-					ytext.delete(fromA + adj, toA - fromA);
-				}
-				if (insertText.length > 0) {
-					ytext.insert(fromA + adj, insertText);
-				}
-				adj += insertText.length - (toA - fromA);
-			});
+			applyTextChanges(ytext, changes);
 		}, this);
 	}
 
