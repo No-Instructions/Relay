@@ -1,4 +1,5 @@
 import { diff_match_patch } from "diff-match-patch";
+import { diffTextChanges } from "../../textChanges";
 import type { PositionedChange } from "../types";
 
 export interface BufferedCM6Edit {
@@ -118,34 +119,5 @@ export function buildTextChanges(
 	before: string,
 	after: string,
 ): PositionedChange[] {
-	if (before === after) return [];
-
-	const dmp = new diff_match_patch();
-	const diffs = dmp.diff_main(before, after);
-	dmp.diff_cleanupSemantic(diffs);
-
-	const changes: PositionedChange[] = [];
-	let pos = 0;
-	for (let i = 0; i < diffs.length; ) {
-		const [op, text] = diffs[i];
-		if (op === 0) {
-			pos += text.length;
-			i += 1;
-			continue;
-		}
-
-		const from = pos;
-		let insert = "";
-		while (i < diffs.length && diffs[i][0] !== 0) {
-			const [editOp, editText] = diffs[i];
-			if (editOp === -1) {
-				pos += editText.length;
-			} else {
-				insert += editText;
-			}
-			i += 1;
-		}
-		changes.push({ from, to: pos, insert });
-	}
-	return changes;
+	return diffTextChanges(before, after);
 }

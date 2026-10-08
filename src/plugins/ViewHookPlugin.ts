@@ -8,7 +8,7 @@ import { PreviewRenderer } from "./PreviewRenderer";
 import { HasLogging } from "../debug";
 import type { ChangeSpec } from "@codemirror/state";
 import { trackPromise } from "../trackPromise";
-import diff_match_patch from "diff-match-patch";
+import { diffTextChanges } from "../textChanges";
 import { MetadataRenderer } from "./MetadataRenderer";
 
 /**
@@ -256,57 +256,7 @@ export class ViewHookPlugin extends HasLogging {
 			(
 				this.view as MarkdownView & { editor?: { cm?: EditorView } }
 			).editor?.cm?.state.doc.toString() ?? "";
-		const dmp = new diff_match_patch();
-		const diffs = dmp.diff_main(currentBuffer, newBuffer);
-		dmp.diff_cleanupSemantic(diffs);
-
-		const changes: ChangeSpec[] = [];
-		let pos = 0;
-
-		for (const [type, text] of diffs) {
-			switch (type) {
-				case 0: // EQUAL
-					pos += text.length;
-					break;
-				case 1: // INSERT
-					changes.push({
-						from: pos,
-						to: pos,
-						insert: text,
-					});
-					break;
-				case -1: // DELETE
-					changes.push({
-						from: pos,
-						to: pos + text.length,
-						insert: "",
-					});
-					pos += text.length;
-					break;
-			}
-		}
-
-		// Merge adjacent delete+insert pairs into single replacements.
-		// CM6 silently drops split delete/insert at the same boundary.
-		const merged: ChangeSpec[] = [];
-		let i = 0;
-		while (i < changes.length) {
-			const current = changes[i] as { from: number; to: number; insert: string };
-			const next = changes[i + 1] as { from: number; to: number; insert: string } | undefined;
-			if (
-				next &&
-				current.insert === "" &&
-				next.from === current.to &&
-				next.to === next.from
-			) {
-				merged.push({ from: current.from, to: current.to, insert: next.insert });
-				i += 2;
-			} else {
-				merged.push(current);
-				i++;
-			}
-		}
-		return merged;
+		return diffTextChanges(currentBuffer, newBuffer);
 	}
 
 	/**
