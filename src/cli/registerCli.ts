@@ -11,8 +11,9 @@ type CliRegistrar = {
 export function cliHandler(command: CliRegisteredCommand, ctx: CliContext): CliHandler {
 	return async (raw: CliData): Promise<string> => {
 		const context = { vault: { name: ctx.vault.name, path: ctx.vault.path }, command: command.id };
-		const format = raw["--json"] === "true" || raw["--format"]?.trim() === "json" ? "json" : "text";
-		const outputContext = format === "text" && raw["--quiet"] === "true" ? undefined : context;
+		const format = [raw.json, raw["--json"]].includes("true") ||
+			[raw.format, raw["--format"]].some((value) => value?.trim() === "json") ? "json" : "text";
+		const outputContext = format === "text" && (raw.quiet ?? raw["--quiet"]) === "true" ? undefined : context;
 		try {
 			const params = validateOptions(command, raw);
 			if (params.help === "true" || !command.run) {
@@ -21,7 +22,7 @@ export function cliHandler(command: CliRegisteredCommand, ctx: CliContext): CliH
 			}
 			return renderOk(await command.run(params, ctx), format, outputContext);
 		} catch (error) {
-			const output = renderError(error, format, outputContext, `obsidian ${command.id} --help`);
+			const output = renderError(error, format, outputContext, `obsidian help ${command.id}`);
 			if (format === "json") return output;
 			throw new CliError(error instanceof CliError ? error.code : "error", output.replace(/^Error: /, ""));
 		}

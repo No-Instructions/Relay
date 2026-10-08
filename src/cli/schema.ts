@@ -32,7 +32,7 @@ export interface Command<Context> {
 	/** Structural namespaces can contribute a path without registering a handler. */
 	register?: boolean;
 	options?: Record<string, CliOption>;
-	/** A bare argument can supply this option instead of --option=value. */
+	/** A bare argument can supply this option instead of option=value. */
 	argument?: string;
 	assignment?: { value: string; choices: readonly string[]; description: string };
 	commands?: Command<Context>[];

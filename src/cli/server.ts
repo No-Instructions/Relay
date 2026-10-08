@@ -287,7 +287,7 @@ const sharedFolderUsers: ServerCommand = {
 
 function folderAccess(action: "add" | "remove"): ServerCommand {
 	return {
-		name: action,
+		name: action === "add" ? "grant" : "revoke",
 		description: action === "add" ? "Grant server member access to private folder" : "Revoke access to private folder",
 		options: { ...RELAY_OPTION, ...REMOTE_FOLDER_OPTION, user: { value: "<name|email|id>", description: "Relay member", required: true } },
 		async run(params, ctx) {
@@ -338,9 +338,9 @@ const serverRegister: ServerCommand = {
 	async run(params, ctx) {
 		const value = required(params, "url");
 		let url: URL;
-		try { url = new URL(value); } catch { throw new CliError("invalid_value", "--url must be an http or https URL"); }
+		try { url = new URL(value); } catch { throw new CliError("invalid_value", "url must be an http or https URL"); }
 		if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.hash) {
-			throw new CliError("invalid_value", "--url must be an http or https URL without credentials or a fragment");
+			throw new CliError("invalid_value", "url must be an http or https URL without credentials or a fragment");
 		}
 		const relay = await ctx.relayManager.createSelfHostedRelay(value);
 		const data = { name: relay.name, guid: relay.guid, url: relay.provider?.url ?? value };
@@ -359,11 +359,11 @@ export const SERVER_TREE: ServerCommand = serverScope({
 		serverCreate, serverRegister, serverSetName, serverLeave, serverDestroy,
 		{ ...serverUsers, name: "roles" },
 		{ name: "role", description: "Server member", register: false, commands: [serverKick] },
-	] }, { name: "remote", description: "Server state", commands: [
+	] },
 		{ ...serverFolders, name: "folders" },
 		{ ...remoteFolder, commands: [serverRemoveFolder,
 			{ ...sharedFolderUsers, name: "roles" },
-			{ name: "role", description: "Folder access", register: false, commands: [folderAccess("add"), folderAccess("remove")] },
+			folderAccess("add"), folderAccess("remove"),
 		] },
-	] }],
+	],
 });

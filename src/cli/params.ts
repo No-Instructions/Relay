@@ -12,7 +12,7 @@ export function optional(params: CliData, key: string): string | undefined {
 export function required(params: CliData, key: string): string {
 	const value = optional(params, key);
 	if (value === undefined) {
-		throw new CliError("missing_option", `Missing required option: --${key}=<value>`);
+		throw new CliError("missing_option", `Missing required option: ${key}=<value>`);
 	}
 	return value;
 }

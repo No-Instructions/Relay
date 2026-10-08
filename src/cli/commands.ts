@@ -119,7 +119,7 @@ function requireRemote(folder: CliSharedFolder): RemoteSharedFolder {
 	if (!folder.remote) {
 		throw new CliError(
 			"no_remote",
-			`${folder.path} is tracked but not on a Relay Server; use relay:folder:share`,
+			`${folder.path} is tracked but not on a Relay Server; use relay:vault:share`,
 		);
 	}
 	return folder.remote;
@@ -201,7 +201,7 @@ const vaultAdd: CliCommand = {
 		const existing = inVault(ctx, remote);
 		if (existing) {
 			throw new CliError("already_in_vault", `${remote.name} is already in the vault at ${existing.path}` +
-				(!existing.remote ? "; use relay:folder:share with this local --path and the same --relay to attach its server copy again" : ""));
+				(!existing.remote ? "; use relay:vault:share with this local path and the same relay to attach its server copy again" : ""));
 		}
 		const path = folderPath(optional(params, "path") ?? remote.name);
 		requireDisjointFolder(ctx, path);
@@ -222,7 +222,7 @@ const share: CliCommand = {
 	options: {
 		path: { value: "<path>", description: "Vault-relative folder path", required: true },
 		...RELAY_OPTION,
-		private: { description: "Create owner-only folder; grant users with relay:remote:folder:role:add" },
+		private: { description: "Create owner-only folder; grant users with relay:folder:grant" },
 	},
 	async run(params, ctx) {
 		const path = folderPath(required(params, "path"));
@@ -233,7 +233,7 @@ const share: CliCommand = {
 		if (existing?.remote) {
 			throw new CliError(
 				"already_shared",
-				`${path} is already on ${existing.remote.relay.name}; use relay:folder:detach first`,
+				`${path} is already on ${existing.remote.relay.name}; use relay:vault:detach first`,
 			);
 		}
 		await ensureVaultFolder(ctx, path);
@@ -261,7 +261,7 @@ const track: CliCommand = {
 
 const remoteRemove: CliCommand = {
 	name: "detach",
-	description: "Disconnect from server; preserve local history. Reattach with relay:folder:share",
+	description: "Disconnect from server; preserve local history. Reattach with relay:vault:share",
 	options: FOLDER_OPTION,
 	run(params, ctx) {
 		const folder = resolveSharedFolder(ctx, required(params, "folder"));
@@ -271,7 +271,7 @@ const remoteRemove: CliCommand = {
 		ctx.sharedFolders.notifyListeners();
 		return {
 			data: { path: folder.path, guid: folder.guid, previousRelay: relayName },
-			text: `${folder.path} is tracked; its copy on ${relayName} was left alone\nReattach with relay:folder:share using this local --path and the same --relay.`,
+			text: `${folder.path} is tracked; its copy on ${relayName} was left alone\nReattach with relay:vault:share using this local path and the same relay.`,
 		};
 	},
 };
@@ -502,13 +502,13 @@ const diff: CliCommand = {
 const diffResolve: CliCommand = {
 	name: "resolve",
 	description:
-		"Resolve using --block and --take, or replace the whole note with --content or --content-file",
+		"Resolve using block and take, or replace the whole note with content or content-file",
 	options: {
 		...NOTE_OPTION,
 		conflict: { value: "<id>", description: "Conflict ID; rejects stale conflicts", required: true },
 		block: { value: "<id>", description: "Block ID" },
 		take: { value: "ours|theirs|both|neither", description: "ours: local; theirs: incoming", choices: DECISIONS },
-		content: { value: "<text>", description: "Replace whole note; empty clears it. Literal true needs --content-file", allowEmpty: true, preserveWhitespace: true },
+		content: { value: "<text>", description: "Replace whole note; empty clears it. Literal true needs content-file", allowEmpty: true, preserveWhitespace: true },
 		"content-file": { value: "<path>", description: "Replace whole note from vault-relative file" },
 	},
 	async run(params, ctx) {
@@ -520,11 +520,11 @@ const diffResolve: CliCommand = {
 		const hasContent = params.content !== undefined;
 		const wholeNote = hasContent || contentFile !== undefined;
 		if ((hasContent && contentFile) || (wholeNote && (block || take))) {
-			throw new CliError("conflicting_options", "Choose --block and --take, or --content, or --content-file");
+			throw new CliError("conflicting_options", "Choose block and take, or content, or content-file");
 		}
-		if (!wholeNote && !(block && take)) throw new CliError("missing_option", "Give --block and --take, or --content, or --content-file");
-		if (hasContent && params.content === "true") throw new CliError("missing_value", "For literal true use --content-file; Obsidian treats --content=true as a bare switch");
-		if (!wholeNote && !DECISIONS.includes(take as BlockDecision)) throw new CliError("invalid_value", `--take must be one of ${DECISIONS.join(", ")}`);
+		if (!wholeNote && !(block && take)) throw new CliError("missing_option", "Give block and take, or content, or content-file");
+		if (hasContent && params.content === "true") throw new CliError("missing_value", "For literal true use content-file; Obsidian treats content=true as a bare switch");
+		if (!wholeNote && !DECISIONS.includes(take as BlockDecision)) throw new CliError("invalid_value", `take must be one of ${DECISIONS.join(", ")}`);
 		const content = contentFile ? await ctx.vault.readFile(folderPath(contentFile)) : params.content;
 		// Reading the conflict first materializes a hibernated note's conflict,
 		// which a decision requires; the UI's flow does the same.
@@ -644,8 +644,8 @@ export const CLI_TREE: CliCommand = {
 	commands: [
 		health,
 		...(SERVER_TREE.commands ?? []),
-		{ ...vault, name: "folders" },
-		{ ...sharedFolder, commands: [
+		{ name: "vault", description: "Local folders and sync settings", requires: "vault", commands: [
+			{ ...vault, name: "folders" }, sharedFolder,
 			track, share, vaultAdd, remoteRemove, untrack, sharedFolderResync,
 			{ ...sharedFolderFileTypes, name: "file-types" },
 			{ name: "file-type", description: "Local sync file type", register: false, commands: [fileTypeSetting(true), fileTypeSetting(false)] },

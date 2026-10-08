@@ -20,71 +20,73 @@ export function validateOptions(command: CliRegisteredCommand, raw: CliData): Cl
 	const definitions = { ...GLOBAL_OPTIONS, ...command.options };
 	const params: CliData = {};
 	for (const [key, value] of Object.entries(raw)) {
-		if (command.assignment && !key.startsWith("-")) {
+		const name = key === "-h" ? "help" : key.startsWith("--") ? key.slice(2) : key;
+		const known = Object.prototype.hasOwnProperty.call(definitions, name);
+		// Named options take precedence over assignments and positional selectors.
+		if (!known && command.assignment && !name.startsWith("-")) {
 			if (params.key !== undefined) throw new CliError("conflicting_options", "Set one flag at a time");
 			if (!command.assignment.choices.includes(value)) {
-				throw new CliError("invalid_value", `${key} must be ${command.assignment.value}`);
+				throw new CliError("invalid_value", `${name} must be ${command.assignment.value}`);
 			}
-			params.key = key;
+			params.key = name;
 			params.value = value;
 			continue;
 		}
-		if (command.argument && !key.startsWith("-") && value === "true") {
+		if (!known && command.argument && !key.startsWith("-") && value === "true") {
 			const name = command.argument;
-			if (name in params) throw new CliError("duplicate_option", `Give one ${name}: a positional argument or --${name}`);
+			if (name in params) throw new CliError("duplicate_option", `Give one ${name}: a positional argument or ${name}=<value>`);
 			if (!key.trim()) throw new CliError("missing_value", `${name} must not be empty`);
 			params[name] = key.trim();
 			continue;
 		}
-		const name = key === "-h" ? "help" : key.startsWith("--") ? key.slice(2) : "";
-		if (!Object.prototype.hasOwnProperty.call(definitions, name)) {
+		if (!known) {
 			const message = key === "--vault" || key === "vault"
 				? 'Select a vault before the command: obsidian vault="My Vault" ' + command.id
 				: `Unknown option or argument: ${key}. ` + (command.assignment
 					? `Set a flag with <key>=${command.assignment.value}.`
-					: "Use colon-separated commands and --option=value.");
+					: "Use colon-separated commands and option=value (also accepts --option=value).");
 			const suggestions = suggest(key.replace(/^-+/, ""), Object.keys(definitions), (name) => [name])
-				.map((name) => `--${name}`);
+				.map((name) => key.startsWith("-") ? `--${name}` : name);
 			throw new CliError("unknown_option", message, suggestions.length ? { suggestions } : {});
 		}
 		const option = definitions[name];
 		if (name in params) throw new CliError("duplicate_option", command.argument === name
-			? `Give one ${name}: a positional argument or --${name}` : `Give --${name} only once`);
+			? `Give one ${name}: a positional argument or ${name}=<value>` : `Give ${name} only once (with or without --)`);
 		if (!option.value) {
 			if (value !== "true" && value !== "false") {
-				throw new CliError("invalid_value", `--${name} accepts true or false, got "${value}"`);
+				throw new CliError("invalid_value", `${name} accepts true or false, got "${value}"`);
 			}
 		} else {
 			// The host represents a bare switch and the literal value true alike.
-			if (value === "true") throw new CliError("missing_value", `--${name} needs a value: --${name}=${option.value}. The host reserves literal true for bare switches.`);
+			if (value === "true") throw new CliError("missing_value", `${name} needs a value: ${name}=${option.value}. The host reserves literal true for bare switches.`);
 			const normalized = option.preserveWhitespace ? value : value.trim();
-			if (!option.allowEmpty && normalized === "") throw new CliError("missing_value", `--${name} needs a non-empty value`);
+			if (!option.allowEmpty && normalized === "") throw new CliError("missing_value", `${name} needs a non-empty value`);
 			if (option.choices && !option.choices.includes(normalized)) {
-				throw new CliError("invalid_value", `--${name} must be one of ${option.choices.join(", ")}, got "${value}"`);
+				throw new CliError("invalid_value", `${name} must be one of ${option.choices.join(", ")}, got "${value}"`);
 			}
 		}
 		params[name] = option.preserveWhitespace ? value : value.trim();
 	}
 	if (params.json === "true" && params.format === "text") {
-		throw new CliError("conflicting_options", "--json conflicts with --format=text");
+		throw new CliError("conflicting_options", "json conflicts with format=text");
 	}
 	if (params.help !== "true" && command.run) {
 		if (command.assignment && params.key === undefined) {
 			throw new CliError("missing_assignment", `Give <key>=${command.assignment.value}`);
 		}
 		for (const [name, option] of Object.entries(command.options ?? {})) {
-			if (option.required && !(name in params)) throw new CliError("missing_option", `Missing required option: --${name}=${option.value ?? "true"}`);
+			if (option.required && !(name in params)) throw new CliError("missing_option", `Missing required option: ${name}=${option.value ?? "true"}`);
 		}
 	}
 	return params;
 }
 
-/** Relay owns required checks so a leaf's --help needs no operation arguments. */
+/** Relay owns required checks so help needs no operation arguments. */
 export function nativeFlags(command: CliRegisteredCommand): CliFlags {
 	return Object.fromEntries([
 		...(command.assignment ? [["<key>", { value: command.assignment.value, description: command.assignment.description, required: false }]] : []),
 		...Object.entries({ ...command.options, ...GLOBAL_OPTIONS }).map(([name, option]) => [
-			`--${name}`, {
+			name === "copy" ? "--copy" : name, {
 				value: option.value,
 				description: option.description + (option.required ? " (required)" : "") + (command.argument === name ? "; or positional" : ""),
 				required: false,
@@ -96,7 +98,8 @@ export function nativeFlags(command: CliRegisteredCommand): CliFlags {
 
 export function commandHelp(command: CliRegisteredCommand): string {
 	const lines = [
-		"Usage: obsidian [vault=<name|id>] <command> [argument] [--option=value] [--flag]",
+		"Usage: obsidian [vault=<name|id>] <command> [argument] [option=value] [flag]",
+		"Options also accept --option=value and --flag.",
 		"",
 		"Global options:",
 		...Object.entries(GLOBAL_OPTIONS).map(([name, option]) => optionLine(name, option)),
@@ -113,5 +116,5 @@ export function commandHelp(command: CliRegisteredCommand): string {
 }
 
 function optionLine(name: string, option: CliOption, positional = false): string {
-	return `  ${positional ? option.value + " | " : ""}--${name}${option.value ? "=" + option.value : ""}  ${option.description}${option.required ? " (required)" : ""}`;
+	return `  ${positional ? option.value + " | " : ""}${name === "copy" ? "--copy" : name}${option.value ? "=" + option.value : ""}  ${option.description}${option.required ? " (required)" : ""}`;
 }
