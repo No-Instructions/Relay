@@ -27,6 +27,11 @@ import { formatUserFacingError } from "../../UserFacingError";
 import { flags } from "../../flagManager";
 import type { PositionedChange } from "../types";
 import {
+  configureAccessMode,
+  registerOwnedEditor,
+  unregisterOwnedEditor,
+} from "../../readOnlyEditorState";
+import {
   buildBufferedCM6ReplayEvents,
   buildTextChanges,
   rebaseBufferedTextAcrossReplacement,
@@ -54,6 +59,11 @@ export class HSMEditorPluginValue implements PluginValue {
   private document: Document | null = null;
   private cm6Integration: CM6Integration | null = null;
   private destroyed = false;
+  /** Drops the document access subscription a refused embed editor holds. */
+  private accessModeUnsubscribe: (() => void) | null = null;
+  private accessModeDocument: Document | null = null;
+  private inheritsFileAccessMode = false;
+  private configuredFileAccessMode = false;
   private embed = false;
   private pendingEdits: BufferedCM6Edit[] = [];
   private pendingEditBaseText: string | null = null;
@@ -138,6 +148,7 @@ export class HSMEditorPluginValue implements PluginValue {
     this.bindingEpoch += 1;
     this.bornAttachedRenderPending = false;
     this.lastInitializationRetry = null;
+    unregisterOwnedEditor(this.editor);
     if (this.cm6Integration) {
       this.cm6Integration.destroy();
       this.cm6Integration = null;
@@ -299,7 +310,16 @@ export class HSMEditorPluginValue implements PluginValue {
     if (this.subEditor) return true;
     if (this.editor.dom.closest(".table-cell-wrapper")) {
       this.log("Refusing to bind an embedded table-cell editor");
-      return this.inertSubEditor();
+      // The cell editor never binds, but it is a surface a person types
+      // into inside the host note, so it inherits the host view's access
+      // mode. Its inherited info field names the host's EditorView as the
+      // owner; the registration outlives the refusal so a later role
+      // change reaches an open cell too.
+      const owner = this.ownerEditorView();
+      if (owner && owner !== this.editor) {
+        registerOwnedEditor(owner, this.editor);
+      }
+      return this.inertSubEditor(true);
     }
     const fileInfo = this.editor.state.field(editorInfoField, false);
     if (!fileInfo || typeof fileInfo !== "object") return false;
@@ -327,12 +347,55 @@ export class HSMEditorPluginValue implements PluginValue {
         ? `Refusing to bind a fragment-scoped embed editor (${String(subpath)})`
         : "Refusing to bind an embed-owned editor",
     );
+    this.inheritsFileAccessMode = true;
+    this.inheritFileAccessMode();
     return this.inertSubEditor();
   }
 
-  /** Permanently inert this instance and drop any buffered fragment input. */
-  private inertSubEditor(): boolean {
+  /**
+   * An embed editor is its own owner, so no host view configures it. When
+   * the embedded note is read-only for this member, configure the editor
+   * read-only directly: the embed writes its buffer back to the file, and a
+   * Reader's keystrokes must not enter a surface that does that. The document's
+   * role and token changes keep the editor current while it stays open (the
+   * Footnotes pane outlives a role change); the configuration runs after the
+   * current CM6 update, which may be the one constructing this plugin.
+   */
+  private inheritFileAccessMode(): void {
+    const doc = this.resolveCurrentDocument();
+    if (doc === this.accessModeDocument) return;
+    this.accessModeUnsubscribe?.();
+    this.accessModeUnsubscribe = null;
+    this.accessModeDocument = doc;
+    if (!doc) {
+      if (this.configuredFileAccessMode) {
+        queueMicrotask(() => {
+          if (this.destroyed || this.accessModeDocument) return;
+          configureAccessMode(this.editor, false);
+          this.configuredFileAccessMode = false;
+        });
+      }
+      return;
+    }
+    const apply = () => {
+      queueMicrotask(() => {
+        if (this.destroyed || this.accessModeDocument !== doc) return;
+        configureAccessMode(this.editor, !doc.canWriteContent);
+        this.configuredFileAccessMode = true;
+      });
+    };
+    if (!doc.canWriteContent || this.configuredFileAccessMode) apply();
+    this.accessModeUnsubscribe = doc.subscribeToAccessModeChanges(apply);
+  }
+
+  /**
+   * Permanently inert this instance and drop any buffered fragment input.
+   * `inheritsAccessMode` keeps the editor registered to its host so the
+   * host's read-only configuration still reaches it.
+   */
+  private inertSubEditor(inheritsAccessMode = false): boolean {
     this.subEditor = true;
+    if (!inheritsAccessMode) unregisterOwnedEditor(this.editor);
     if (this.cm6Integration) {
       this.cm6Integration.destroy();
       this.cm6Integration = null;
@@ -507,6 +570,11 @@ export class HSMEditorPluginValue implements PluginValue {
       if (!bornAttached || adoptedByLiveView) return false;
       return this.isEditorShowingFile(expectedGuid, expectedFile);
     });
+    // Only a bound editor inherits its owner's access mode.
+    const owner = this.ownerEditorView();
+    if (owner && owner !== this.editor) {
+      registerOwnedEditor(owner, this.editor);
+    }
     this.debug(`Initialized for ${this.document.guid} (embed: ${this.embed})`);
 
     const currentText = this.editor.state.doc.toString();
@@ -581,6 +649,7 @@ export class HSMEditorPluginValue implements PluginValue {
       const ownerCm = this.ownerEditorView();
       if (ownerCm !== this.editor) {
         abort("owner view no longer adopts this editor");
+        unregisterOwnedEditor(this.editor);
         if (this.cm6Integration) {
           this.cm6Integration.destroy();
           this.cm6Integration = null;
@@ -725,7 +794,11 @@ export class HSMEditorPluginValue implements PluginValue {
    * This is called on every editor state change.
    */
   update(update: ViewUpdate): void {
-    if (this.destroyed || this.subEditor) return;
+    if (this.destroyed) return;
+    if (this.subEditor) {
+      if (this.inheritsFileAccessMode) this.inheritFileAccessMode();
+      return;
+    }
     if (update.docChanged) {
       this.lastInitializationRetry = null;
     }
@@ -942,6 +1015,10 @@ export class HSMEditorPluginValue implements PluginValue {
    */
   destroy(): void {
     this.destroyed = true;
+    this.accessModeUnsubscribe?.();
+    this.accessModeUnsubscribe = null;
+    this.accessModeDocument = null;
+    unregisterOwnedEditor(this.editor);
     if (this.cm6Integration) {
       this.cm6Integration.destroy();
       this.cm6Integration = null;

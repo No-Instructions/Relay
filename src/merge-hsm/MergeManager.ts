@@ -34,6 +34,7 @@ import type {
   MergeEvent,
   ResolveHunkEvent,
   StatePath,
+  ActiveAccessMode,
 } from './types';
 import type { ConflictInfoSnapshot } from './conflict';
 import type { TimeProvider } from '../TimeProvider';
@@ -124,6 +125,7 @@ export interface MergeManagerConfig {
 
   /** Callback when an effect is emitted by any HSM */
   onEffect?: (guid: string, effect: MergeEffect) => void | Promise<void>;
+
 
   /**
    * Callback to get disk state for a document (for polling).
@@ -708,6 +710,7 @@ export class MergeManager {
     getCurrentDiskMetadata?: () => { mtime: number; hash?: string } | null;
     getPersistenceMetadata?: () => PersistenceMetadata;
     isFolderConnected?: () => boolean;
+    getAccessMode?: () => ActiveAccessMode;
   }): MergeHSM {
     const {
       guid,
@@ -717,6 +720,7 @@ export class MergeManager {
       getCurrentDiskMetadata,
       getPersistenceMetadata,
       isFolderConnected,
+      getAccessMode,
     } = config;
 
     const hsm = new MergeHSM({
@@ -730,6 +734,7 @@ export class MergeManager {
       persistenceMetadata: getPersistenceMetadata?.(),
       diskLoader: getDiskContent,
       isFolderConnected,
+      getAccessMode,
       yaml: this._yaml ?? undefined,
     });
 
