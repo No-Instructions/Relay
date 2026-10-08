@@ -88,7 +88,8 @@ function fieldsEqual(a: unknown, b: unknown): boolean {
  * Character-level three-way text merge: the base→theirs diff is applied
  * onto ours, so concurrent edits to different regions both survive and
  * overlapping edits resolve toward the ours substrate — the localDoc
- * export, carrying the peers' edits.
+ * export, carrying the peers' edits. The result is plain text; Canvas.applyData
+ * snaps its replacement ranges before applying them to Y.Text.
  */
 function mergeText(base: string, ours: string, theirs: string): string {
 	if (ours === theirs || base === theirs) return ours;

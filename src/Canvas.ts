@@ -45,6 +45,7 @@ import {
 	createWorkRequest,
 	type WorkRequest,
 } from "./background-sync/WorkRequest";
+import { applyTextChanges } from "./textChanges";
 
 export function isCanvas(file?: IFile | null): file is Canvas {
 	return file instanceof Canvas;
@@ -73,18 +74,11 @@ function replaceYTextContent(ytext: Y.Text, nextText: string): void {
 		suffixLength++;
 	}
 
-	const deleteLength = currentText.length - prefixLength - suffixLength;
-	if (deleteLength > 0) {
-		ytext.delete(prefixLength, deleteLength);
-	}
-
-	const insertedText = nextText.slice(
-		prefixLength,
-		nextText.length - suffixLength,
-	);
-	if (insertedText.length > 0) {
-		ytext.insert(prefixLength, insertedText);
-	}
+	applyTextChanges(ytext, [{
+		from: prefixLength,
+		to: currentText.length - suffixLength,
+		insert: nextText.slice(prefixLength, nextText.length - suffixLength),
+	}]);
 }
 
 function copyDefined<T>(value: T): T {

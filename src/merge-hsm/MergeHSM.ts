@@ -25,7 +25,7 @@
 
 import * as Y from "yjs";
 import { adaptiveDiff3Merge } from "./diff3";
-import { diff_match_patch } from "diff-match-patch";
+import { applyTextChanges, diffTextChanges } from "../textChanges";
 import { computeConflict, type ConflictInfoSnapshot } from "./conflict";
 import {
 	assignSides,
@@ -3980,25 +3980,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 								// state so ops are bounded to valid offsets.
 								const currentText = proxyText.toString();
 								if (currentText !== e.docText) {
-									const dmp = new diff_match_patch();
-									const diffs = dmp.diff_main(currentText, e.docText);
-									dmp.diff_cleanupSemantic(diffs);
+									const changes = diffTextChanges(currentText, e.docText);
 									proxyDoc.transact(() => {
-										let cursor = 0;
-										for (const [operation, text] of diffs) {
-											switch (operation) {
-												case 1:
-													proxyText.insert(cursor, text);
-													cursor += text.length;
-													break;
-												case 0:
-													cursor += text.length;
-													break;
-												case -1:
-													proxyText.delete(cursor, text.length);
-													break;
-											}
-										}
+										applyTextChanges(proxyText, changes);
 									});
 								}
 							} else {
@@ -6734,28 +6718,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 		if (currentText === newContent) return;
 
-		// Use diff-match-patch to compute minimal edits
-		const dmp = new diff_match_patch();
-		const diffs = dmp.diff_main(currentText, newContent);
-		dmp.diff_cleanupSemantic(diffs);
+		const changes = diffTextChanges(currentText, newContent);
 
-		// Apply diffs incrementally to preserve CRDT history
+		// Apply diffs incrementally to preserve CRDT history.
 		this.localDoc.transact(() => {
-			let cursor = 0;
-			for (const [operation, text] of diffs) {
-				switch (operation) {
-					case 1: // Insert
-						ytext.insert(cursor, text);
-						cursor += text.length;
-						break;
-					case 0: // Equal - advance cursor
-						cursor += text.length;
-						break;
-					case -1: // Delete
-						ytext.delete(cursor, text.length);
-						break;
-				}
-			}
+			applyTextChanges(ytext, changes);
 
 			// Mirror frontmatter to Y.Map atomically with the content change
 			if (origin !== FRONTMATTER_MIRROR_ORIGIN) {
@@ -7332,19 +7299,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	 * the wrong point. Match applyChangesToText and apply from the end.
 	 */
 	private applyChangesToYText(ytext: Y.Text, changes: PositionedChange[]): void {
-		const sorted = [...changes].sort((a, b) => {
-			const byStart = b.from - a.from;
-			if (byStart !== 0) return byStart;
-			return b.to - a.to;
-		});
-		for (const change of sorted) {
-			if (change.to > change.from) {
-				ytext.delete(change.from, change.to - change.from);
-			}
-			if (change.insert) {
-				ytext.insert(change.from, change.insert);
-			}
-		}
+		applyTextChanges(ytext, changes);
 	}
 
 	/**
@@ -8145,27 +8100,7 @@ export function computeDiffMatchPatchChanges(
 	before: string,
 	after: string,
 ): PositionedChange[] {
-	if (before === after) return [];
-
-	const dmp = new diff_match_patch();
-	const diffs = dmp.diff_main(before, after);
-	dmp.diff_cleanupSemantic(diffs);
-
-	const changes: PositionedChange[] = [];
-	let pos = 0;
-
-	for (const [op, text] of diffs) {
-		if (op === 0) {
-			pos += text.length;
-		} else if (op === -1) {
-			changes.push({ from: pos, to: pos + text.length, insert: "" });
-			pos += text.length;
-		} else if (op === 1) {
-			changes.push({ from: pos, to: pos, insert: text });
-		}
-	}
-
-	return mergeAdjacentChanges(changes);
+	return diffTextChanges(before, after);
 }
 
 /**
