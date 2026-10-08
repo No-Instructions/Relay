@@ -31,6 +31,7 @@ import type {
   LCAMeta,
   Fork,
   FrontMatterPrimitives,
+  LinkPrimitives,
   MergeEvent,
   StatePath,
   ActiveAccessMode,
@@ -164,6 +165,9 @@ export interface MergeManagerConfig {
    * never fight its own.
    */
   yaml?: FrontMatterPrimitives;
+
+  /** Obsidian's link knowledge per note. Omit to disable link mirroring. */
+  links?: LinkPrimitives;
 }
 
 export interface PollOptions {
@@ -405,6 +409,7 @@ export class MergeManager {
   private createPersistence: CreatePersistence;
   private getPersistenceMetadata?: (guid: string, path: string) => PersistenceMetadata;
   private _yaml: FrontMatterPrimitives | null = null;
+  private _links: LinkPrimitives | null = null;
   private _onTransition?: MergeTransitionCallback;
   private readonly _transitionListeners = new Set<MergeTransitionCallback>();
 
@@ -421,6 +426,7 @@ export class MergeManager {
     this.createPersistence = config.createPersistence;
     this.getPersistenceMetadata = config.getPersistenceMetadata;
     this._yaml = config.yaml ?? null;
+    this._links = config.links ?? null;
     this._onTransition = config.onTransition;
 
     // Hibernation defaults
@@ -721,6 +727,7 @@ export class MergeManager {
       isFolderConnected,
       getAccessMode,
       yaml: this._yaml ?? undefined,
+      links: this._links ?? undefined,
     });
 
     hsm.setOnTransition((info) => {
@@ -1499,6 +1506,7 @@ export class MergeManager {
     this.createPersistence = null as unknown as typeof this.createPersistence;
     this.getPersistenceMetadata = undefined;
     this._yaml = null;
+    this._links = null;
     this._onTransition = undefined;
     this._transitionListeners.clear();
   }

@@ -29,6 +29,32 @@ export interface FrontMatterPrimitives {
 	};
 }
 
+/** One link or embed as Obsidian's metadata cache records it for a note. */
+export interface CachedLinkRef {
+	/** The destination as written, including any subpath. */
+	link: string;
+	/** The link text exactly as it appears in the note. */
+	original: string;
+	position: { start: { offset: number }; end: { offset: number } };
+}
+
+/** The part of a note's metadata cache entry the link mirror reads. */
+export interface LinkCacheEntry {
+	links?: CachedLinkRef[];
+	embeds?: CachedLinkRef[];
+}
+
+/**
+ * Obsidian's link knowledge for one note, injected so the merge HSM never
+ * parses links itself: the note's current cache entry, and resolution of a
+ * link path, relative to the note, to the guid of a file in the shared
+ * folder. Omit to disable the link mirror.
+ */
+export interface LinkPrimitives {
+	cacheFor: (path: string) => LinkCacheEntry | null;
+	resolve: (linkpath: string, sourcePath: string) => string | null;
+}
+
 // =============================================================================
 // View Reference Types
 // =============================================================================
@@ -1163,6 +1189,11 @@ export interface MergeHSMConfig {
 	 * `getFrontMatterInfo`. Omit to disable frontmatter Y.Map mirroring.
 	 */
 	yaml?: FrontMatterPrimitives;
+
+	/**
+	 * Obsidian's link knowledge for the note. Omit to disable link mirroring.
+	 */
+	links?: LinkPrimitives;
 }
 
 // =============================================================================

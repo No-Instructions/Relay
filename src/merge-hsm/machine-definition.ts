@@ -102,7 +102,7 @@ export const MACHINE: MachineDefinition = {
 	'unloading': {
 		on: {
 			REMOTE_DOC_UPDATED: [
-				{ target: 'unloading', guard: 'hasPendingMachineEdits', actions: ['mergeRemoteToLocal', 'repairFrontmatter'] },
+				{ target: 'unloading', guard: 'hasPendingMachineEdits', actions: ['mergeRemoteToLocal', 'repairFrontmatter', 'repairLinks'] },
 				{ target: 'unloading' },
 			],
 			REMOTE_UPDATE: [
@@ -112,7 +112,7 @@ export const MACHINE: MachineDefinition = {
 					actions: [
 						'applyRemoteToRemoteDoc',
 						'mergeRemoteToLocal',
-						'repairFrontmatter',
+						'repairFrontmatter', 'repairLinks',
 						'absorbTextPreservingRemoteUpdate',
 					],
 				},
@@ -780,24 +780,24 @@ export const MACHINE: MachineDefinition = {
 			canUseRemoteDoc: true,
 		},
 		always: [{ target: 'active.reading', guard: 'hasDemotionFork' }],
-		entry: ['replayAccumulatedEvents', 'mergeRemoteToLocal', 'seedFrontmatterMap', 'repairFrontmatter', 'assertConvergence', 'reconcileForkInActive'],
+		entry: ['replayAccumulatedEvents', 'mergeRemoteToLocal', 'seedFrontmatterMap', 'seedLinkMap', 'repairFrontmatter', 'repairLinks', 'assertConvergence', 'reconcileForkInActive'],
 		on: {
 			CM6_CHANGE: { target: 'active.tracking', actions: ['applyCM6ToLocalDoc'] },
-			REMOTE_DOC_UPDATED: { target: 'active.tracking', actions: ['mergeRemoteToLocal', 'repairFrontmatter'] },
+			REMOTE_DOC_UPDATED: { target: 'active.tracking', actions: ['mergeRemoteToLocal', 'repairFrontmatter', 'repairLinks'] },
 			REMOTE_UPDATE: {
 				target: 'active.tracking',
 				actions: [
 					'applyRemoteToRemoteDoc',
 					'mergeRemoteToLocal',
-					'repairFrontmatter',
+					'repairFrontmatter', 'repairLinks',
 					'absorbTextPreservingRemoteUpdate',
 				],
 			},
 			SAVE_COMPLETE: { target: 'active.tracking', actions: ['updateDiskFromSave'] },
 			DISK_CHANGED: { target: 'active.tracking', actions: ['storeDiskMetadataOnly'] },
-			CONNECTED: { target: 'active.tracking', actions: ['flushPendingToRemote', 'mergeRemoteToLocal'] },
+			CONNECTED: { target: 'active.tracking', actions: ['flushPendingToRemote', 'mergeRemoteToLocal', 'repairLinks'] },
 			DISCONNECTED: { target: 'active.tracking', actions: ['setOffline'] },
-			PROVIDER_SYNCED: { target: 'active.tracking', actions: ['markProviderSynced', 'mergeRemoteToLocal', 'seedFrontmatterMap', 'reconcileForkInActive'] },
+			PROVIDER_SYNCED: { target: 'active.tracking', actions: ['markProviderSynced', 'mergeRemoteToLocal', 'seedFrontmatterMap', 'seedLinkMap', 'repairLinks', 'reconcileForkInActive'] },
 			MERGE_CONFLICT: { target: 'active.conflict.bannerShown', actions: ['storeConflictData'] },
 			SERVER_AHEAD: POCKET_SERVER_AHEAD('active.tracking'),
 			DEMOTE_TO_READ: { target: 'active.reading', actions: ['prepareDemotion'] },

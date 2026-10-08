@@ -75,6 +75,9 @@ export interface SyncBridgeHost {
 	readonly path: string;
 	/** Whether the local observer is suppressed (during rewind) */
 	isSuppressLocalObserver(): boolean;
+	/** Called around each remote update applied to localDoc. */
+	beforeRemoteApply?(): void;
+	afterRemoteApply?(): void;
 	/** Set suppress local observer flag */
 	setSuppressLocalObserver(value: boolean): void;
 	/** True while the document may not publish. Every outbound path checks it. */
@@ -354,7 +357,12 @@ export class SyncBridge {
 		const localDoc = this.host.getLocalDoc();
 		const remoteDoc = this.host.getRemoteDoc();
 		if (!localDoc) return;
-		Y.applyUpdate(localDoc, update, remoteDoc);
+		this.host.beforeRemoteApply?.();
+		try {
+			Y.applyUpdate(localDoc, update, remoteDoc);
+		} finally {
+			this.host.afterRemoteApply?.();
+		}
 	}
 
 	/**

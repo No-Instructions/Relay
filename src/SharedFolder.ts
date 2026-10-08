@@ -668,6 +668,13 @@ export class SharedFolder extends HasProvider {
 				};
 			},
 			yaml: { parse: parseYaml, stringify: stringifyYaml, getFrontMatterInfo },
+			links: {
+				// HSM paths are folder-relative; the cache is keyed by vault path.
+				cacheFor: (docPath: string) =>
+					this.metadataCache?.getCache(normalizePath(this.getPath(docPath))) ?? null,
+				resolve: (linkpath: string, docPath: string) =>
+					this.resolveLinkGuid(linkpath, normalizePath(this.getPath(docPath))),
+			},
 		});
 
 		// Create per-folder recording bridge and register with the debug API.
@@ -4364,6 +4371,17 @@ export class SharedFolder extends HasProvider {
 			mark(file, meta);
 			return;
 		}
+	}
+
+	/**
+	 * The guid of the file a link path names, resolved the way Obsidian
+	 * resolves it from the linking note, when that file belongs to this
+	 * folder. Links to files outside the folder have no shared identity.
+	 */
+	resolveLinkGuid(linkpath: string, sourcePath: string): string | null {
+		const dest = this.metadataCache?.getFirstLinkpathDest(linkpath, sourcePath);
+		if (!dest || !this.checkPath(dest.path)) return null;
+		return this.getFile(dest)?.guid ?? null;
 	}
 
 	getFile(tfile: TAbstractFile): IFile | null {

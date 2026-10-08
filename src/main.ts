@@ -1789,6 +1789,21 @@ export default class Live extends Plugin {
 			},
 		});
 
+		// Obsidian re-indexes a note after each write and announces the new
+		// cache entry; the note's link bindings are taken from it.
+		{
+			const bindLinks = (tfile: TFile) => {
+				if (!(tfile instanceof TFile)) return;
+				const folder = this.sharedFolders.lookup(tfile.path);
+				if (!folder) return;
+				const file = folder.proxy.getFile(tfile);
+				if (!file || !isDocument(file)) return;
+				file.hsm?.bindLinksFromCache();
+			};
+			this.registerEvent(this.app.metadataCache.on("changed", (tfile) => bindLinks(tfile)));
+			this.registerEvent(this.app.metadataCache.on("resolve", (tfile) => bindLinks(tfile)));
+		}
+
 		this.patchWebviewer();
 
 		{

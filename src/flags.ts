@@ -27,6 +27,7 @@ export interface FeatureFlags {
 	enableReaderRole: boolean;
 	enableRelayReaderRole: boolean;
 	enableInNoteConflicts: boolean;
+	enableLinkMirror: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -246,6 +247,13 @@ export const FeatureFlagSchema: {
 		title: "Resolve conflicts in the note",
 		description:
 			"Show a merge conflict inside the note, with each side's lines to pick between, instead of the banner and the side-by-side view.",
+	},
+	enableLinkMirror: {
+		default: false,
+		category: "labs",
+		title: "Keep repaired links convergent",
+		description:
+			"Record each shared note's link targets beside its text so that links repaired on several devices at once settle on one copy.",
 	},
 };
 

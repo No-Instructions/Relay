@@ -106,7 +106,19 @@ import {
 } from "./snapshots";
 import { SyncBridge } from "./SyncBridge";
 import type { SyncBridgeHost } from "./SyncBridge";
-import type { FrontMatterPrimitives } from "./types";
+import type { FrontMatterPrimitives, LinkCacheEntry, LinkPrimitives } from "./types";
+import {
+	LINK_MIRROR_ORIGIN,
+	LINKS_MAP_NAME,
+	applyBindings,
+	bindingsFromCache,
+	boundLinkSpans,
+	canonicalizeLinks,
+	linkKeysWrittenIn,
+	reconcileTouchedBindings,
+	touchedSpans,
+} from "./linkMirror";
+import type { LinkSpan } from "./linkMirror";
 import { errorFromUnknown, formatUserFacingError } from "../UserFacingError";
 import { DiskFileNotFoundError } from "./DiskFileNotFoundError";
 
@@ -576,6 +588,18 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	// parseYaml, stringifyYaml, and getFrontMatterInfo keeps our reconstructed
 	// text byte-identical to what Obsidian writes, so we never fight its saves.
 	private _yaml: FrontMatterPrimitives | null = null;
+	private _links: LinkPrimitives | null = null;
+	// Link mirror: keys a remote update wrote that await arbitration, the
+	// collector that reads them from each transaction of the remote update
+	// being applied, and whether the text observer held an editor dispatch
+	// for the repair to replace.
+	private readonly _linkKeysToArbitrate = new Set<string>();
+	private _linkKeyCollector: {
+		doc: Y.Doc;
+		links: Y.Map<unknown>;
+		handler: (tr: Y.Transaction) => void;
+	} | null = null;
+	private _linkDispatchHeld = false;
 
 	getOpCapture(): OpCapture | null {
 		return this.localPersistence?.opCapture ?? null;
@@ -624,6 +648,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		this._getAccessMode = config.getAccessMode ?? (() => "write");
 		this._replayMode = config.replayMode ?? false;
 		this._yaml = config.yaml ?? null;
+		this._links = config.links ?? null;
 		this._captureOpts = {
 			scope: "contents",
 			trackedOrigins: new Set([DISK_ORIGIN, MACHINE_EDIT_ORIGIN]),
@@ -1968,8 +1993,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	applyChangesToLocalDoc(changes: PositionedChange[]): void {
 		if (!this.localDoc || changes.length === 0) return;
 		const ytext = this.localDoc.getText("contents");
+		const linkSpans = this.linkSpansBefore(ytext.toString());
 		this.localDoc.transact(() => {
 			this.applyChangesToYText(ytext, changes);
+			this.reconcileLinkBindings(linkSpans, changes);
 		});
 	}
 
@@ -2056,6 +2083,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			// fn is a no-op for this file — skip registration
 			if (expectedText === currentText) return;
 
+			// Bind the links the repair is about to rewrite while the cache
+			// still describes the text it was computed from.
+			this.bindLinksFromCache();
+
 			const opCapture = this.getOpCapture();
 			const captureMark = opCapture?.mark() ?? 0;
 
@@ -2133,6 +2164,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 		// Guard: state may have changed during the await
 		if (!this._fork || !this.localDoc) return;
+
+		// Bind the links the repair is about to rewrite while the cache
+		// still describes the text it was computed from.
+		this.bindLinksFromCache();
 
 		this._fork.captureMark = this.getOpCapture()?.mark() ?? 0;
 		this._fork.localSnapshot = snapshotFromDoc(this.localDoc).snapshot;
@@ -3797,8 +3832,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			},
 			mergeRemoteToLocal: () => this._bridge.flushInbound(),
 			seedFrontmatterMap: () => this.seedFrontmatterMapFromCurrentText(),
+			seedLinkMap: () => this.bindLinksFromCache(),
 			drainFrontmatterMap: () => this.drainFrontmatterMapIfSynced(),
 			repairFrontmatter: () => this.repairFrontmatterFromMap(),
+			repairLinks: () => this.repairLinksFromMap(),
 			absorbTextPreservingRemoteUpdate: (_hsm, event) =>
 				this.absorbTextPreservingRemoteUpdate(event),
 			assertConvergence: () => this._bridge.assertConvergence(),
@@ -3996,9 +4033,16 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 								Y.encodeStateVector(this.localDoc),
 							);
 							const previousText = this.localDoc.getText("contents").toString();
+							const linkSpans = this.linkSpansBefore(previousText);
 							this.localDoc.transact(() => {
 								Y.applyUpdate(this.localDoc!, diff, MACHINE_EDIT_ORIGIN);
 								this.syncFrontmatterToMap(previousText);
+								if (linkSpans) {
+									this.reconcileLinkBindings(
+										linkSpans,
+										diffTextChanges(previousText, proxyText.toString()),
+									);
+								}
 							}, MACHINE_EDIT_ORIGIN);
 						} finally {
 							proxyDoc.destroy();
@@ -4017,9 +4061,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 						// Normal user edit: apply directly to localDoc
 						const ytext = this.localDoc.getText("contents");
 						const previousText = ytext.toString();
+						const linkSpans = this.linkSpansBefore(previousText);
 						this.localDoc.transact(() => {
 							this.applyChangesToYText(ytext, e.changes!);
 							this.syncFrontmatterToMap(previousText);
+							this.reconcileLinkBindings(linkSpans, e.changes!);
 						}, this);
 					}
 				}
@@ -4988,9 +5034,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			}
 
 			Y.applyUpdate(tempDoc, Y.encodeStateAsUpdate(localDoc), this);
-			Y.applyUpdate(tempDoc, updates, this.remoteDoc);
+			const linkKeys = this.applyRemoteCollectingLinkKeys(tempDoc, updates);
 
-			const mergedContent = tempDoc.getText("contents").toString();
+			let mergedContent = tempDoc.getText("contents").toString();
+			const linkCanonical = this.canonicalizeIdleLinks(tempDoc, mergedContent, linkKeys);
+			const linksRepaired = linkCanonical !== null;
+			if (linkCanonical !== null) mergedContent = linkCanonical;
 			this.idleMergeLog(`[idle-merge-debug] ${this._guid} mergedContentLen=${mergedContent.length}`);
 			if (flags().enableDeltaLogging) {
 				this.idleMergeLog(`[idle-merge-debug] ${this._guid} mergedContent=${JSON.stringify(mergedContent)}`);
@@ -5006,7 +5055,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			// that cancelled its own copy of the edit republishes those ops
 			// as tombstones, and skipping them leaves localDoc missing ops
 			// the server holds until a later session delivers them again.
-				if (this._lca && mergedContent !== this._lca.contents) {
+				if (this._lca && !linksRepaired && mergedContent !== this._lca.contents) {
 					const machineIdx = this._pendingMachineEdits.findIndex(entry =>
 						entry.expectedText === this._lca!.contents
 					);
@@ -5028,6 +5077,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				success: true,
 				mergedContent,
 				updates,
+				// A link repair is a local edit on top of the remote state: apply
+				// the remote update, then the canonical text, and publish it.
+				remoteUpdate: linksRepaired ? updates : undefined,
+				needsSync: linksRepaired ? true : undefined,
 				needsDiskWrite: diskWrite.needsDiskWrite,
 				newLCA: { contents: mergedContent, meta: { hash, mtime: diskWrite.mtime }, snapshot: null },
 			};
@@ -6164,6 +6217,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			// must not be forwarded as raw deltas.
 			if (tr.origin === FRONTMATTER_MIRROR_ORIGIN) return;
 
+			// Link repairs patch the editor once from repairLinksFromMap.
+			if (tr.origin === LINK_MIRROR_ORIGIN) return;
+
 			// Reading renders through renderSharedVersionToEditors, including
 			// when lifting a fork whose local text differs from the live view.
 			if (this._statePath !== "active.tracking") return;
@@ -6207,6 +6263,19 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 					}
 					return; // skip delta-based dispatch
 				}
+			}
+
+			// A remote transaction that wrote link bindings is followed by
+			// arbitration; the editor then receives one patch to the canonical
+			// text instead of this delta.
+			if (
+				tr.origin === this.remoteDoc &&
+				this._linkKeyCollector !== null &&
+				linkKeysWrittenIn(this._linkKeyCollector.links, tr).size > 0 &&
+				this.readCurrentEditorText() !== null
+			) {
+				this._linkDispatchHeld = true;
+				return;
 			}
 
 			// Default: delta-based dispatch (body changes, old clients)
@@ -6719,6 +6788,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		if (currentText === newContent) return;
 
 		const changes = diffTextChanges(currentText, newContent);
+		const linkSpans =
+			origin === LINK_MIRROR_ORIGIN ? null : this.linkSpansBefore(currentText);
 
 		// Apply diffs incrementally to preserve CRDT history.
 		this.localDoc.transact(() => {
@@ -6728,6 +6799,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			if (origin !== FRONTMATTER_MIRROR_ORIGIN) {
 				this.syncFrontmatterToMap(currentText);
 			}
+			this.reconcileLinkBindings(linkSpans, changes);
 		}, origin ?? this);
 	}
 
@@ -7901,6 +7973,217 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				this.lastKnownEditorText = newText;
 			}
 		}
+	}
+	// ===========================================================================
+	// Link mirror
+	// ===========================================================================
+
+	private linkMirrorEnabled(): boolean {
+		return this._links !== null && flags().enableLinkMirror;
+	}
+
+	private resolveLinkGuid(linkpath: string): string | null {
+		if (!this._links) return null;
+		try {
+			return this._links.resolve(linkpath, this.path);
+		} catch {
+			return null;
+		}
+	}
+
+	/** Bound link spans in `text`, taken before a local transaction mutates it. */
+	private linkSpansBefore(text: string): LinkSpan[] | null {
+		if (!this.linkMirrorEnabled() || !this.localDoc) return null;
+		if (this.localDoc.getMap(LINKS_MAP_NAME).size === 0) return null;
+		return boundLinkSpans(this.localDoc, text);
+	}
+
+	/**
+	 * Sender rule, inside the transaction that applied `changes`: a touched
+	 * binding follows the link now at its anchor when that link names the
+	 * same file, and is removed otherwise.
+	 */
+	private reconcileLinkBindings(
+		spans: LinkSpan[] | null,
+		changes: readonly PositionedChange[],
+	): void {
+		if (!spans || spans.length === 0 || !this.localDoc) return;
+		const touched = touchedSpans(spans, changes);
+		if (touched.length === 0) return;
+		reconcileTouchedBindings(
+			this.localDoc,
+			this.localDoc.getText("contents").toString(),
+			touched,
+			(path) => this.resolveLinkGuid(path),
+			this._isFolderConnected(),
+		);
+	}
+
+	/**
+	 * Bind links from the note's current metadata cache entry: every cached
+	 * wikilink whose original text is present at its offset and resolves to
+	 * a shared file. Stale keys are pruned once the provider has synced.
+	 * Called on the cache's change and resolve events, when a machine edit
+	 * registers, on entry to active tracking, and after provider sync.
+	 */
+	bindLinksFromCache(): void {
+		if (!this.linkMirrorEnabled() || !this.localDoc || !this._links) return;
+		if (this.isReadMode() || !this._isFolderConnected()) return;
+		const localDoc = this.localDoc;
+		const ytext = localDoc.getText("contents");
+		const text = ytext.toString();
+		let cache: LinkCacheEntry | null = null;
+		try {
+			cache = this._links.cacheFor(this.path);
+		} catch {
+			cache = null;
+		}
+		const bindings = bindingsFromCache(cache, text, ytext, (path) =>
+			this.resolveLinkGuid(path),
+		);
+		const synced = this._providerSynced || this._isProviderSynced();
+		const prune = synced && localDoc.getMap(LINKS_MAP_NAME).size > 0;
+		if (bindings.length === 0 && !prune) return;
+		let changed = false;
+		localDoc.transact(() => {
+			changed = applyBindings(localDoc, text, bindings, prune);
+		}, this);
+		// A binding is published as soon as it is made, so a peer's later
+		// write for the same key reaches every replica that holds the entry
+		// it supersedes.
+		if (changed && !this.hasFork()) this._bridge.flushOutbound();
+	}
+
+	/**
+	 * @internal Used by SyncBridge. Collects, from each transaction of the
+	 * remote update about to be applied, the link keys it wrote. The map is
+	 * taken before the update integrates so the change set is keyed by this
+	 * instance.
+	 */
+	beforeRemoteApply(): void {
+		if (!this.linkMirrorEnabled() || !this.localDoc) return;
+		const doc = this.localDoc;
+		const links = doc.getMap(LINKS_MAP_NAME);
+		const handler = (tr: Y.Transaction) => {
+			for (const key of linkKeysWrittenIn(links, tr)) this._linkKeysToArbitrate.add(key);
+		};
+		doc.on("afterTransaction", handler);
+		this._linkKeyCollector = { doc, links, handler };
+	}
+
+	/** @internal Used by SyncBridge */
+	afterRemoteApply(): void {
+		const collector = this._linkKeyCollector;
+		this._linkKeyCollector = null;
+		if (collector) collector.doc.off("afterTransaction", collector.handler);
+	}
+
+	/**
+	 * Receiver rule on the live localDoc: every key a remote update wrote
+	 * must read its bound target. Runs where the frontmatter repair runs. In
+	 * active tracking the editor then receives one patch from its current
+	 * text to the canonical text.
+	 */
+	private repairLinksFromMap(): void {
+		const keys = [...this._linkKeysToArbitrate];
+		this._linkKeysToArbitrate.clear();
+		const held = this._linkDispatchHeld;
+		this._linkDispatchHeld = false;
+		if (!this.linkMirrorEnabled() || !this.localDoc) return;
+		if (keys.length === 0 && !held) return;
+		const localDoc = this.localDoc;
+		let repaired = false;
+		if (keys.length > 0 && !this.isReadMode()) {
+			const text = localDoc.getText("contents").toString();
+			const { text: canonical, stale, rebind } = canonicalizeLinks(
+				localDoc,
+				text,
+				keys,
+				(path) => this.resolveLinkGuid(path),
+			);
+			const synced = this._providerSynced || this._isProviderSynced();
+			const online = this._isFolderConnected();
+			let mapChanged = false;
+			if ((stale.length > 0 && synced) || (rebind.length > 0 && online)) {
+				localDoc.transact(() => {
+					const ymap = localDoc.getMap(LINKS_MAP_NAME);
+					if (synced && stale.length > 0) {
+						for (const key of stale) ymap.delete(key);
+						mapChanged = true;
+					}
+					if (online && applyBindings(localDoc, text, rebind, false)) mapChanged = true;
+				}, this);
+			}
+			if (canonical !== text) {
+				this.crdtLog(
+					`link mirror: repairing ${keys.length} key(s) toward their bound targets | guid=${this._guid}`,
+				);
+				this.applyContentToLocalDoc(canonical, LINK_MIRROR_ORIGIN);
+				repaired = true;
+			}
+			// The canonical text and the map writes made here, prunes and
+			// rebinds alike, reach peers through the normal outbound path
+			// without waiting for the next edit to flush them. On entry to
+			// active tracking the convergence check runs next and must find
+			// the two documents agreeing.
+			if ((repaired || mapChanged) && !this.hasFork()) this._bridge.flushOutbound();
+		}
+		if (this._statePath !== "active.tracking" || !(held || repaired)) return;
+		const editorText = this.readCurrentEditorText();
+		if (editorText === null) return;
+		const current = localDoc.getText("contents").toString();
+		const changes = computePositionedChanges(editorText, current);
+		if (changes.length === 0) return;
+		this.emitEffect({
+			type: "DISPATCH_CM6",
+			changes,
+			originView: this._localDocDispatchOriginView,
+		});
+		this.lastKnownEditorText = current;
+	}
+
+	/**
+	 * Apply a remote update to `doc` as the idle merge does and return the
+	 * link keys it wrote. With the mirror off the update is applied alone.
+	 */
+	private applyRemoteCollectingLinkKeys(doc: Y.Doc, update: Uint8Array): Set<string> {
+		const keys = new Set<string>();
+		if (!this.linkMirrorEnabled()) {
+			Y.applyUpdate(doc, update, this.remoteDoc);
+			return keys;
+		}
+		const links = doc.getMap(LINKS_MAP_NAME);
+		const collect = (tr: Y.Transaction) => {
+			for (const key of linkKeysWrittenIn(links, tr)) keys.add(key);
+		};
+		doc.on("afterTransaction", collect);
+		try {
+			Y.applyUpdate(doc, update, this.remoteDoc);
+		} finally {
+			doc.off("afterTransaction", collect);
+		}
+		return keys;
+	}
+
+	/**
+	 * Receiver rule inside the idle merge, over the merged temp doc: the
+	 * canonical text for the keys the remote update wrote, or null when the
+	 * merged text already reads them.
+	 */
+	private canonicalizeIdleLinks(
+		tempDoc: Y.Doc,
+		mergedContent: string,
+		keys: Set<string>,
+	): string | null {
+		if (keys.size === 0 || !this.linkMirrorEnabled() || this.isReadMode() || !this.localDoc) return null;
+		const { text } = canonicalizeLinks(tempDoc, mergedContent, keys, (path) =>
+			this.resolveLinkGuid(path),
+		);
+		if (text === mergedContent) return null;
+		this.crdtLog(
+			`link mirror: idle merge repairing ${keys.size} key(s) toward their bound targets | guid=${this._guid}`,
+		);
+		return text;
 	}
 }
 
