@@ -1,12 +1,6 @@
 <script lang="ts">
 	import SettingItemHeading from "./SettingItemHeading.svelte";
-	import {
-		type Relay,
-		type RelayRole,
-		type FolderRole,
-		type RemoteSharedFolder,
-		type Role,
-	} from "../Relay";
+	import { offeredFolderRoles, type Relay, type RelayRole, type FolderRole, type RemoteSharedFolder, type Role } from "../Relay";
 	import SettingItem from "./SettingItem.svelte";
 	import type Live from "src/main";
 	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
@@ -54,13 +48,17 @@
 			.find((folder) => folder.guid === remoteFolder.guid);
 	});
 
-	// Dynamic role loading for forwards compatibility
-	const availableRoles = derived([plugin.relayManager.roles], ([$roles]) => {
-		return $roles.values().sort(rolePrioritySort);
-	});
+	const availableRoles = derived(
+		[plugin.relayManager.roles, relayRoles, remoteFolder],
+		([$roles, $relayRoles, $remoteFolder]) => new Map(
+			$relayRoles.values()
+				.filter((role) => role.relayId === $remoteFolder.relayId)
+				.map((role) => [role.userId, offeredFolderRoles($roles.values(), role.role).sort(rolePrioritySort)] as const),
+		),
+	);
 
-	function rolePrioritySort(a: { name: Role }, b: { name: Role }) {
-		const priority: Record<Role, number> = { Owner: 0, Member: 1, Reader: 2 };
+	function rolePrioritySort(a: { name: string }, b: { name: string }) {
+		const priority: Record<string, number> = { Owner: 0, Member: 1, Reader: 2 };
 		return (priority[a.name] ?? 999) - (priority[b.name] ?? 999);
 	}
 
@@ -295,10 +293,13 @@
 			plugin.app,
 			plugin.relayManager,
 			remoteFolder,
-			async (userIds: string[], role) =>
+			async (grants) =>
 				Promise.all(
-					userIds.map((userId) =>
-						plugin.relayManager.addFolderRole(remoteFolder, userId, role),
+					grants.map((grant) =>
+						plugin.relayManager.addFolderRole(
+							remoteFolder,
+							grant,
+						),
 					),
 				).then(() => undefined),
 		);
@@ -307,7 +308,10 @@
 
 	async function handleFolderRoleChange(folderRole: FolderRole, newRole: Role) {
 		try {
-			await plugin.relayManager.updateFolderRole(folderRole, newRole);
+			await plugin.relayManager.updateFolderRole(
+				folderRole,
+				newRole,
+			);
 		} catch (error) {
 			handleServerError(error, "Failed to change user role.");
 			throw error;
@@ -527,11 +531,15 @@
 						<select
 							class="dropdown"
 							value={role.role}
+							disabled={!$availableRoles.get(role.userId)?.length}
 							data-role-id={role.id}
 							on:change={handleFolderRoleChangeEvent}
 						>
-							{#each $availableRoles as role}
-								<option value={role.name}>{role.name}</option>
+							{#if !$availableRoles.get(role.userId)?.some((option) => option.name === role.role)}
+								<option value={role.role} disabled>{role.role}</option>
+							{/if}
+							{#each $availableRoles.get(role.userId) ?? [] as option}
+								<option value={option.name}>{option.name}</option>
 							{/each}
 						</select>
 					</div>

@@ -5,13 +5,14 @@ import {
 	type ConnectionState,
 	type ConnectionIntent,
 	type CloseEventLike,
+	type PermissionDeniedEvent,
 } from "./client/provider";
 export type { ConnectionState, ConnectionIntent };
 import { User } from "./User";
 import { HasLogging } from "./debug";
 import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
-import type { ClientToken } from "./client/types";
+import { capabilitiesOf, type Capabilities, type ClientToken } from "./client/types";
 import { S3RN, type S3RNType } from "./S3RN";
 import { encodeClientToken } from "./client/types";
 import type { TimeProvider } from "./TimeProvider";
@@ -49,6 +50,7 @@ function localAwarenessState(user: User | undefined): Record<string, unknown> {
 
 function makeProvider(
 	clientToken: ClientToken,
+	capabilities: Capabilities,
 	ydoc: Y.Doc,
 	user: User | undefined,
 	timeProvider: TimeProvider,
@@ -74,7 +76,7 @@ function makeProvider(
 			awareness,
 			params: params,
 			disableBc: true,
-			readOnly: clientToken.authorization === "read-only",
+			capabilities,
 			timeProvider,
 		},
 	);
@@ -103,6 +105,11 @@ function connectionCloseDetails(event: CloseEventLike): ConnectionCloseDetails {
 
 type Listener = (state: ConnectionState) => void;
 
+/** The token a host holds before any has been fetched: it grants nothing it would refuse. */
+function noToken(): ClientToken {
+	return { token: "", url: "", docId: "-", expiryTime: 0 } as ClientToken;
+}
+
 export class HasProvider extends HasLogging {
 	_provider: YSweetProvider | null = null;
 	path?: string;
@@ -125,6 +132,7 @@ export class HasProvider extends HasLogging {
 	private _offConnectionClose: (() => void) | null = null;
 	private _offState: (() => void) | null = null;
 	private _offSynced: (() => void) | null = null;
+	private _offPermissionDenied: (() => void) | null = null;
 	private _offLoginManager: (() => void) | null = null;
 	private _awarenessActive: boolean;
 	listeners: Map<unknown, Listener>;
@@ -148,8 +156,17 @@ export class HasProvider extends HasLogging {
 
 		this.tokenStore = tokenStore;
 		this.clientToken =
-			this.tokenStore.getTokenSync(S3RN.encode(this.s3rn)) ||
-			({ token: "", url: "", docId: "-", expiryTime: 0 } as ClientToken);
+			this.tokenStore.getTokenSync(S3RN.encode(this.s3rn)) || noToken();
+	}
+
+	/**
+	 * Forget the token this host last held, when it can no longer describe
+	 * the member's access: a role change reached a host that is not
+	 * connected, so no fresh token is coming until it connects. Until then
+	 * the role policy answers for it alone.
+	 */
+	dropStaleToken(): void {
+		this.clientToken = noToken();
 	}
 
 	/**
@@ -192,6 +209,7 @@ export class HasProvider extends HasLogging {
 
 		this._provider = makeProvider(
 			this.clientToken,
+			this.providerCapabilities(this.clientToken),
 			this._ydoc,
 			user,
 			this.timeProvider,
@@ -249,6 +267,12 @@ export class HasProvider extends HasLogging {
 		});
 		syncedSub.on();
 		this._offSynced = syncedSub.off;
+
+		const permissionDeniedSub = this.providerPermissionDeniedSubscription(
+			() => this.handlePermissionDenied(),
+		);
+		permissionDeniedSub.on();
+		this._offPermissionDenied = permissionDeniedSub.off;
 
 		return this._ydoc;
 	}
@@ -308,6 +332,11 @@ export class HasProvider extends HasLogging {
 	 */
 	protected handleProviderDesynced(): void {}
 
+	/** The server refused a write, so the held token is stale: force a token refresh. */
+	protected handlePermissionDenied(): void {
+		this.tokenStore.forceRefresh(S3RN.encode(this.s3rn));
+	}
+
 	/**
 	 * Destroy the remote YDoc and provider, freeing memory.
 	 * The document can be re-created later via ensureRemoteDoc().
@@ -335,6 +364,10 @@ export class HasProvider extends HasLogging {
 		if (this._offSynced) {
 			this._offSynced();
 			this._offSynced = null;
+		}
+		if (this._offPermissionDenied) {
+			this._offPermissionDenied();
+			this._offPermissionDenied = null;
 		}
 		if (this._provider) {
 			this._provider.destroy();
@@ -418,28 +451,59 @@ export class HasProvider extends HasLogging {
 
 	refreshProvider(clientToken: ClientToken) {
 		// updates the provider when a new token is received
+		// Before any token, access resolves as if the grant were full, so the
+		// first token that withholds writing is a change like any other.
+		const previousWrite = capabilitiesOf(this.clientToken?.authorization).writeContent;
 		this.clientToken = clientToken;
+		const capabilities = capabilitiesOf(clientToken.authorization);
+		this.onClientToken(clientToken);
 
-		if (!this._provider) {
-			// No provider yet - token will be used when ensureRemoteDoc() is called
-			return;
+		if (this._provider) {
+			const result = this._provider.refreshToken(
+				clientToken.url,
+				clientToken.docId,
+				clientToken.token,
+				this.providerCapabilities(clientToken),
+			);
+
+			if (result.urlChanged) {
+				this.log(`Token Refreshed: setting new provider url, ${result.newUrl}`);
+			}
 		}
 
-		const result = this._provider.refreshToken(
-			clientToken.url,
-			clientToken.docId,
-			clientToken.token,
-			clientToken.authorization === "read-only",
-		);
-
-		if (result.urlChanged) {
-			const maskedUrl = result.newUrl.replace(
-				/token=[^&]+/,
-				"token=[REDACTED]",
-			);
-			this.log(`Token Refreshed: setting new provider url, ${maskedUrl}`);
+		if (previousWrite !== capabilities.writeContent) {
+			this.onAccessModeChanged(!capabilities.writeContent);
 		}
 	}
+
+	/** Called when a token refresh flips content-write permission. */
+	protected onAccessModeChanged(_readOnly: boolean): void {}
+
+	/**
+	 * The role policy's content-write answer, or null while roles are
+	 * unknown. Subclasses name their policy source.
+	 */
+	protected expectedWriteContent(): boolean | null {
+		return null;
+	}
+
+	/**
+	 * What the provider may do on the wire: the token's capabilities, capped
+	 * by the role policy. The token is the ceiling; the policy can only
+	 * lower it. A connection opened under a write-scoped token stays
+	 * writable on the server until it closes, so after a demotion the
+	 * client is the only party that can stop publishing promptly.
+	 */
+	private providerCapabilities(clientToken: ClientToken): Capabilities {
+		const capabilities = capabilitiesOf(clientToken.authorization);
+		if (this.expectedWriteContent() === false && capabilities.writeContent) {
+			return { ...capabilities, writeContent: false };
+		}
+		return capabilities;
+	}
+
+	/** Called with every token this host receives. */
+	protected onClientToken(_clientToken: ClientToken): void {}
 
 	public get connected(): boolean {
 		return this.state.status === "connected";
@@ -824,6 +888,18 @@ export class HasProvider extends HasLogging {
 		};
 		const off = () => {
 			this._provider?.off("synced", f);
+		};
+		return { on, off };
+	}
+
+	private providerPermissionDeniedSubscription(
+		f: (event: PermissionDeniedEvent) => void,
+	): Subscription {
+		const on = () => {
+			this._provider?.on("permission-denied", f);
+		};
+		const off = () => {
+			this._provider?.off("permission-denied", f);
 		};
 		return { on, off };
 	}

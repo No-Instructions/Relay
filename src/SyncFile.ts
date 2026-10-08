@@ -550,6 +550,10 @@ export class SyncFile
 			this.log("skipping push -- folder is set to disconnected");
 			return;
 		}
+		if (!this.sharedFolder.canWriteContent) {
+			this.log("skipping push -- read-only access");
+			return;
+		}
 		const hash = await this.caf.hash();
 		this._refreshMeta();
 		if (this.meta?.hash === hash) {
@@ -912,6 +916,10 @@ export class SyncFile
 
 	acceptsSession(): boolean {
 		return true;
+	}
+
+	public get canPublishContent(): boolean {
+		return this.sharedFolder.canWriteContent;
 	}
 
 	/**

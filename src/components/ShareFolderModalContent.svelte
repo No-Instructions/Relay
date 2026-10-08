@@ -1,13 +1,14 @@
 <script lang="ts">
 	import type { App } from "obsidian";
 	import { Platform } from "obsidian";
-	import type { Relay, RelayUser, Role } from "../Relay";
-	import type { RelayManager } from "../RelayManager";
+	import { offeredFolderRoles, selectedFolderRole, type Relay, type RelayUser, type Role } from "../Relay";
+	import type { FolderRoleGrant, RelayManager } from "../RelayManager";
 	import type { SharedFolder, SharedFolders } from "../SharedFolder";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import SlimSettingItem from "./SlimSettingItem.svelte";
 	import SelectedFolder from "./SelectedFolder.svelte";
 	import TFolderSuggest from "./TFolderSuggest.svelte";
+	import RoleSelect from "./RoleSelect.svelte";
 	import { onMount, onDestroy } from "svelte";
 	import { derived, writable } from "svelte/store";
 	import { FolderSuggestModal } from "../ui/FolderSuggestModal";
@@ -21,9 +22,10 @@
 		folderPath: string,
 		folderName: string,
 		isPrivate: boolean,
-		userIds: string[],
+		grants: FolderRoleGrant[],
 	) => Promise<SharedFolder>;
 	export let setTitle: (title: string) => void = () => {};
+	const canCreateFolder = relayManager.userCan(["relay", "create_folder"], relay);
 
 	let currentStep: "main" | "users" = "main";
 	let isPrivate = false;
@@ -36,7 +38,12 @@
 	// picks the folder through an inline suggest that stays inside this modal.
 	const isMobile = Platform?.isMobile ?? false;
 
-	const selectedUsers = writable(new Set<string>(relayManager.user?.id ? [relayManager.user.id] : []));
+	// Selected users with the role each will be granted.
+	const initialSelectedUsers = new Map<string, Role>();
+	if (relayManager.user?.id) {
+		initialSelectedUsers.set(relayManager.user.id, "Member");
+	}
+	const selectedUsers = writable(initialSelectedUsers);
 	const searchQuery = writable("");
 
 	let modalEl: HTMLElement;
@@ -52,6 +59,8 @@
 	interface UserSelection {
 		user: RelayUser;
 		selected: boolean;
+		role: Role | null;
+		roles: { name: string }[];
 		isCurrentUser: boolean;
 	}
 
@@ -60,22 +69,26 @@
 		[relayManager.relayRoles],
 		([$relayRoles]) => {
 			return Array.from($relayRoles.values())
-				.filter((role) => role.relayId === relay.id)
-				.map((role) => role.user);
+				.filter((role) => role.relayId === relay.id);
 		}
 	);
 
 	// Create derived store for user selections
 	const users = derived(
-		[relayUsers, selectedUsers],
-		([$relayUsers, $selectedUsers]) => {
+		[relayUsers, selectedUsers, relayManager.roles],
+		([$relayUsers, $selectedUsers, $roles]) => {
 			const currentUserId = relayManager.user?.id;
-			return $relayUsers.map((user) => {
+			return $relayUsers.map((relayRole) => {
+				const user = relayRole.user;
+				const roles = offeredFolderRoles($roles.values(), relayRole.role);
+				const role = selectedFolderRole(roles, $selectedUsers.get(user.id));
 				const isCurrentUser = currentUserId === user.id;
-				const selected = $selectedUsers.has(user.id) || isCurrentUser;
+				const selected = ($selectedUsers.has(user.id) && role !== null) || isCurrentUser;
 				return {
 					user,
 					selected,
+					role,
+					roles,
 					isCurrentUser,
 				};
 			});
@@ -110,7 +123,7 @@
 	}
 
 	async function handleMainNext() {
-		if (sharing) return;
+		if (sharing || !$canCreateFolder) return;
 		// If user typed but didn't accept via enter/tab, accept the current input
 		if (!acceptedFolder && inputValue.trim()) {
 			acceptedFolder = inputValue.trim();
@@ -125,21 +138,31 @@
 	}
 
 	function toggleUser(userSelection: UserSelection) {
-		if (userSelection.isCurrentUser) return;
+		if (userSelection.isCurrentUser || !userSelection.role) return;
 
 		selectedUsers.update(current => {
-			const newSet = new Set(current);
-			if (newSet.has(userSelection.user.id)) {
-				newSet.delete(userSelection.user.id);
+			const newMap = new Map(current);
+			if (newMap.has(userSelection.user.id)) {
+				newMap.delete(userSelection.user.id);
 			} else {
-				newSet.add(userSelection.user.id);
+				newMap.set(userSelection.user.id, userSelection.role!);
 			}
-			return newSet;
+			return newMap;
+		});
+	}
+
+	function setUserRole(userId: string, role: Role) {
+		selectedUsers.update(current => {
+			const newMap = new Map(current);
+			if (newMap.has(userId)) {
+				newMap.set(userId, role);
+			}
+			return newMap;
 		});
 	}
 
 	async function handleShare() {
-		if (sharing) return;
+		if (sharing || !$canCreateFolder) return;
 		// If user typed but didn't accept via enter/tab, accept the current input
 		if (!acceptedFolder && inputValue.trim()) {
 			acceptedFolder = inputValue.trim();
@@ -149,15 +172,14 @@
 		try {
 			// Filter out current user since their role is created automatically
 			const currentUserId = relayManager.user?.id;
-			const currentSelectedUsers = $selectedUsers;
-			const userIds = Array.from(currentSelectedUsers).filter(
-				(id) => id !== currentUserId,
-			);
+			const grants: FolderRoleGrant[] = $users
+				.filter((user) => user.selected && user.user.id !== currentUserId && user.role)
+				.map((user) => ({ user: user.user.id, role: user.role! }));
 			await onConfirm(
 				acceptedFolder,
 				acceptedFolder.split("/").pop() || "",
 				isPrivate,
-				userIds,
+				grants,
 			);
 		} catch (error) {
 			handleServerError(error, "Failed to share folder.");
@@ -245,6 +267,10 @@
 	}
 </script>
 
+{#if !$canCreateFolder}
+	<p>Your relay role does not allow sharing new folders.</p>
+{/if}
+
 {#if currentStep === "main"}
 	<div class="share-folder-modal" bind:this={modalEl}>
 		<div class="section">
@@ -291,7 +317,7 @@
 		<SlimSettingItem name="">
 			<button
 				class="mod-cta"
-				disabled={sharing || (!acceptedFolder && !inputValue.trim())}
+				disabled={sharing || !$canCreateFolder || (!acceptedFolder && !inputValue.trim())}
 				aria-busy={sharing}
 				on:click={handleMainNext}
 			>
@@ -345,7 +371,7 @@
 							<input
 								type="checkbox"
 								checked={userSelection.selected}
-								disabled={userSelection.isCurrentUser}
+								disabled={userSelection.isCurrentUser || !userSelection.role}
 								class="user-checkbox"
 								tabindex="-1"
 							/>
@@ -366,6 +392,13 @@
 							</div>
 							{#if userSelection.isCurrentUser}
 								<div class="user-status">Required (You)</div>
+							{:else if userSelection.selected && userSelection.role && userSelection.roles.some((role) => role.name === "Reader")}
+								<RoleSelect
+									roles={userSelection.roles}
+									value={userSelection.role}
+									onChange={(role) =>
+										setUserRole(userSelection.user.id, role)}
+								/>
 							{/if}
 						</div>
 					{/each}
@@ -377,7 +410,7 @@
 			<button class="mod-muted" disabled={sharing} on:click={goBack}>Back</button>
 			<button
 				class="mod-cta"
-				disabled={sharing}
+				disabled={sharing || !$canCreateFolder}
 				aria-busy={sharing}
 				on:click={handleShare}
 			>

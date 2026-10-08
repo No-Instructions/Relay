@@ -43,6 +43,7 @@ export interface CheckableHSM {
   getLocalDoc(): Y.Doc | null;
   getRemoteDoc(): Y.Doc | null;
   getSyncStatus(): SyncStatus;
+  hasFork(): boolean;
   onStateChange(listener: (from: StatePath, to: StatePath, event: MergeEvent) => void): () => void;
 }
 
@@ -350,6 +351,7 @@ export class InvariantChecker {
         contents: state.lca?.contents ?? null,
       },
       syncStatus: syncStatus.status,
+      hasFork: this.hsm.hasFork(),
       now: () => this.timeProvider.now(),
     };
   }
