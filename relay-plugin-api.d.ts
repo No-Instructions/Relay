@@ -10,6 +10,8 @@ export type RelayEvent<T> = {
 	record: T;
 };
 
+export type RenameOrigin = "client" | "relay";
+
 /**
  * Relay's data-only plugin boundary.
  *
@@ -19,6 +21,15 @@ export type RelayEvent<T> = {
  * block, with no await between those operations.
  */
 export interface ApiV0 {
+	/**
+	 * Read-only query in a synchronous vault rename callback with oldPath and file.path.
+	 * "relay" means Relay is applying a move (including reader rollback and
+	 * matching folder descendants); "client" means no Relay move matches.
+	 * This does not identify a user or another sync plugin. There is no history;
+	 * querying after the callback is unsupported. Feature-detect this method
+	 * on older v0 APIs and skip origin-dependent writes when it is absent.
+	 */
+	getRenameOrigin(oldPath: string, newPath: string): RenameOrigin;
 	getUsers(): User[];
 	getCurrentUser(): User | null;
 	/**

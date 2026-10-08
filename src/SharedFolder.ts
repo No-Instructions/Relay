@@ -1,4 +1,6 @@
 "use strict";
+
+import { renameFromRelay } from "./RenameOrigin";
 import type { AttachmentTransfers } from "./AttachmentTransfers";
 import type { AttachmentVersion } from "./AttachmentIO";
 import { uuidv4 } from "lib0/random";
@@ -2439,8 +2441,8 @@ export class SharedFolder extends HasProvider {
 		file: TAbstractFile,
 		newPath: string,
 	): Promise<void> {
-		return withLinkUpdatesOn(this.vault, () =>
-			this.fileManager.renameFile(file, newPath),
+		return renameFromRelay(this.vault, file, newPath, () =>
+			withLinkUpdatesOn(this.vault, () => this.fileManager.renameFile(file, newPath)),
 		);
 	}
 
@@ -3420,7 +3422,9 @@ export class SharedFolder extends HasProvider {
 		echoes.add(key);
 		let restore: Promise<void>;
 		try {
-			restore = this.fileManager.renameFile(file, normalizePath(oldPath));
+			restore = renameFromRelay(this.vault, file, normalizePath(oldPath), () =>
+				this.fileManager.renameFile(file, normalizePath(oldPath)),
+			);
 		} catch (error) {
 			echoes.delete(key);
 			throw error;
