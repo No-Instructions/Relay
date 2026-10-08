@@ -12,6 +12,7 @@ import { MarkdownView, TFile, View } from 'obsidian';
 import type { WorkspaceLeaf } from 'obsidian';
 import type { EditorView } from '@codemirror/view';
 import { diff_match_patch } from 'diff-match-patch';
+import { diffTextChanges } from './textChanges';
 import { IndexeddbPersistence } from './storage/y-indexeddb';
 import type { TimeProvider } from './TimeProvider';
 import type { E2ERecordingBridge, E2ERecordingState } from './merge-hsm/recording';
@@ -1174,40 +1175,11 @@ export class RelayDebugAPI {
 
     if (before === target) return { success: true, changeCount: 0 };
 
-    const diffs = dmp.diff_main(before, target);
-    dmp.diff_cleanupSemantic(diffs);
-
-    const changes: { from: number; to: number; insert: string }[] = [];
-    let pos = 0;
-    for (const [op, text] of diffs) {
-      if (op === 0) {
-        pos += text.length;
-      } else if (op === -1) {
-        changes.push({ from: pos, to: pos + text.length, insert: '' });
-        pos += text.length;
-      } else if (op === 1) {
-        changes.push({ from: pos, to: pos, insert: text });
-      }
-    }
-
-    // Merge adjacent delete+insert into replacements
-    const merged: typeof changes = [];
-    let i = 0;
-    while (i < changes.length) {
-      const cur = changes[i];
-      if (i + 1 < changes.length && cur.insert === '' &&
-          changes[i + 1].from === cur.to && changes[i + 1].to === changes[i + 1].from) {
-        merged.push({ from: cur.from, to: cur.to, insert: changes[i + 1].insert });
-        i += 2;
-      } else {
-        merged.push(cur);
-        i++;
-      }
-    }
+    const changes = diffTextChanges(before, target);
 
     // Dispatch without ySyncAnnotation so HSM treats this as a user edit
-    cm.dispatch({ changes: merged });
-    return { success: true, changeCount: merged.length };
+    cm.dispatch({ changes });
+    return { success: true, changeCount: changes.length };
   }
 
   private async closeEditor(handle: EditorHandle): Promise<void> {
