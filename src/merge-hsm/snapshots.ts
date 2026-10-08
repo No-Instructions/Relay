@@ -15,6 +15,7 @@
  */
 
 import * as Y from "yjs";
+import type { Fork } from "./types";
 
 /** Decoded state vector: Map<clientId, clock> */
 export type DecodedSV = Map<number, number>;
@@ -636,4 +637,20 @@ export function emptySnapshot(): Uint8Array {
 		}
 	}
 	return cachedEmptySnapshot;
+}
+
+/** The preserved side of a fork, restored from its snapshot. */
+export function preservedForkText(
+	localDoc: Y.Doc | null,
+	fork: Fork | null | undefined,
+): string | null {
+	if (!localDoc || !fork) return null;
+	if (!fork.localSnapshot) {
+		return localDoc.getText("contents").toString();
+	}
+	return restoreTextAtSnapshot(
+		localDoc,
+		{ snapshot: fork.localSnapshot },
+		"contents",
+	);
 }
