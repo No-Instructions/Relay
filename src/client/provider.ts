@@ -16,6 +16,8 @@ import * as math from "lib0/math";
 import * as url from "lib0/url";
 import { decode as decodeCBOR } from "cbor-x";
 import { metrics, curryLog, describeError } from "../debug";
+import { flag } from "../flags";
+import { FeatureFlagManager } from "../flagManager";
 import type { TimeProvider } from "../TimeProvider";
 
 declare const GIT_TAG: string;
@@ -931,6 +933,24 @@ export class YSweetProvider extends ObservableV2<YSweetProviderEvents> {
 	_dropSilentSocket(): void {
 		const ws = this.ws;
 		if (!ws) return;
+		// Detaching the handlers and reconnecting at once is the point of
+		// this path: a connection whose peer has stopped answering never
+		// sends the close frame the browser waits up to a minute for, so
+		// leaving the close to run its course keeps the provider believing
+		// it is connected long after it is not. The flag turns that off
+		// without a release — the socket is still closed, but the reconnect
+		// waits for the handshake to time out, which is where this started.
+		if (!FeatureFlagManager.getInstance().getFlag(flag.enableSilentSocketDrop)) {
+			providerDebug(
+				`[${this.roomname}] no message in ${messageReconnectTimeout}ms; closing the socket`,
+			);
+			try {
+				ws.close();
+			} catch {
+				// Nothing follows; onclose drives the reconnect.
+			}
+			return;
+		}
 		providerDebug(
 			`[${this.roomname}] no message in ${messageReconnectTimeout}ms; dropping the socket`,
 		);
