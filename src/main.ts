@@ -1,4 +1,6 @@
 "use strict";
+
+import { getRenameOrigins } from "./RenameOrigin";
 import { AttachmentTransfers } from "./AttachmentTransfers";
 
 import type { MergeEvent } from "./merge-hsm/types";
@@ -901,6 +903,7 @@ export default class Live extends Plugin {
 			() => {
 				void this._liveViews?.refresh("public-api:text-view-registration");
 			},
+			(oldPath, newPath) => getRenameOrigins(this.app.vault).get(oldPath, newPath),
 		);
 		this.register(() => {
 			publicApi.detach();

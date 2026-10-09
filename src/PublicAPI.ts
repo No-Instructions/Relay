@@ -21,7 +21,10 @@ export type RelayEvent<T> = {
 	record: T;
 };
 
+export type RenameOrigin = "client" | "relay";
+
 export interface ApiV0 {
+	getRenameOrigin(oldPath: string, newPath: string): RenameOrigin;
 	getUsers(): User[];
 	getCurrentUser(): User | null;
 	registerTextView(pluginId: string, viewType: string): void;
@@ -82,6 +85,7 @@ interface ApiState {
 	currentUser: User | null;
 	registry: TextViewRegistry | null;
 	refreshLiveViews: (() => void) | null;
+	getRenameOrigin: ((oldPath: string, newPath: string) => RenameOrigin) | null;
 }
 
 function requireAttached(state: ApiState): void {
@@ -90,6 +94,10 @@ function requireAttached(state: ApiState): void {
 
 function createApi(state: ApiState): Api {
 	const v0: ApiV0 = {
+		getRenameOrigin: (oldPath, newPath) => {
+			requireAttached(state);
+			return state.getRenameOrigin!(oldPath, newPath);
+		},
 		getUsers: () => {
 			requireAttached(state);
 			return clone(state.users);
@@ -133,6 +141,7 @@ export function createPublicApi(
 	textViewRegistry: TextViewRegistry,
 	workspace: WorkspaceEvents,
 	refreshLiveViews: () => void = () => {},
+	getRenameOrigin: (oldPath: string, newPath: string) => RenameOrigin = () => "client",
 ): PublicApiHandle {
 	const readUsers = (): User[] =>
 		relayManager.users.values().flatMap((record) => {
@@ -146,6 +155,7 @@ export function createPublicApi(
 		currentUser: readCurrentUser(),
 		registry: textViewRegistry,
 		refreshLiveViews,
+		getRenameOrigin,
 	};
 
 	let usersQueued = false;
@@ -208,6 +218,7 @@ export function createPublicApi(
 			stopCurrentUser();
 			state.registry = null;
 			state.refreshLiveViews = null;
+			state.getRenameOrigin = null;
 		},
 	};
 }
