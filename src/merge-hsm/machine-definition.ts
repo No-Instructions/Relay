@@ -116,7 +116,10 @@ export const MACHINE: MachineDefinition = {
 						'absorbTextPreservingRemoteUpdate',
 					],
 				},
-				{ target: 'unloading' },
+				// The remote head keeps moving while the note closes. Tracking
+				// it here lets the idle load that follows see the update instead
+				// of settling as synced over a stale head.
+				{ target: 'unloading', actions: ['applyRemoteToRemoteDoc'] },
 			],
 			PROVIDER_SYNCED: { target: 'unloading', actions: ['markProviderSynced'] },
 			CONNECTED: [
