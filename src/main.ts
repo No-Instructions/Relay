@@ -88,6 +88,7 @@ import {
 } from "./ui/SyncStatusView";
 import { type SettingsTree, NamespacedSettings, Settings } from "./SettingsStorage";
 import { ensureLinkUpdatesOn } from "./linkUpdates";
+import { applyingServerChange } from "./serverChanges";
 import { ObsidianFileAdapter, ObsidianNotifier } from "./debugObsididan";
 import { BugReportModal } from "./ui/BugReportModal";
 import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
@@ -1786,7 +1787,12 @@ export default class Live extends Plugin {
 							if (tfile instanceof TFile && file && isDocument(file)) {
 								const hsm = file.hsm;
 								if (hsm) {
-									await hsm.registerMachineEdit(fn);
+									// The vault where the change behind this edit was
+									// made publishes it; a vault applying the change
+									// from the server holds its copy for that one.
+									await hsm.registerMachineEdit(fn, {
+										publisher: !applyingServerChange(plugin.app.vault),
+									});
 								}
 							}
 						}
