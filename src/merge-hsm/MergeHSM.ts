@@ -133,7 +133,19 @@ type PendingMachineEdit = {
 	captureMark: number;
 	registeredAt: number;
 	teardownCompletion: MachineEditTeardownCompletion;
+	/** Whether this edit's ops wait for the publisher's copy before publishing. */
+	holds: boolean;
 };
+
+/**
+ * How a machine edit relates to the change it derives from. The vault where
+ * the change was made is its publisher and publishes the edit at once; every
+ * other vault derives the same edit from the change as it arrives and holds
+ * its copy until the publisher's reaches it, or the machine-edit TTL passes.
+ */
+export interface MachineEditOptions {
+	publisher?: boolean;
+}
 /**
  * An LCA produced by an idle-merge invoke. The head snapshot is deferred
  * (null) when the invoke computed the merge on a temp doc: the real head
@@ -604,6 +616,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	// Machine edit rewind: pending vault.process() edits awaiting remote match
 	private _pendingMachineEdits: PendingMachineEdit[] = [];
 	private _machineEditDrainWaiters: Set<() => void> = new Set();
+	private _remoteUpdateWaiters: Set<() => void> = new Set();
 	private _suppressLocalObserver = false;
 	private _localDocDispatchOriginView: string | undefined;
 
@@ -1939,6 +1952,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		expectedText: string;
 		captureMark: number;
 		registeredAt: number;
+		holds: boolean;
 	}> {
 		return this._pendingMachineEdits;
 	}
@@ -2027,15 +2041,21 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	}
 
 	/**
-	 * Register a machine edit (vault.process) for deferred sync with rewind.
-	 *
-	 * Pre-computes the expected result text and bookmarks OpCapture so that
-	 * when matching remote ops arrive, the local ops can be reversed
-	 * (rewound) instead of producing duplicates.
-	 *
-	 * @param fn - The text transform function from vault.process()
+	 * Register a machine edit: an edit Obsidian derives from a file change,
+	 * which every vault that sees the change derives alike. The vault where
+	 * the change was made is the edit's publisher and publishes its copy at
+	 * once; its registration ends as soon as the edit is in the document.
+	 * Any other vault applies its copy locally at once, so disk and editor
+	 * are right immediately, but holds the copy's publication, through
+	 * closing the note too, until the publisher's copy reaches it, when its
+	 * own is cancelled as a no-op, or until the machine-edit TTL passes,
+	 * after which it publishes anyway. An edit of unstated origin holds.
 	 */
-	async registerMachineEdit(fn: (data: string) => string): Promise<void> {
+	async registerMachineEdit(
+		fn: (data: string) => string,
+		options: MachineEditOptions = {},
+	): Promise<void> {
+		const holds = !options.publisher;
 		// In read mode the transform is not run and nothing is registered.
 		if (this._statePath.startsWith("active.reading")) return;
 		if (this.isIdle() && this.isReadMode()) return;
@@ -2068,12 +2088,13 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 					currentText,
 					expectedText,
 				),
+				holds,
 			});
 
 			this.hsmDebug(
 				`registerMachineEdit | guid=${this._guid} | ` +
 				`expectedLen=${expectedText.length} | captureMark=${captureMark} | ` +
-				`pendingCount=${this._pendingMachineEdits.length}`
+				`holds=${holds} | pendingCount=${this._pendingMachineEdits.length}`
 			);
 
 			// Schedule expiry check at TTL + 100ms
@@ -2123,6 +2144,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			created: this.timeProvider.now(),
 			captureMark: 0,
 			machineEditFn: fn,
+			awaitsPublisher: holds,
 		};
 
 		// Phase 2: async. Wait for IDB to load so OpCapture is wired to a
@@ -3314,6 +3336,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				if (this.remoteDoc) {
 					Y.applyUpdate(this.remoteDoc, update, this.remoteDoc);
 					this._remoteSnapshot = snapshotFromDoc(this.remoteDoc).snapshot;
+					this.notifyRemoteUpdateWaiters();
 				} else {
 					// No replica in memory: advance the tracked remote head from the
 					// update's own metadata — its covered insert clocks and delete set.
@@ -3947,6 +3970,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				if (this.localDoc) {
 					// Check if this CM6 change matches a pending machine edit
 					if (machineEditIdx >= 0) {
+						const machineEdit = this._pendingMachineEdits[machineEditIdx];
 						// Machine edit: apply via a temp proxy Y.Doc so the
 						// items get the proxy's clientID, not localDoc's. This
 						// decouples user edits from machine edits at the state
@@ -3963,8 +3987,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 						// registerMachineEdit → setViewData, which requires
 						// the machine-edit capture to prevent peer-side
 						// duplication that concatenates independently inserted copies.
-						this._bridge.currentMachineEditMark =
-							this._pendingMachineEdits[machineEditIdx].captureMark;
+						this._bridge.currentMachineEditMark = machineEdit.captureMark;
 						this._localDocDispatchOriginView = e.viewId;
 						observerWillDispatch = true;
 
@@ -4005,6 +4028,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 							this._localDocDispatchOriginView = undefined;
 							this._bridge.currentMachineEditMark = null;
 						}
+						// The publisher's copy is in the document and goes out
+						// with the flush below; no echo of it is waited for. A
+						// registration kept past this point would take every
+						// later inbound update for that echo.
+						if (!machineEdit.holds) this.removeMachineEdit(machineEdit);
 					} else if (e.userEvent === "set") {
 						// setViewData with no matching machine edit: ingest via
 						// docText DMP'd against current localDoc. The from/to
@@ -5312,6 +5340,14 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		}
 
 		const fork = this._fork;
+		// A machine edit derived from a change that arrived from the server
+		// waits for the publisher's copy. Once the remote state carries it,
+		// the merge below finds both sides agreeing and this copy becomes a
+		// no-op; a copy published first would be a second insertion.
+		if (fork.origin === "machine-edit" && fork.awaitsPublisher) {
+			await this.holdForkForPublisher(fork, signal);
+			if (signal.aborted || this._fork !== fork) return { success: false };
+		}
 		const localContent = localDoc.getText("contents").toString();
 
 		// Apply any pending remote updates before reading remoteDoc content
@@ -5399,7 +5435,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 			// If fork originated from a machine edit, register as pending so
 			// the late-arriving remote CRDT (same edit from the other vault)
-			// is detected and skipped by idle-merge.
+			// is detected and skipped by idle-merge. The copy is published
+			// already, so the entry holds nothing: a note opened and closed
+			// within the TTL does not wait on it.
 			if (fork.origin === 'machine-edit' && fork.machineEditFn) {
 				this._pendingMachineEdits.push({
 					fn: fork.machineEditFn,
@@ -5407,6 +5445,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 					captureMark: fork.captureMark,
 					registeredAt: this.timeProvider.now(),
 					teardownCompletion: { kind: "closed" },
+					holds: false,
 				});
 				const MACHINE_EDIT_TTL = 5000;
 				this.timeProvider.setTimeout(() => {
@@ -6988,10 +7027,79 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		});
 	}
 
+	/**
+	 * Hold a receiver's machine-edit fork until the publisher's copy of the
+	 * edit is in the remote state, or the machine-edit TTL has passed since
+	 * the fork was made. A remote change that does not carry the edit, such
+	 * as a peer typing elsewhere, keeps the hold: the copy may still be on
+	 * its way, and the reconcile merges that change with it when it lands.
+	 */
+	private async holdForkForPublisher(fork: Fork, signal: AbortSignal): Promise<void> {
+		const deadline = fork.created + MergeHSM.MACHINE_EDIT_TTL;
+		while (!signal.aborted && this._fork === fork) {
+			if (this.publisherEditArrived(fork)) return;
+			const remaining = deadline - this.timeProvider.now();
+			if (remaining <= 0) {
+				this.hsmDebug(
+					`machine edit held for publisher until the TTL | guid=${this._guid} | state=${this._statePath}`,
+				);
+				return;
+			}
+			await this.waitForRemoteUpdateOrTimeout(remaining, signal);
+		}
+	}
+
+	/**
+	 * Whether the remote state already carries this fork's edit: merged
+	 * three ways against the fork base, the local side adds nothing to it.
+	 * The remote state is read as it is now, whether the copy landed after
+	 * the fork was made or was there already.
+	 */
+	private publisherEditArrived(fork: Fork): boolean {
+		const localDoc = this.localDoc;
+		const remoteDoc = this.remoteDoc;
+		if (!localDoc || !remoteDoc) return false;
+		const remoteContent = remoteDoc.getText("contents").toString();
+		const localContent = localDoc.getText("contents").toString();
+		const merge = performThreeWayMerge(fork.base, localContent, remoteContent);
+		if (!merge.success || merge.merged !== remoteContent) return false;
+		this.hsmDebug(
+			`machine edit found in the remote state; this copy is a no-op | guid=${this._guid}`,
+		);
+		return true;
+	}
+
+	private notifyRemoteUpdateWaiters(): void {
+		const waiters = Array.from(this._remoteUpdateWaiters);
+		this._remoteUpdateWaiters.clear();
+		for (const resolve of waiters) resolve();
+	}
+
+	private async waitForRemoteUpdateOrTimeout(ms: number, signal: AbortSignal): Promise<void> {
+		if (signal.aborted) return;
+		await new Promise<void>((resolve) => {
+			let timer: number | null = null;
+			let settled = false;
+			const finish = () => {
+				if (settled) return;
+				settled = true;
+				if (timer !== null) this.timeProvider.clearTimeout(timer);
+				signal.removeEventListener("abort", finish);
+				this._remoteUpdateWaiters.delete(finish);
+				resolve();
+			};
+			this._remoteUpdateWaiters.add(finish);
+			signal.addEventListener("abort", finish);
+			timer = this.timeProvider.setTimeout(finish, Math.max(0, ms));
+			if (signal.aborted) finish();
+		});
+	}
+
 	private nextMachineEditExpiryDelay(): number {
 		const now = this.timeProvider.now();
 		let nextExpiry = Infinity;
 		for (const entry of this._pendingMachineEdits) {
+			if (!entry.holds) continue;
 			nextExpiry = Math.min(
 				nextExpiry,
 				entry.registeredAt + MergeHSM.MACHINE_EDIT_TTL + 100,
@@ -7008,10 +7116,15 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		// localDoc. Bring localDoc up to the registered expectedText so the drain
 		// publishes the complete repair, never the half-applied one.
 		this.completeHalfAppliedMachineEdits();
-		while (!signal.aborted && this._pendingMachineEdits.length > 0) {
+		// Only a held edit, a receiver's, is waited for, and it stays held:
+		// the publisher's copy arriving meanwhile cancels it, and the TTL
+		// publishes it. The publisher's ops are out already, or reach the
+		// document from disk once the note is idle; waiting on its
+		// registration would keep its copy from every receiver holding for it.
+		const held = () => this._pendingMachineEdits.some((entry) => entry.holds);
+		while (!signal.aborted && held()) {
 			this.expireMachineEdits();
-			if (this._pendingMachineEdits.length === 0) return;
-			this._bridge.flushPendingMachineEditOutbound();
+			if (!held()) return;
 			await this.waitForMachineEditDrainOrTimeout(
 				this.nextMachineEditExpiryDelay(),
 				signal,

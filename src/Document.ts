@@ -25,6 +25,7 @@ import {
 import { reconnectProvider } from "./merge-hsm/integration/ProviderLifecycle";
 import { generateHash } from "./hashing";
 import { readNoteText } from "./diskText";
+import { applyingServerChange } from "./serverChanges";
 import { trackAsyncCleanup } from "./reloadUtils";
 import { trackPromise } from "./trackPromise";
 import { DocumentDestroyedError } from "./DocumentDestroyedError";
@@ -310,7 +311,9 @@ export class Document
 
 	process(fn: (data: string) => string): boolean {
 		if (this._hsm) {
-			void this._hsm.registerMachineEdit(fn);
+			void this._hsm.registerMachineEdit(fn, {
+				publisher: !applyingServerChange(this._parent.vault),
+			});
 		}
 		return false;
 	}

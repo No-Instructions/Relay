@@ -94,8 +94,23 @@ export interface Fork {
 	captureMark: number;
 	/** Transform function from vault.process (machine-edit forks only) */
 	machineEditFn?: (data: string) => string;
+	/**
+	 * A machine edit derived from a change that arrived from the server.
+	 * The vault where the change was made publishes the same edit; the
+	 * reconcile waits for it, so this copy becomes a no-op instead of a
+	 * second insertion.
+	 */
+	awaitsPublisher?: boolean;
 }
 
+/**
+ * A fork as stored between sessions. A restored fork reconciles without the
+ * transform and without the publisher hold of the fork it came from: both
+ * speak for the moment the fork was made, and a restored fork reconciles
+ * only after the provider has synced again, by which time a copy the
+ * publisher made before the restart is in the remote state for the merge
+ * to find.
+ */
 export interface PersistedFork {
 	/** localDoc content before changes were ingested */
 	base: string;

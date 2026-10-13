@@ -55,6 +55,8 @@ export interface SyncBridgeHost {
 		expectedText: string;
 		captureMark: number;
 		registeredAt: number;
+		/** Whether the edit's ops wait for the publisher's copy before publishing. */
+		holds: boolean;
 	}>;
 	/** Find a pending machine edit matched by remoteText */
 	matchMachineEdit(remoteText: string): {
@@ -117,16 +119,6 @@ export class SyncBridge {
 
 	/** Current machine edit mark for tagging outbound queue entries */
 	private _currentMachineEditMark: number | null = null;
-
-	/**
-	 * Machine-edit marks whose deferred ops have been published to the server
-	 * (via flushPendingMachineEditOutbound) while their rewind guard is still
-	 * armed. A published insert is held by peers, so its echo-match must NOT
-	 * cancel()+republish-delete it (that tombstones the run another peer adopted
-	 * as its survivor). These marks take the publish-aware reconcile path in
-	 * flushInbound instead.
-	 */
-	private _publishedMachineEditMarks: Set<number> = new Set();
 
 	constructor(private readonly host: SyncBridgeHost) {}
 
@@ -265,7 +257,6 @@ export class SyncBridge {
 		}
 		this._outboundQueue = [];
 		this._inboundQueue = [];
-		this._publishedMachineEditMarks.clear();
 	}
 
 	/**
@@ -311,7 +302,6 @@ export class SyncBridge {
 		this._remoteDocUpdateHandler = null;
 		this._outboundQueue = [];
 		this._inboundQueue = [];
-		this._publishedMachineEditMarks.clear();
 		return { localUpdateHandler, remoteUpdateHandler };
 	}
 
@@ -372,9 +362,9 @@ export class SyncBridge {
 	 * Flush outbound queue: send buffered local updates to remoteDoc.
 	 *
 	 * When the update listener is active, partitions the queue: entries tagged
-	 * with a pending machine-edit mark are deferred (the remote hasn't matched
-	 * yet), everything else is merged and applied. notifySynced() is only called
-	 * when nothing is deferred -- machine-edit ops must stay cancellable.
+	 * with a held machine-edit mark are deferred (the publisher's copy hasn't
+	 * arrived yet), everything else is merged and applied. notifySynced() is
+	 * only called when nothing is deferred -- held ops must stay cancellable.
 	 *
 	 * Falls back to a full state diff when the listener isn't installed yet
 	 * (loading/idle phases).
@@ -406,15 +396,16 @@ export class SyncBridge {
 
 		// Queue path (active editing -- listener installed)
 		if (this._localDocUpdateHandler) {
-			const pendingMarks = new Set(
-				this.host.getPendingMachineEdits().map(e => e.captureMark),
+			const heldMarks = new Set(
+				this.host.getPendingMachineEdits()
+					.filter(e => e.holds)
+					.map(e => e.captureMark),
 			);
 			const toSend: Uint8Array[] = [];
 			const toDefer: OutboundEntry[] = [];
 
 			for (const entry of this._outboundQueue) {
-				if (entry.machineEditMark !== null
-					&& pendingMarks.has(entry.machineEditMark)) {
+				if (entry.machineEditMark !== null && heldMarks.has(entry.machineEditMark)) {
 					toDefer.push(entry);
 				} else {
 					toSend.push(entry.update);
@@ -425,8 +416,8 @@ export class SyncBridge {
 			if (toSend.length > 0) {
 				const merged = Y.mergeUpdates(toSend);
 				this.syncToRemote(merged);
-				// Only mark synced when nothing is deferred -- machine-edit
-				// entries must stay cancellable until matched/expired.
+				// Only mark synced when nothing is held -- held entries must
+				// stay cancellable until matched or expired.
 				if (toDefer.length === 0) {
 					this.host.getOpCapture()?.notifySynced();
 				}
@@ -484,46 +475,6 @@ export class SyncBridge {
 	}
 
 	/**
-	 * Publish deferred machine-edit ops without clearing their rewind guards.
-	 * Release cleanup uses this so peers can echo matching CRDT ops while the
-	 * local OpCapture context is still available to cancel duplicates.
-	 */
-	flushPendingMachineEditOutbound(): void {
-		const localDoc = this.host.getLocalDoc();
-		const remoteDoc = this.host.getRemoteDoc();
-		if (!localDoc || !remoteDoc) return;
-		if (this.host.isReadMode()) return;
-		if (this.host.hasFork() || this._syncGate.localOnly) return;
-		if (!this._localDocUpdateHandler) return;
-
-		const pendingMarks = new Set(
-			this.host.getPendingMachineEdits().map(e => e.captureMark),
-		);
-		if (pendingMarks.size === 0) return;
-
-		const toSend: Uint8Array[] = [];
-		const remaining: OutboundEntry[] = [];
-		const publishedMarks: number[] = [];
-		for (const entry of this._outboundQueue) {
-			if (entry.machineEditMark !== null && pendingMarks.has(entry.machineEditMark)) {
-				toSend.push(entry.update);
-				publishedMarks.push(entry.machineEditMark);
-			} else {
-				remaining.push(entry);
-			}
-		}
-		this._outboundQueue = remaining;
-
-		if (toSend.length > 0) {
-			// Record that these marks' inserts are now server-visible with the
-			// rewind guard still armed. Their echo-match reconciles instead of
-			// cancelling (see flushInbound).
-			for (const mark of publishedMarks) this._publishedMachineEditMarks.add(mark);
-			this.syncToRemote(Y.mergeUpdates(toSend));
-		}
-	}
-
-	/**
 	 * Flush inbound queue: apply buffered remote updates to localDoc.
 	 *
 	 * Handles machine-edit matching first: if the remote already has a pending
@@ -555,74 +506,6 @@ export class SyncBridge {
 		if (match) {
 			const opCapture = this.host.getOpCapture();
 
-			// Publish-aware reconcile. Once flushPendingMachineEditOutbound has
-			// published this insert, a peer holds it: cancel()+republish-delete
-			// would tombstone the run that peer adopted as its survivor, and the
-			// symmetric case tombstones BOTH runs (the empty-middle divergence).
-			// Instead, adopt the remote and converge to a single repair by
-			// deleting the surplus duplicate down to expectedText. Every peer
-			// computes the identical reduction over the identical shared CRDT, so
-			// all peers delete the same loser run(s) and keep one survivor.
-			if (this._publishedMachineEditMarks.has(match.captureMark)) {
-				const beforeText = localDoc.getText("contents").toString();
-
-				this.host.setSuppressLocalObserver(true);
-				try {
-					// Adopt the remote state (brings in the peer's insert).
-					const adopt = Y.encodeStateAsUpdate(
-						remoteDoc,
-						Y.encodeStateVector(localDoc),
-					);
-					this.syncToLocal(adopt);
-
-					// Reduce to the single-repair expected text: a normal,
-					// published-safe delete of the surplus duplicate run.
-					const dupText = localDoc.getText("contents").toString();
-					if (dupText !== match.expectedText) {
-						const reduction = this.host.computeDiffChanges(
-							dupText,
-							match.expectedText,
-						);
-						if (reduction.length > 0) {
-							this.host.applyChangesToLocalDoc(reduction);
-						}
-					}
-				} finally {
-					this.host.setSuppressLocalObserver(false);
-				}
-
-				this._inboundQueue = [];
-				this._outboundQueue = this._outboundQueue.filter(
-					e => e.machineEditMark !== match.captureMark,
-				);
-
-				const afterText = localDoc.getText("contents").toString();
-				if (beforeText !== afterText) {
-					const changes = this.host.computeDiffChanges(beforeText, afterText);
-					if (changes.length > 0) {
-						this.host.emitEffect({ type: "DISPATCH_CM6", changes });
-					}
-				}
-
-				// Remove the registration so this mark can never re-match. The
-				// published ops stay in OpCapture (never cancel()'d) and are
-				// released when the editor queues tear down; no other path
-				// references this mark.
-				this.host.removeMachineEdit(match);
-				this._publishedMachineEditMarks.delete(match.captureMark);
-
-				const outbound = Y.encodeStateAsUpdate(
-					localDoc,
-					Y.encodeStateVector(remoteDoc),
-				);
-				this._outboundQueue = [];
-				if (outbound.length > 0) {
-					this.syncToRemote(outbound);
-				}
-				this.assertHeadConvergence();
-				return;
-			}
-
 			if (opCapture) {
 				const machineOps = opCapture.sinceByOrigin(
 					match.captureMark,
@@ -636,9 +519,8 @@ export class SyncBridge {
 					try {
 						// Cancel our machine edit ops: truly undo the CRDT ops
 						// so the document state is as if they never happened.
-						// Safe because the deferred insert was never published --
-						// no peer has seen these ops (published edits reconcile
-						// via the branch above).
+						// Safe because the held insert was never published --
+						// no peer has seen these ops.
 						opCapture.cancel(machineOps);
 
 						// Apply remote CRDT update -- fills in the same edits cleanly

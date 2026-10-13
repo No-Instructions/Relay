@@ -50,6 +50,7 @@ import { FolderHSM } from "./folder-hsm/FolderHSM";
 import { MembershipSnapshot } from "./folder-hsm/MembershipSnapshot";
 import { ServerOps } from "./folder-hsm/ServerOps";
 import { withLinkUpdatesOn } from "./linkUpdates";
+import { beginServerChange } from "./serverChanges";
 import {
 	SyncType,
 	makeCanvasMeta,
@@ -2395,6 +2396,9 @@ export class SharedFolder extends HasProvider {
 		const inFlight = this.serverRenamesInFlight ??= new Map();
 		const rename = { deleted: false };
 		inFlight.set(doc.guid, rename);
+		// Obsidian repairs links to the moved file inside the move, in every
+		// folder of the vault; a machine edit made meanwhile is a receiver's.
+		const endServerChange = beginServerChange(this.vault);
 		try {
 			const from = file.path;
 			// A held move stays recorded: its source keeps its place on disk
@@ -2410,6 +2414,7 @@ export class SharedFolder extends HasProvider {
 				doc.move(path, this);
 			}
 		} finally {
+			endServerChange();
 			if (inFlight.get(doc.guid) === rename) inFlight.delete(doc.guid);
 			if (rename.deleted) {
 				const diskPath = this.getVirtualPath(file.path);
