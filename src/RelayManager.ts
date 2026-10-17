@@ -72,6 +72,7 @@ function hasName(obj: unknown): obj is Named {
 interface UserDAO extends RecordModel {
 	id: string;
 	name: string;
+	username?: string;
 	displayName?: string;
 	email: string;
 	picture?: string;
