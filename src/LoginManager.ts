@@ -139,9 +139,13 @@ export function createUserFromOAuth(
 	id: string,
 	token: string,
 	authStoreModel: {
+		id?: string;
 		name?: string;
+		displayName?: string;
+		username?: string;
 		email?: string;
 		picture?: string;
+		avatar?: string;
 	},
 	rawUser?: unknown,
 	getFileUrl?: ProfileFileUrl,

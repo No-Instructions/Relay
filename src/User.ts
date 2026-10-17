@@ -21,10 +21,12 @@ export const PROFILE_AVATAR_THUMBNAIL = "100x100";
 export const ANONYMOUS_PROFILE_NAME = "Anonymous";
 
 interface ProfileRecord extends Record<string, unknown> {
+	id?: string;
 	avatar?: string;
 	displayName?: string;
 	email?: string;
 	name?: string;
+	username?: string;
 	picture?: string;
 }
 
@@ -50,11 +52,18 @@ export function resolveProfileName(
 	fallback: string,
 	streamerMode = false,
 ): string {
-	return preferredProfileField(
-		record?.displayName,
-		streamerMode
-			? ANONYMOUS_PROFILE_NAME
-			: preferredProfileField(record?.name, fallback),
+	const displayName = record?.displayName?.trim();
+	if (displayName) {
+		return displayName;
+	}
+	if (streamerMode) {
+		return ANONYMOUS_PROFILE_NAME;
+	}
+	return (
+		record?.name?.trim() ||
+		record?.username?.trim() ||
+		fallback.trim() ||
+		(record?.id ? `Member · ${record.id.slice(0, 6)}` : "Member")
 	);
 }
 
