@@ -48,7 +48,7 @@ import { isDocument } from "./Document";
 import { SyncStore, type FolderMapDelta } from "./SyncStore";
 import { FolderHSM } from "./folder-hsm/FolderHSM";
 import { MembershipSnapshot } from "./folder-hsm/MembershipSnapshot";
-import { ServerOps } from "./folder-hsm/ServerOps";
+import { ServerOps, type PendingServerOp } from "./folder-hsm/ServerOps";
 import { withLinkUpdatesOn } from "./linkUpdates";
 import {
 	SyncType,
@@ -217,6 +217,7 @@ export const NEW_FILE_REGISTRATION_DEBOUNCE_MS = 500;
 
 /** How long a read-only folder gathers repaired notes before one restore notice. */
 export const READER_RESTORE_NOTICE_COALESCE_MS = 1_500;
+
 // Suspended registrations expire after this window so abandoned local state
 // does not remain eligible for restoration indefinitely.
 export const FOLDER_DELETION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -364,9 +365,12 @@ export class SharedFolder extends HasProvider {
 	 * reconcile has decided every entry. */
 	private bootSnapshot: MembershipSnapshot | null = null;
 	/** Server-decided operations whose disk effect is still in flight. */
-	private serverOps = new ServerOps();
+	private serverOps = new ServerOps((paths) => this.persistPendingServerOps(paths));
+	private pendingServerOps: LocalStorage<PendingServerOp>;
+	/** Prevent replay-time updates from overwriting operations not yet restored. */
+	private pendingServerOpsRestored = false;
 	/** Dispatched renames retain their echo until the disk operation settles. */
-	private serverRenamesInFlight = new Map<string, { deleted: boolean }>();
+	private serverRenamesInFlight = new Map<string, { from: string; to: string; deleted: boolean }>();
 	private _disk: FolderDisk | null = null;
 	/** One parked publication re-entry per held path. */
 	private _parkedPublications: Map<string, Promise<void>> = new Map();
@@ -426,6 +430,9 @@ export class SharedFolder extends HasProvider {
 		this.fset = new Files();
 		this.pendingUpload = new LocalStorage<string>(
 			`${appId}-system3-relay/folders/${this.guid}/pendingUploads`,
+		);
+		this.pendingServerOps = new LocalStorage<PendingServerOp>(
+			`${appId}-system3-relay/folders/${this.guid}/pendingServerOps`,
 		);
 		this.pendingUpload.forEach((guid, vpath) => {
 			if (!this.existsSync(vpath)) {
@@ -718,6 +725,28 @@ export class SharedFolder extends HasProvider {
 				if (this.destroyed) return;
 				this.rememberAuthorization(await this.readPersistedAuthorization());
 				if (this.destroyed) return;
+				// Before anything can mint: a removal or move the last session
+				// took into membership but never carried out on disk leaves a
+				// file the replayed map no longer lists, which would otherwise
+				// read as one created while the app was closed.
+				try {
+					this.restorePendingServerOps();
+				} catch (error) {
+					this.error(
+						"Cannot restore pending file operations; folder startup is paused",
+						error,
+					);
+					new Notice(
+						`Relay paused syncing "${this.path}" because saved file operations ` +
+							`could not be read. Restart Obsidian to retry. If this continues, ` +
+							`contact support before clearing local sync data.`,
+						0,
+					);
+					return;
+				}
+				if (this.destroyed) return;
+				this.pendingServerOpsRestored = true;
+				this.persistPendingServerOps(Array.from(this.pendingServerOps.keys()));
 				this.bootSnapshot = new MembershipSnapshot(
 					this.syncStore.membershipPaths(),
 				);
@@ -837,11 +866,17 @@ export class SharedFolder extends HasProvider {
 		for (const move of delta.moves) {
 			this.serverOps.clearDelete(move.to);
 			const moved = this.files.get(move.guid);
+			const pending = this.serverOps.moveFor(move.guid);
+			// Membership can move again before disk adopts the first rename.
+			// Keep the surviving source while following the identity's new path.
+			const from = pending && this.serverOps.coversPath(pending.from) &&
+				(this.existsSync(pending.from) || moved?.path === pending.from)
+				? pending.from : move.from;
 			if (
-				this.existsSync(move.from) ||
-				moved?.path === move.from
+				(from !== move.to || this.serverRenamesInFlight?.has(move.guid)) &&
+				(this.existsSync(from) || moved?.path === from)
 			) {
-				this.serverOps.recordMove(move);
+				this.serverOps.recordMove({ ...move, from });
 			} else {
 				// Disk already agrees with the moved membership (or no
 				// source exists to reconcile on this device). A prior
@@ -2177,6 +2212,114 @@ export class SharedFolder extends HasProvider {
 		return this._persistence.getServerSynced();
 	}
 
+	/**
+	 * Save each changed path synchronously. Membership observers run before
+	 * the document update reaches IndexedDB, so the operation is recorded
+	 * before the membership that needs it. A crash can leave the record ahead
+	 * of membership; restore checks each claim against replayed membership.
+	 * This orders API calls, not disk commits: the stores commit independently.
+	 * Abrupt process termination can lose a claim whose membership persisted.
+	 */
+	private persistPendingServerOps(paths: string[]): void {
+		if (!this.pendingServerOpsRestored || this.destroyed) return;
+		for (const path of paths) {
+			try {
+				const operation = this.serverOps.durableOperation(path);
+				if (operation) {
+					this.pendingServerOps.set(path, operation);
+				} else if (this.pendingServerOps.has(path)) {
+					this.pendingServerOps.delete(path);
+				}
+			} catch (e) {
+				this.warn("failed to remember pending server operation", path, e);
+			}
+		}
+	}
+
+	/**
+	 * Re-arm the removals and moves the previous session had not carried
+	 * out on disk. Membership that lists a source path again has superseded
+	 * its operation; a moved identity is followed to where membership holds
+	 * it now, and one membership no longer holds leaves its source to be
+	 * removed. A path with nothing left on disk is confirmed absent by the
+	 * next tree sync.
+	 */
+	private restorePendingServerOps(): void {
+		const entries = Array.from(this.pendingServerOps.entries());
+		// Validate everything before changing the in-memory operation set.
+		for (const [, operation] of entries) {
+			if (
+				!operation ||
+				(operation.type !== "delete" && operation.type !== "move") ||
+				(operation.type === "move" &&
+					(typeof operation.guid !== "string" || typeof operation.to !== "string"))
+			) {
+				throw new Error("Invalid pending server operation");
+			}
+		}
+		const restored: string[] = [];
+		for (const [path, operation] of entries) {
+			// A recorded delete or move may precede a membership update that
+			// never committed. A current member at the source invalidates it.
+			if (this.syncStore.has(path)) continue;
+			// A move back to its source only waits for a live rename to
+			// settle. It carries no disk work into another session.
+			if (operation.type === "move" && operation.to === path) continue;
+			const to = operation.type === "move"
+				? this.findCommittedPathByGuid(operation.guid)
+				: null;
+			if (to === null) {
+				this.serverOps.recordDelete(path);
+			} else if (operation.type === "move") {
+				this.serverOps.recordMove({ guid: operation.guid, from: path, to });
+			}
+			restored.push(path);
+		}
+		if (restored.length > 0) {
+			this.log("restored server operations awaiting disk adoption", restored);
+		}
+	}
+
+	/**
+	 * Finish the directory moves whose children have already moved. A
+	 * directory whose destination exists — made by a child's own move, or by
+	 * an earlier pass — cannot be renamed onto it; once its children have
+	 * gone, its emptied source is removed and the move is done. Inner
+	 * directories first, so nested emptied sources unwind.
+	 */
+	private async removeEmptiedMoveSources(): Promise<void> {
+		const moves = this.serverOps
+			.pendingMoves()
+			.sort((a, b) => b.from.length - a.from.length);
+		for (const move of moves) {
+			if (this.destroyed) return;
+			if (this.serverOps.moveFor(move.guid)?.from !== move.from) continue;
+			const source = this.vault.getAbstractFileByPath(
+				normalizePath(join(this.path, move.from)),
+			);
+			if (
+				!(source instanceof TFolder) ||
+				source.children.length > 0 ||
+				!this.existsSync(move.to)
+			) {
+				continue;
+			}
+			this.markPendingDelete(move.from);
+			try {
+				await this.vault.adapter.trashLocal(source.path);
+			} catch (e) {
+				this.warn("could not remove moved directory", move.from, e);
+				continue;
+			} finally {
+				this.clearPendingDelete(move.from);
+			}
+			const moved = this.files.get(move.guid);
+			if (moved && moved.path === move.from) moved.move(move.to, this);
+			this.serverOps.completeMove(move.from, move.to);
+			this.bootSnapshot?.discard(move.from);
+		}
+	}
+
 	private async readPersistedAuthorization(): Promise<string | null> {
 		try {
 			const value = await this._persistence.get("authorization");
@@ -2393,19 +2536,19 @@ export class SharedFolder extends HasProvider {
 		const oldVPath = this.getVirtualPath(file.path);
 		this.serverOps.recordMove({ guid: doc.guid, from: oldVPath, to: path });
 		const inFlight = this.serverRenamesInFlight ??= new Map();
-		const rename = { deleted: false };
+		const rename = { from: oldVPath, to: path, deleted: false };
 		inFlight.set(doc.guid, rename);
+		let moved = false;
 		try {
 			const from = file.path;
 			// A held move stays recorded: its source keeps its place on disk
 			// and a later tree sync retries it.
-			const moved = await this.disk.move({ guid: doc.guid, path }, file, (dir) =>
+			moved = await this.disk.move({ guid: doc.guid, path }, file, (dir) =>
 				diffLog?.push(`creating directory ${dir}`),
 			);
 			if (!moved) return;
 			diffLog?.push(`${from} was renamed to ${this.getPath(path)}`);
-			this.serverOps.completeMove(oldVPath, path);
-			this.bootSnapshot?.discard(oldVPath);
+			this.adoptServerMove(doc.guid, oldVPath, path);
 			if (!this.destroyed && doc.path !== path) {
 				doc.move(path, this);
 			}
@@ -2416,7 +2559,7 @@ export class SharedFolder extends HasProvider {
 				const move = this.serverOps.moveFor(doc.guid);
 				const recreatedSource = diskPath === oldVPath && move !== undefined &&
 					!this.serverOps.coversPath(oldVPath);
-				if (move?.from === oldVPath && move.to === path) {
+				if (move && (move.from === oldVPath || move.from === diskPath)) {
 					this.serverOps.discardMove(doc.guid);
 				}
 				// Success leaves the file at the destination; a failed rename may
@@ -2424,6 +2567,12 @@ export class SharedFolder extends HasProvider {
 				if (!recreatedSource && !this.syncStore.has(diskPath)) {
 					this.serverOps.recordDelete(diskPath);
 				}
+			}
+			if (!moved) {
+				const move = this.serverOps.moveFor(doc.guid);
+				// Membership returned to the source while this rename waited.
+				// With no disk move to adopt, the source already agrees with it.
+				if (move && move.from === move.to) this.serverOps.discardMove(doc.guid);
 			}
 		}
 	}
@@ -2900,29 +3049,38 @@ export class SharedFolder extends HasProvider {
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
-		if (remoteIds.has(guid) && file) {
+		if (remoteIds.has(guid)) {
 			// Membership can list one identity under several paths, as when two
 			// devices rename it concurrently. A file at one of its identity's
 			// committed paths stays there: moving it toward another would move
 			// it back when the next pass reads the first. The pass over its own
 			// path still restores the file if it is missing.
 			if (
-				file.path !== path &&
+				file && file.path !== path &&
 				this.syncStore.getCommittedMeta(file.path)?.id === guid
 			) {
 				return { op: "noop", path, promise: Promise.resolve() };
 			}
-			const oldPath = this.getPath(file.path);
-			const tfile = this.vault.getAbstractFileByPath(oldPath);
-			if (tfile) {
-				const promise = this._handleServerRename(file, path, tfile, diffLog);
-				return {
-					op: "rename",
-					path: path,
-					from: oldPath,
-					to: path,
-					promise,
-				};
+			// A restored move has a disk source before an IFile is loaded.
+			// Adopt that source through the same path as a live rename.
+			const pending = this.serverOps.moveFor(guid);
+			const from = pending && this.serverOps.coversPath(pending.from)
+				? pending.from : file?.path;
+			if (from) {
+				const oldPath = this.getPath(from);
+				const tfile = this.vault.getAbstractFileByPath(oldPath);
+				if (tfile) {
+					const promise = this._handleServerRename(
+						file ?? { guid, path: from, move: () => {} }, path, tfile, diffLog,
+					);
+					return {
+						op: "rename",
+						path,
+						from: oldPath,
+						to: path,
+						promise,
+					};
+				}
 			}
 		}
 
@@ -3287,7 +3445,10 @@ export class SharedFolder extends HasProvider {
 	/** Consume the vault rename that makes one server move real on disk. */
 	private consumeMoveEcho(oldVPath: string, newVPath: string): boolean {
 		const move = this.serverOps.moveFrom(oldVPath);
-		if (!move || move.to !== newVPath) return false;
+		if (!move) return false;
+		const dispatched = this.serverRenamesInFlight?.get(move.guid);
+		if (move.to !== newVPath &&
+			(dispatched?.from !== oldVPath || dispatched.to !== newVPath)) return false;
 
 		// Live membership at the source belongs to a separately recreated
 		// file, even while the guid-keyed move remains in flight.
@@ -3298,9 +3459,22 @@ export class SharedFolder extends HasProvider {
 		if (moved && moved.path !== newVPath) {
 			moved.move(newVPath, this);
 		}
-		this.serverOps.completeMove(oldVPath, newVPath);
-		this.bootSnapshot?.discard(oldVPath);
+		this.adoptServerMove(move.guid, oldVPath, newVPath);
 		return true;
+	}
+
+	/** Record the disk edge completed by a rename or its vault echo. */
+	private adoptServerMove(guid: string, from: string, to: string): void {
+		const move = this.serverOps.moveFor(guid);
+		if (move?.from !== from) return;
+		if (move.to === to) {
+			this.serverOps.completeMove(from, to);
+		} else {
+			// An earlier disk rename completed after membership moved again.
+			// Its destination is the remaining move's source, not its completion.
+			this.serverOps.recordMove({ ...move, from: to });
+		}
+		this.bootSnapshot?.discard(from);
 	}
 
 	/**
@@ -3916,7 +4090,10 @@ export class SharedFolder extends HasProvider {
 					this.syncStore.migrateUp();
 					this.syncByType(this.syncStore, diffLog, ops, [SyncType.Folder]);
 				}, this);
-				await Promise.all(ops.map((op) => op.promise));
+				// A directory operation that fails is reported with the file
+				// operations below; it must not stop them.
+				await Promise.allSettled(ops.map((op) => op.promise));
+				if (this.destroyed) return;
 				void this.folderDoc.transact(async () => {
 					this.syncByType(
 						this.syncStore,
@@ -3930,9 +4107,12 @@ export class SharedFolder extends HasProvider {
 				const creates = ops.filter((op) => op.op === "create");
 				const renames = ops.filter((op) => op.op === "rename");
 
-				// Ensure these complete before checking for deletions
-				await Promise.all(
-					[...creates, ...renames].map((op) =>
+				// Let these settle before checking for deletions. One that
+				// fails stays outstanding for the next tree sync and must not
+				// hold back the removals this one would carry out.
+				const pathOps = [...creates, ...renames];
+				const settled = await Promise.allSettled(
+					pathOps.map((op) =>
 						withTimeoutWarning<IFile | void>(
 							op.promise,
 							this.timeProvider,
@@ -3940,6 +4120,12 @@ export class SharedFolder extends HasProvider {
 						),
 					),
 				);
+				if (this.destroyed) return;
+				settled.forEach((result, i) => {
+					if (result.status === "rejected" && !isDestroyedError(result.reason)) {
+						this.warn(`${pathOps[i].op} failed`, pathOps[i].path, result.reason);
+					}
+				});
 
 				const remotePaths = this.getDesiredRemotePaths();
 				const deletes = this.cleanupExtraLocalFiles(remotePaths, diffLog);
@@ -3978,6 +4164,10 @@ export class SharedFolder extends HasProvider {
 						this.serverOps.clearDelete(path);
 						this.bootSnapshot?.discard(path);
 					}
+				}
+				if (this.serverOps.pendingMoves().length > 0) {
+					await this.removeEmptiedMoveSources();
+					if (this.destroyed) return;
 				}
 				for (const move of this.serverOps.pendingMoves()) {
 					if (!this.existsSync(move.from) && this.existsSync(move.to)) {
@@ -4199,6 +4389,12 @@ export class SharedFolder extends HasProvider {
 	 */
 	public clearPendingUploads(): void {
 		this.pendingUpload.clear();
+	}
+
+	/** Folder removal discards claims; unloading or suspending preserves them. */
+	public clearPendingServerOps(): void {
+		this.pendingServerOpsRestored = false;
+		this.pendingServerOps.clear();
 	}
 
 	async markUploaded(
@@ -5390,8 +5586,16 @@ export class SharedFolder extends HasProvider {
 			for (const vpath of paths) {
 				const guid = this.syncStore?.get(vpath);
 				const move = this.serverOps.moveFrom(vpath);
+				if (move && move.from === move.to) {
+					// Membership returned to this disk path. Its deletion is a
+					// user action, even if an earlier rename is still finishing.
+					const rename = this.serverRenamesInFlight?.get(move.guid);
+					if (rename) rename.deleted = true;
+					else this.serverOps.discardMove(move.guid);
+				}
 				if (
 					move &&
+					move.from !== move.to &&
 					(guid === move.guid || (!guid && !this.pendingUpload.has(vpath)))
 				) {
 					// The delete echo for the vacated disk path, not a deletion
@@ -5485,9 +5689,7 @@ export class SharedFolder extends HasProvider {
 		} else {
 			const move = this.serverOps.moveFrom(oldVPath);
 			if (move && !this.syncStore.has(oldVPath)) {
-				if (newVPath && move.to === newVPath) {
-					this.consumeMoveEcho(oldVPath, newVPath);
-				} else {
+				if (!newVPath || !this.consumeMoveEcho(oldVPath, newVPath)) {
 					// A different rename belongs to a recreated source
 					// occupant. It cannot move or destroy the guid already
 					// living at `to`.
@@ -5693,9 +5895,9 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 			dbNames.push(item.guid);
 			dbNames.push(`${item.appId}-relay-folder-${item.guid}`);
 			dbNames.push(`${item.appId}-relay-folder-${item.guid}-remote`);
-			// The folder's pending-upload records live in localStorage, not
-			// IDB; removal is the only point where they become garbage.
+			// Folder removal discards its durable upload and disk-work claims.
 			item.clearPendingUploads();
+			item.clearPendingServerOps();
 			// Folder-scoped HSM states and in-folder hash rows, including
 			// records for files outside the current in-memory enumeration.
 			void item.reclaimOwnedRecords();
@@ -5730,6 +5932,9 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		guid: string,
 		folderPath: string,
 	): Promise<void> {
+		new LocalStorage<PendingServerOp>(
+			`${this.appId}-system3-relay/folders/${guid}/pendingServerOps`,
+		).clear();
 		const childGuids = new Set<string>();
 		const childDbNames = new Set<string>();
 		// The split-era database holds the authoritative maps; the raw-guid
