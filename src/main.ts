@@ -114,7 +114,19 @@ import { buildCliContext } from "./cli/context";
 import { registerRelayCli } from "./cli/registerCli";
 import { isRetryableHttpError } from "./HttpError";
 import { MetadataHealth } from "./MetadataHealth";
-import { createPublicApi, publishPublicApi, type Api } from "./PublicAPI";
+import {
+	createPublicApi,
+	publishPublicApi,
+	type Api,
+	type LocalMove,
+} from "./PublicAPI";
+import {
+	crossFolderMoves,
+	expectDescendants,
+	localMoves,
+	takeDescendant,
+	type PendingDescendants,
+} from "./LocalMove";
 import {
 	TextViewRegistry,
 	type PluginRegistrationSettings,
@@ -162,6 +174,8 @@ declare const REPOSITORY: string;
 export default class Live extends Plugin {
 	public attachmentTransfers!: AttachmentTransfers;
 	api!: Api;
+	private reportLocalMoves: (moves: Iterable<LocalMove>) => void = () => {};
+	private renamedDescendants: PendingDescendants = new Map();
 	appId!: string;
 	private _instanceId!: string;
 	webviewerPatched = false;
@@ -900,7 +914,9 @@ export default class Live extends Plugin {
 			() => {
 				void this._liveViews?.refresh("public-api:text-view-registration");
 			},
+			(path) => this.sharedFolders.lookup(path) !== null,
 		);
+		this.reportLocalMoves = publicApi.reportLocalMoves;
 		this.register(() => {
 			publicApi.detach();
 		});
@@ -1474,6 +1490,7 @@ export default class Live extends Plugin {
 
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
+				const inheritedLocal = takeDescendant(this.renamedDescendants, file, oldPath);
 				// TODO this doesn't work for empty folders.
 				if (file instanceof TFolder) {
 					const sharedFolder = this.sharedFolders.find((folder) => {
@@ -1482,19 +1499,35 @@ export default class Live extends Plugin {
 					if (sharedFolder) {
 						sharedFolder.move(file.path);
 						this.sharedFolders.update();
+						if (inheritedLocal === undefined) {
+							expectDescendants(this.renamedDescendants, file, oldPath, false);
+						}
 						return;
 					}
 				}
 				const fromFolder = this.sharedFolders.lookup(oldPath);
 				const toFolder = this.sharedFolders.lookup(file.path);
+				let moves: LocalMove[];
 				if (fromFolder && fromFolder === toFolder) {
-					fromFolder.notifyVaultRename(file, oldPath);
+					moves = fromFolder.notifyVaultRename(file, oldPath) ?? [];
 				} else if (fromFolder && toFolder) {
-					fromFolder.renameFile(file, oldPath);
-					toFolder.renameFile(file, oldPath);
+					moves = crossFolderMoves(
+						fromFolder.renameFile(file, oldPath),
+						toFolder.renameFile(file, oldPath),
+					);
 				} else {
-					(fromFolder || toFolder)?.renameFile(file, oldPath);
+					moves = (fromFolder || toFolder)?.renameFile(file, oldPath) ?? [];
 				}
+				// A folder's descendants follow it in their own callbacks, and are
+				// local exactly when it was, whatever membership now says of them.
+				if (inheritedLocal !== undefined) {
+					moves = inheritedLocal && (fromFolder || toFolder)
+						? localMoves(oldPath, file.path, file instanceof TFolder ? "folder" : "file")
+						: [];
+				} else if (file instanceof TFolder && (fromFolder || toFolder)) {
+					expectDescendants(this.renamedDescendants, file, oldPath, moves.length > 0);
+				}
+				this.reportLocalMoves(moves);
 				if (fromFolder || toFolder) {
 					vaultLog("Rename", file.path, oldPath);
 					void this._liveViews.refresh("rename");
