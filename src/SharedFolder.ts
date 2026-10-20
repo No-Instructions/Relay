@@ -108,6 +108,7 @@ import {
 	type CasePathHoldsView,
 } from "./casePaths";
 import { FolderDisk } from "./FolderDisk";
+import { localMoves, type RenameDecision } from "./LocalMove";
 import type { TimeProvider } from "./TimeProvider";
 import * as Y from "yjs";
 
@@ -3630,32 +3631,35 @@ export class SharedFolder extends HasProvider {
 	}
 
 	/** Route an in-folder vault rename. */
-	public notifyVaultRename(file: TAbstractFile, oldPath: string): void {
-		if (file.path === oldPath || this.isReaderFolderRestoreChild(file, oldPath)) return;
-		if (this.consumeReaderRestoreRenameEcho(file, oldPath)) return;
+	public notifyVaultRename(file: TAbstractFile, oldPath: string): RenameDecision {
+		if (file.path === oldPath) return [];
+		if (this.isReaderFolderRestoreChild(file, oldPath)) return null;
+		if (this.consumeReaderRestoreRenameEcho(file, oldPath)) return null;
 		this.retryHeldMaterializations();
 		const oldVPath = this.getVirtualPath(oldPath);
 		const newVPath = this.getVirtualPath(file.path);
 		this.cancelPendingCreate(oldVPath);
 		this.cancelPendingCreate(newVPath);
 		if (this.consumeMoveEcho(oldVPath, newVPath)) {
-			return;
+			return null;
 		}
 		const oldTracked = this.syncStore.has(oldVPath);
 		const newTracked = this.syncStore.has(newVPath);
 		const hasPendingClaim =
 			this.pendingUpload.has(oldVPath) || this.pendingUpload.has(newVPath);
-		if (!this.canManageFiles && !oldTracked && !hasPendingClaim) return;
+		const moved = localMoves(oldPath, file.path, file instanceof TFolder ? "folder" : "file");
+		if (!this.canManageFiles && !oldTracked && !hasPendingClaim) return moved;
 		if (this.rejectReaderFolderChange([oldVPath, newVPath])) {
 			const restore = this.restoreReaderRename(file, oldPath, oldVPath, newVPath);
 			void trackPromise(`restoreReaderRename:${this.guid}:${oldVPath}`, restore);
-			return;
+			return null;
 		}
 		if (oldTracked) {
-			this.renameFile(file, oldPath);
-			return;
+			return this.renameFile(file, oldPath);
 		}
-		if (newTracked || !this.isSyncableTFile(file)) return;
+		// Membership already holds the new path: Relay made this move.
+		if (newTracked) return null;
+		if (!this.isSyncableTFile(file)) return moved;
 		// A distinct file renamed into the vacated source is a new disk
 		// occupant. It may claim the path without taking over the moved guid.
 		this.observeMoveSourceRecreation(newVPath);
@@ -3663,6 +3667,7 @@ export class SharedFolder extends HasProvider {
 		if (newDocs.includes(newVPath)) {
 			this.uploadFile(file);
 		}
+		return moved;
 	}
 
 	/**
@@ -5643,9 +5648,10 @@ export class SharedFolder extends HasProvider {
 		trackAsyncCleanup(p);
 	}
 
-	renameFile(tfile: TAbstractFile, oldPath: string) {
-		if (tfile.path === oldPath || this.isReaderFolderRestoreChild(tfile, oldPath)) return;
-		if (this.consumeReaderRestoreRenameEcho(tfile, oldPath)) return;
+	renameFile(tfile: TAbstractFile, oldPath: string): RenameDecision {
+		if (tfile.path === oldPath) return [];
+		if (this.isReaderFolderRestoreChild(tfile, oldPath)) return null;
+		if (this.consumeReaderRestoreRenameEcho(tfile, oldPath)) return null;
 		this.retryHeldMaterializations();
 		const newPath = tfile.path;
 		let newVPath = "";
@@ -5663,40 +5669,47 @@ export class SharedFolder extends HasProvider {
 
 		if (!newVPath && !oldVPath) {
 			// not related to shared folders
-			return;
+			return [];
 		}
 		const oldTracked = oldVPath ? this.syncStore.has(oldVPath) : false;
 		const newTracked = newVPath ? this.syncStore.has(newVPath) : false;
+		// A shared folder's own rename reaches its descendants here, arriving
+		// at paths membership already holds. That is not a move.
+		if (!oldVPath && newTracked) return [];
+
+		const moved = localMoves(oldPath, newPath, tfile instanceof TFolder ? "folder" : "file");
 		const hasPendingClaim =
 			(oldVPath ? this.pendingUpload.has(oldVPath) : false) ||
 			(newVPath ? this.pendingUpload.has(newVPath) : false);
 		if (!this.canManageFiles && !oldTracked && !newTracked && !hasPendingClaim) {
-			return;
+			return moved;
 		}
 		if (this.rejectReaderFolderChange([oldVPath, newVPath].filter(Boolean))) {
 			const restore = this.restoreReaderRename(tfile, oldPath, oldVPath, newVPath);
 			void trackPromise(`restoreReaderRename:${this.guid}:${oldVPath}`, restore);
-			return;
+			return null;
 		} else if (!oldVPath) {
 			// if this was moved from outside the shared folder context, we need to create a live doc
 			this.assertPath(newPath);
-			if (!this.isSyncableTFile(tfile)) return;
+			if (!this.isSyncableTFile(tfile)) return moved;
 			this.placeHold([tfile]);
 			this.uploadFile(tfile);
+			return moved;
 		} else {
 			const move = this.serverOps.moveFrom(oldVPath);
 			if (move && !this.syncStore.has(oldVPath)) {
-				if (!newVPath || !this.consumeMoveEcho(oldVPath, newVPath)) {
-					// A different rename belongs to a recreated source
-					// occupant. It cannot move or destroy the guid already
-					// living at `to`.
-					this.observeMoveSourceRecreation(oldVPath);
+				if (newVPath && this.consumeMoveEcho(oldVPath, newVPath)) {
+					return null;
 				}
-				return;
+				// A different rename belongs to a recreated source
+				// occupant. It cannot move or destroy the guid already
+				// living at `to`.
+				this.observeMoveSourceRecreation(oldVPath);
+				return moved;
 			}
 			// live doc exists
 			const guid = this.syncStore.get(oldVPath);
-			if (!guid) return;
+			if (!guid) return moved;
 			const file = this.files.get(guid);
 			if (!newVPath) {
 				// moving out of shared folder.. destroy the live doc.
@@ -5709,11 +5722,12 @@ export class SharedFolder extends HasProvider {
 					this.fset.delete(file);
 				}
 				this.files.delete(guid);
+				return moved;
 			} else {
 				// moving within shared folder.. move the live doc.
 				const guid = this.syncStore.get(oldVPath);
 				if (!guid) {
-					return;
+					return moved;
 				}
 				const toMove: [string, string, string][] = [];
 				if (file instanceof SyncFolder) {
@@ -5739,6 +5753,7 @@ export class SharedFolder extends HasProvider {
 						}
 					});
 				}, this);
+				return moved;
 			}
 		}
 	}
