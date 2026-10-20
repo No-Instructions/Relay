@@ -887,7 +887,6 @@ canvas.relay-canvas-presence {
 	margin: 10px 16px 4px;
 	padding: 8px 12px 10px;
 	border: 1px solid var(--background-modifier-border);
-	border-left: 3px solid var(--interactive-accent);
 	border-radius: var(--radius-m, 8px);
 	background: var(--background-secondary);
 	font-family: var(--font-interface);
