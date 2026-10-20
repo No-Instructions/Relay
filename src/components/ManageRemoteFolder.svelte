@@ -236,10 +236,11 @@
 		deletingRemote = true;
 		try {
 			await plugin.relayManager.deleteRemote(remoteFolder);
-			if ($folderStore) {
-				$folderStore.remote = undefined;
+			const folder = $folderStore;
+			if (folder) {
+				folder.remote = undefined;
 				plugin.sharedFolders.notifyListeners();
-				dispatch("manageSharedFolder", { folder: $folderStore });
+				dispatch("manageSharedFolder", { folder });
 				return;
 			}
 		} catch (error) {
