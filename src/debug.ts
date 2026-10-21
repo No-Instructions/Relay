@@ -377,24 +377,28 @@ const BOOT_MARKER = "Plugin started";
 
 /**
  * Parse raw log text into structured entries.
- * Each entry is two lines: `[timestamp] [LEVEL] message` followed by `    at callerInfo`.
+ * Each entry starts with `[timestamp] [LEVEL] message` and ends with
+ * `    at callerInfo`. A message that logs an object spans the lines between
+ * them, since objects are serialized as indented JSON.
  */
 function parseLogEntries(text: string): LogEntry[] {
 	const entries: LogEntry[] = [];
-	const lines = text.split('\n');
-	for (let i = 0; i < lines.length; i++) {
-		const match = lines[i].match(/^\[([^\]]+)\] \[([A-Z]+)\] (.*)$/);
+	let open: LogEntry | null = null;
+	for (const line of text.split('\n')) {
+		const match = line.match(/^\[([^\]]+)\] \[([A-Z]+)\] (.*)$/);
 		if (match) {
-			const callerLine = (i + 1 < lines.length && lines[i + 1].startsWith('    at '))
-				? lines[i + 1].slice(7) // strip "    at "
-				: '';
-			entries.push({
+			open = {
 				timestamp: match[1],
 				level: match[2].toLowerCase() as LogLevel,
 				message: match[3],
-				callerInfo: callerLine,
-			});
-			if (callerLine) i++; // skip the caller line
+				callerInfo: '',
+			};
+			entries.push(open);
+		} else if (open && line.startsWith('    at ')) {
+			open.callerInfo = line.slice(7); // strip "    at "
+			open = null;
+		} else if (open && line !== '') {
+			open.message += `\n${line}`;
 		}
 	}
 	return entries;
