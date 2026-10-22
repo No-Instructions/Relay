@@ -2224,8 +2224,24 @@ export class RelayManager extends HasLogging {
 		return updated;
 	}
 
+	/**
+	 * The local store drops a record only when a realtime event deletes it or
+	 * when the cascade from deleting its parent removes it, so a record it no
+	 * longer holds has nothing left to delete. A 404 from the server proves
+	 * nothing either way: the server also answers 404 to a delete its rules
+	 * refuse.
+	 */
+	private alreadyDeleted<T>(
+		records: ObservableMap<string, T>,
+		id: string,
+	): boolean {
+		if (!this.user) throw new Error("Log in to delete");
+		return !records.get(id);
+	}
+
 	async deleteRemote(remoteFolder: RemoteSharedFolder): Promise<boolean> {
 		if (!this.pb) throw new Error("Failed to delete folder");
+		if (this.alreadyDeleted(this.remoteFolders, remoteFolder.id)) return true;
 		this.requireUserPermission(["folder", "delete"], remoteFolder, "You cannot delete this shared folder.");
 		await this.pb.collection("shared_folders").delete(remoteFolder.id);
 		// Reconcile before returning; the realtime deletion may arrive later.
@@ -2292,6 +2308,7 @@ export class RelayManager extends HasLogging {
 	}
 
 	async destroyRelay(relay: Relay): Promise<boolean> {
+		if (this.alreadyDeleted(this.relays, relay.id)) return true;
 		this.store?.cascade("relays", relay.id);
 		await this.pb?.collection("relays").delete(relay.id);
 		return true;
@@ -2310,6 +2327,7 @@ export class RelayManager extends HasLogging {
 	}
 
 	async kick(relay_role: RelayRole) {
+		if (this.alreadyDeleted(this.relayRoles, relay_role.id)) return;
 		return this.pb?.collection("relay_roles").delete(relay_role.id);
 	}
 
