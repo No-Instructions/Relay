@@ -2224,10 +2224,28 @@ export class RelayManager extends HasLogging {
 		return updated;
 	}
 
+	/**
+	 * Delete a server record, counting one that is already gone as deleted.
+	 * Another device, or the cascade from deleting its parent, can remove a
+	 * record first; the server answers 404 for it.
+	 */
+	private async deleteRecord(collection: string, id: string): Promise<void> {
+		try {
+			await this.pb?.collection(collection).delete(id);
+		} catch (e) {
+			if ((e as { status?: number }).status !== 404) throw e;
+			this.warn(`${collection} ${id} was already deleted`);
+		}
+	}
+
 	async deleteRemote(remoteFolder: RemoteSharedFolder): Promise<boolean> {
 		if (!this.pb) throw new Error("Failed to delete folder");
-		this.requireUserPermission(["folder", "delete"], remoteFolder, "You cannot delete this shared folder.");
-		await this.pb.collection("shared_folders").delete(remoteFolder.id);
+		// A folder already gone from the store took its permissions with it;
+		// the server decides whether it still exists.
+		if (this.remoteFolders.get(remoteFolder.id)) {
+			this.requireUserPermission(["folder", "delete"], remoteFolder, "You cannot delete this shared folder.");
+		}
+		await this.deleteRecord("shared_folders", remoteFolder.id);
 		// Reconcile before returning; the realtime deletion may arrive later.
 		this.store?.cascade("shared_folders", remoteFolder.id);
 		return true;
@@ -2293,7 +2311,7 @@ export class RelayManager extends HasLogging {
 
 	async destroyRelay(relay: Relay): Promise<boolean> {
 		this.store?.cascade("relays", relay.id);
-		await this.pb?.collection("relays").delete(relay.id);
+		await this.deleteRecord("relays", relay.id);
 		return true;
 	}
 
@@ -2302,7 +2320,7 @@ export class RelayManager extends HasLogging {
 			return role.userId === this.user?.id && role.relayId === relay.id;
 		});
 		if (role) {
-			await this.pb?.collection("relay_roles").delete(role.id);
+			await this.deleteRecord("relay_roles", role.id);
 		} else {
 			this.warn("No role found to leave relay");
 		}
@@ -2310,7 +2328,7 @@ export class RelayManager extends HasLogging {
 	}
 
 	async kick(relay_role: RelayRole) {
-		return this.pb?.collection("relay_roles").delete(relay_role.id);
+		await this.deleteRecord("relay_roles", relay_role.id);
 	}
 
 	async updateRelayRole(
@@ -2367,7 +2385,7 @@ export class RelayManager extends HasLogging {
 		if (folderRole.userId !== this.user?.id) {
 			this.requireUserPermission(["folder", "manage_users"], folderRole.sharedFolder, "You cannot manage this folder's users.");
 		}
-		await this.pb.collection("shared_folder_roles").delete(folderRole.id);
+		await this.deleteRecord("shared_folder_roles", folderRole.id);
 	}
 
 	async updateFolderRole(
