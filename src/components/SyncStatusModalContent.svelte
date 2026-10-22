@@ -42,6 +42,9 @@
 	let displaySnapshot: FolderSyncSnapshot | null = null;
 
 	function refreshStatusModel(snapshot?: FolderSyncSnapshot) {
+		// Tearing a folder down notifies its stores after it has released
+		// background sync, before the view moves to another folder.
+		if (sharedFolder.destroyed) return;
 		if (snapshot) displaySnapshot = snapshot;
 		statusModel = buildFolderSyncStatusModel(
 			sharedFolder,
