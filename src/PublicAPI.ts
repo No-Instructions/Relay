@@ -21,11 +21,18 @@ export type RelayEvent<T> = {
 	record: T;
 };
 
+export interface LocalMove {
+	oldPath: string;
+	newPath: string;
+	kind: "file" | "folder";
+}
+
 export interface ApiV0 {
 	getUsers(): User[];
 	getCurrentUser(): User | null;
 	registerTextView(pluginId: string, viewType: string): void;
 	unregisterTextView(pluginId: string, viewType: string): void;
+	isSharedPath(path: string): boolean;
 }
 
 export interface Api {
@@ -42,6 +49,7 @@ type WorkspaceEvents = {
 		name: "system3-relay:v0:current-user",
 		event: RelayEvent<User | null>,
 	): void;
+	trigger(name: "system3-relay:v0:local-move", event: LocalMove): void;
 };
 
 function toUser(record: UserRecord | undefined): User | undefined {
@@ -82,6 +90,7 @@ interface ApiState {
 	currentUser: User | null;
 	registry: TextViewRegistry | null;
 	refreshLiveViews: (() => void) | null;
+	isSharedPath: ((path: string) => boolean) | null;
 }
 
 function requireAttached(state: ApiState): void {
@@ -108,12 +117,18 @@ function createApi(state: ApiState): Api {
 			state.registry!.unregister(pluginId, viewType);
 			state.refreshLiveViews?.();
 		},
+		isSharedPath: (path) => {
+			requireAttached(state);
+			return state.isSharedPath!(path);
+		},
 	};
 	return { v0 };
 }
 
 export interface PublicApiHandle {
 	api: Api;
+	/** Announce moves this client made, in the order Relay accepted them. */
+	reportLocalMoves: (moves: Iterable<LocalMove>) => void;
 	detach: () => void;
 }
 
@@ -133,6 +148,7 @@ export function createPublicApi(
 	textViewRegistry: TextViewRegistry,
 	workspace: WorkspaceEvents,
 	refreshLiveViews: () => void = () => {},
+	isSharedPath: (path: string) => boolean = () => false,
 ): PublicApiHandle {
 	const readUsers = (): User[] =>
 		relayManager.users.values().flatMap((record) => {
@@ -146,6 +162,7 @@ export function createPublicApi(
 		currentUser: readCurrentUser(),
 		registry: textViewRegistry,
 		refreshLiveViews,
+		isSharedPath,
 	};
 
 	let usersQueued = false;
@@ -201,6 +218,12 @@ export function createPublicApi(
 
 	return {
 		api: createApi(state),
+		reportLocalMoves: (moves) => {
+			for (const move of moves) {
+				if (!state.attached) return;
+				workspace.trigger("system3-relay:v0:local-move", { ...move });
+			}
+		},
 		detach: () => {
 			if (!state.attached) return;
 			state.attached = false;
@@ -208,6 +231,7 @@ export function createPublicApi(
 			stopCurrentUser();
 			state.registry = null;
 			state.refreshLiveViews = null;
+			state.isSharedPath = null;
 		},
 	};
 }
