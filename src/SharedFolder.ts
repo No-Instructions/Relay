@@ -732,17 +732,10 @@ export class SharedFolder extends HasProvider {
 				try {
 					this.restorePendingServerOps();
 				} catch (error) {
-					this.error(
-						"Cannot restore pending file operations; folder startup is paused",
+					this.warn(
+						"Could not restore pending file operations; continuing startup",
 						error,
 					);
-					new Notice(
-						`Relay paused syncing "${this.path}" because saved file operations ` +
-							`could not be read. Restart Obsidian to retry. If this continues, ` +
-							`contact support before clearing local sync data.`,
-						0,
-					);
-					return;
 				}
 				if (this.destroyed) return;
 				this.pendingServerOpsRestored = true;
@@ -2245,20 +2238,24 @@ export class SharedFolder extends HasProvider {
 	 * next tree sync.
 	 */
 	private restorePendingServerOps(): void {
-		const entries = Array.from(this.pendingServerOps.entries());
-		// Validate everything before changing the in-memory operation set.
-		for (const [, operation] of entries) {
-			if (
-				!operation ||
-				(operation.type !== "delete" && operation.type !== "move") ||
-				(operation.type === "move" &&
-					(typeof operation.guid !== "string" || typeof operation.to !== "string"))
-			) {
-				throw new Error("Invalid pending server operation");
-			}
-		}
 		const restored: string[] = [];
-		for (const [path, operation] of entries) {
+		for (const path of this.pendingServerOps.keys()) {
+			let operation: PendingServerOp;
+			try {
+				const saved = this.pendingServerOps.get(path);
+				if (
+					!saved ||
+					(saved.type !== "delete" && saved.type !== "move") ||
+					(saved.type === "move" &&
+						(typeof saved.guid !== "string" || typeof saved.to !== "string"))
+				) {
+					throw new Error("Invalid pending server operation");
+				}
+				operation = saved;
+			} catch (error) {
+				this.warn("Skipping unreadable pending file operation", path, error);
+				continue;
+			}
 			// A recorded delete or move may precede a membership update that
 			// never committed. A current member at the source invalidates it.
 			if (this.syncStore.has(path)) continue;
