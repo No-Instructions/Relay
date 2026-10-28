@@ -4,6 +4,7 @@
 	// modal around it supplies the title and the rename buttons.
 	import CaseName from "./CaseName.svelte";
 	import type { CaseConflictExplanation } from "src/caseConflictState";
+	import { getDocsUrl, openDocs } from "../documentationLinks";
 
 	export let explanation: CaseConflictExplanation;
 </script>
@@ -21,7 +22,13 @@
 	</div>
 	<p class="relay-case-conflict-body">{explanation.body}</p>
 	<p class="relay-case-conflict-fix">{explanation.fix}</p>
-	<a class="relay-case-conflict-docs" href={explanation.docs.url} target="_blank" rel="noopener">
+	<a
+		class="relay-case-conflict-docs"
+		href={getDocsUrl(explanation.docs.page)}
+		target="_blank"
+		rel="noopener noreferrer"
+		on:click={(event) => openDocs(explanation.docs.page, event)}
+	>
 		{explanation.docs.label}
 	</a>
 </div>
