@@ -21,6 +21,11 @@ export interface ServerMove {
 	to: string;
 }
 
+/** A claim about unfinished disk work, keyed by its source path. */
+export type PendingServerOp =
+	| { type: "delete" }
+	| { type: "move"; guid: string; to: string };
+
 export class ServerOps {
 	/** Remote removals whose disk adoption has not completed. */
 	private deletes = new Set<string>();
@@ -30,6 +35,14 @@ export class ServerOps {
 	private moveGuidsBySource = new Map<string, string>();
 	/** Move sources at which the vault observed a distinct local creation. */
 	private recreatedSources = new Set<string>();
+
+	/**
+	 * `onChanged` runs after every change to the pending removals and moves,
+	 * so an owner can keep them durable: membership is persisted as it
+	 * arrives, and an operation that reaches disk only later must survive a
+	 * restart in between.
+	 */
+	constructor(private readonly onChanged?: (paths: string[]) => void) {}
 
 	/**
 	 * Is this path spoken for by an operation in flight? A pending delete,
@@ -44,12 +57,14 @@ export class ServerOps {
 
 	/** A remote removal arrived; its disk adoption is now pending. */
 	recordDelete(path: string): void {
+		if (this.deletes.has(path)) return;
 		this.deletes.add(path);
+		this.onChanged?.([path]);
 	}
 
 	/** The removal's disk adoption completed, or the path re-committed. */
 	clearDelete(path: string): void {
-		this.deletes.delete(path);
+		if (this.deletes.delete(path)) this.onChanged?.([path]);
 	}
 
 	/** Removals still awaiting disk adoption, for the absence sweep. */
@@ -85,6 +100,9 @@ export class ServerOps {
 		}
 		this.movesByGuid.set(move.guid, { ...move });
 		this.moveGuidsBySource.set(move.from, move.guid);
+		this.onChanged?.(
+			Array.from(new Set([move.from, move.to, ...(previous ? [previous.from] : [])])),
+		);
 	}
 
 	/** Membership moved again after disk had already left the new source. */
@@ -96,6 +114,7 @@ export class ServerOps {
 			this.moveGuidsBySource.delete(move.from);
 			this.recreatedSources.delete(move.from);
 		}
+		this.onChanged?.([move.from]);
 	}
 
 	/** The move whose identity disk still exposes at this source path. */
@@ -117,7 +136,10 @@ export class ServerOps {
 	 */
 	observeSourceRecreation(path: string): boolean {
 		if (!this.moveGuidsBySource.has(path)) return false;
-		this.recreatedSources.add(path);
+		if (!this.recreatedSources.has(path)) {
+			this.recreatedSources.add(path);
+			this.onChanged?.([path]);
+		}
 		return true;
 	}
 
@@ -132,11 +154,20 @@ export class ServerOps {
 		this.moveGuidsBySource.delete(from);
 		this.movesByGuid.delete(move.guid);
 		this.recreatedSources.delete(from);
+		this.onChanged?.([from]);
 		return move;
 	}
 
 	/** Outstanding moves, for absence reconciliation after a tree sync. */
 	pendingMoves(): ServerMove[] {
 		return Array.from(this.movesByGuid.values(), (move) => ({ ...move }));
+	}
+
+	/** Only this path's record needs writing when its operation changes. */
+	durableOperation(path: string): PendingServerOp | undefined {
+		if (this.deletes.has(path)) return { type: "delete" };
+		if (this.recreatedSources.has(path)) return undefined;
+		const move = this.moveFrom(path);
+		return move ? { type: "move", guid: move.guid, to: move.to } : undefined;
 	}
 }
