@@ -762,7 +762,8 @@ canvas.relay-canvas-presence {
 	margin: 0 0 var(--size-4-2);
 	color: var(--text-normal);
 }
-.relay-case-conflict-docs {
+.relay-case-conflict-docs,
+.relay-preserved-edits-docs {
 	font-size: var(--font-ui-small);
 }
 .relay-case-conflict-modal .modal-button-container {
