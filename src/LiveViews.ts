@@ -682,11 +682,12 @@ export class LiveView<ViewType extends TextFileView>
 	}
 
 	private reconcileAccessModeBanners(statePath: string): void {
+		if (this._released || this._leavingMarkdownFile) return;
 		const showForkNotice =
 			statePath.startsWith("active.reading") &&
 			(this.document.hsm?.hasFork() ?? false);
 
-		// The view has one banner slot. Remove the current banner before creating another.
+		// A preserved-edits notice owns the Reader slot until its fork clears.
 		if (!showForkNotice && this._forkNotice) {
 			this._forkNotice.destroy();
 			this._forkNotice = undefined;
@@ -815,6 +816,7 @@ export class LiveView<ViewType extends TextFileView>
 				}
 				return false;
 			},
+			{ priority: 5 },
 		);
 		return () => {};
 	}
@@ -824,12 +826,13 @@ export class LiveView<ViewType extends TextFileView>
 		this._forkNotice = new Banner(
 			this.view,
 			{
-				short: "Local edits held",
-				long: "Local edits held -- restore later or revert",
+				short: "Review edits",
+				long: "is read-only. You still have edits from when you could write to this folder.",
+				context: { name: this.document.sharedFolder.name, icon: "folder-lock" },
 			},
 			async () => {
 				const hsm = this.document.hsm;
-				if (!hsm) return false;
+				if (this._released || this._leavingMarkdownFile || !this.reading || !hsm?.hasFork()) return false;
 				new PreservedEditsModal(this._parent.app, {
 					fileName: this.document.path.split("/").pop() ?? this.document.path,
 					onCompare: () => {
@@ -866,6 +869,7 @@ export class LiveView<ViewType extends TextFileView>
 				// The state subscription hides the notice when the fork clears.
 				return false;
 			},
+			{ namespace: "relay-read-only", priority: 3, actionLabel: "Review edits" },
 		);
 	}
 
@@ -1077,10 +1081,12 @@ export class LiveView<ViewType extends TextFileView>
 
 	private reconcileReadOnlyBanner(view: MarkdownView, readOnly: boolean): void {
 		if (!readOnly) {
+			this._forkNotice?.destroy();
+			this._forkNotice = undefined;
 			this._readOnlyBanner?.destroy();
 			this._readOnlyBanner = undefined;
 		} else if (!this._readOnlyBanner) {
-			this._readOnlyBanner = new Banner(view, "Read-only", undefined, "relay-read-only");
+			this._readOnlyBanner = new Banner(view, "Read only", undefined, { namespace: "relay-read-only", priority: -1 });
 		}
 	}
 
@@ -1090,6 +1096,8 @@ export class LiveView<ViewType extends TextFileView>
 			if (cm) configureAccessMode(cm, false);
 			this.view.containerEl.removeClass("relay-read-only");
 		}
+		this._forkNotice?.destroy();
+		this._forkNotice = undefined;
 		this._readOnlyBanner?.destroy();
 		this._readOnlyBanner = undefined;
 	}
