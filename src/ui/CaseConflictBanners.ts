@@ -92,7 +92,7 @@ export class CaseConflictBanners extends Component {
 				{ short: "Name conflict", long: label },
 				// On mobile the banner is a header button, and its tap opens the explanation.
 				explain && (() => { explain(); return Promise.resolve(false); }),
-				{ namespace: "relay-case-conflict", render: container => this.render(container, view, key, label, explain) },
+				{ namespace: "relay-case-conflict", priority: 4, render: container => this.render(container, view, key, label, explain) },
 			);
 			this.banners.set(view, { key, banner });
 		}
