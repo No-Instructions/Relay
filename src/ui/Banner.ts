@@ -10,12 +10,15 @@ interface BannerOptions {
 	backgroundColor?: string;
 	color?: string;
 	render?: (container: HTMLElement) => () => void;
-	/** The slot the banner competes for; a string in the options' place names it alone. */
+	/** Label a desktop action button instead of making the whole banner clickable. */
+	actionLabel?: string;
+	/** CSS class namespace; a string in the options' place sets it alone. */
 	namespace?: string;
 }
 
 type BannerSlot = { candidates: Set<Banner>; active?: Banner };
-const slots = new WeakMap<HTMLElement, Map<string, BannerSlot>>();
+// A note view has one banner position, regardless of which feature owns it.
+const slots = new WeakMap<HTMLElement, BannerSlot>();
 
 export class Banner {
 	view: TextFileView | CanvasView;
@@ -69,15 +72,10 @@ export class Banner {
 		if (!this.view || this.destroyed) return true;
 		const container = this.view.containerEl;
 		if (!container) return;
-		let namespaces = slots.get(container);
-		if (!namespaces) {
-			namespaces = new Map();
-			slots.set(container, namespaces);
-		}
-		let slot = namespaces.get(this.namespace);
+		let slot = slots.get(container);
 		if (!slot) {
 			slot = { candidates: new Set() };
-			namespaces.set(this.namespace, slot);
+			slots.set(container, slot);
 		}
 		slot.candidates.add(this);
 		this.refreshSlot();
@@ -85,7 +83,7 @@ export class Banner {
 	}
 
 	private refreshSlot(): void {
-		const slot = slots.get(this.view.containerEl)?.get(this.namespace);
+		const slot = slots.get(this.view.containerEl);
 		if (!slot) return;
 		let next: Banner | undefined;
 		for (const candidate of slot.candidates) {
@@ -125,16 +123,24 @@ export class Banner {
 			this.disposeContent = this.options.render(banner);
 		} else {
 			const context = typeof this.text === "string" ? undefined : this.text.context;
+			const content = banner.createSpan({ text: context ? "" : this.longText });
 			if (context) {
-				const content = banner.createSpan();
 				const label = content.createSpan({ cls: "relay-banner-context" });
 				setIcon(label.createSpan({ cls: "relay-banner-context-icon" }), context.icon);
 				label.createSpan({ text: context.name });
 				content.createSpan({ text: ` ${this.longText}` });
-			} else {
-				banner.createSpan({ text: this.longText });
 			}
-			if (this.onClick) banner.addEventListener("click", () => this.handleClick());
+			if (this.onClick && this.options.actionLabel) {
+				content.createSpan({ text: " " });
+				const action = content.createEl("button", {
+					cls: "relay-banner-action",
+					text: this.options.actionLabel,
+					attr: { type: "button" },
+				});
+				action.addEventListener("click", () => this.handleClick());
+			} else if (this.onClick) {
+				banner.addEventListener("click", () => this.handleClick());
+			}
 		}
 		return true;
 	}
@@ -148,10 +154,16 @@ export class Banner {
 			return;
 		}
 
+		const context = typeof this.text === "string" ? undefined : this.text.context;
+		const description = context ? `${context.name} ${this.longText}` : this.longText;
 		const button = leafContentEl.createEl(this.onClick ? "button" : "span", {
 			cls: `view-header-left ${this.namespace}-header-${this.onClick ? "button" : "label"}`,
 			text: this.shortText,
-			attr: this.onClick ? { "aria-label": this.longText, tabindex: "0" } : {},
+			attr: this.onClick ? {
+				"aria-label": this.options.actionLabel ? `${this.shortText}: ${description}` : description,
+				tabindex: "0",
+				type: "button",
+			} : {},
 		});
 		this.element = button;
 		if (this.options.backgroundColor) button.style.backgroundColor = this.options.backgroundColor;
@@ -168,21 +180,16 @@ export class Banner {
 		this.disposeContent = undefined;
 		this.element?.remove();
 		this.element = undefined;
-		const leafContentEl = this.view.containerEl;
-		const hasBanner = [...(slots.get(leafContentEl)?.values() ?? [])].some(slot =>
-			slot.active?.element && !slot.active.useHeaderButton);
-		if (!hasBanner) leafContentEl.removeClass("system3-has-banner");
+		this.view.containerEl.removeClass("system3-has-banner");
 	}
 
 	destroy() {
 		if (this.destroyed) return true;
 		this.destroyed = true;
-		const slot = slots.get(this.view.containerEl)?.get(this.namespace);
+		const slot = slots.get(this.view.containerEl);
 		slot?.candidates.delete(this);
 		this.refreshSlot();
-		const namespaces = slots.get(this.view.containerEl);
-		if (slot?.candidates.size === 0) namespaces?.delete(this.namespace);
-		if (namespaces?.size === 0) slots.delete(this.view.containerEl);
+		if (slot?.candidates.size === 0) slots.delete(this.view.containerEl);
 		this.onClick = undefined;
 		return true;
 	}

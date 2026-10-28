@@ -265,11 +265,52 @@ button.system3-login-button {
 }
 
 .relay-read-only-header-label,
+.relay-read-only-header-button,
 .relay-not-synced-header-label,
 .relay-case-conflict-header-label {
 	padding: 2px 8px;
 	color: var(--text-muted);
 	font-size: var(--font-ui-small);
+}
+
+button.relay-banner-action,
+button.relay-read-only-header-button {
+	display: inline;
+	width: auto;
+	height: auto;
+	margin: 0;
+	border: 0;
+	border-radius: 0;
+	background: none;
+	box-shadow: none;
+	color: var(--text-normal);
+	font-family: inherit;
+	text-decoration: underline;
+	text-underline-offset: 2px;
+	cursor: pointer;
+}
+
+button.relay-banner-action {
+	padding: 0;
+	font-size: inherit;
+	line-height: inherit;
+}
+
+button.relay-read-only-header-button {
+	flex: 0 0 auto;
+	padding: 2px 4px;
+	white-space: nowrap;
+}
+
+button.relay-banner-action:hover,
+button.relay-read-only-header-button:hover {
+	color: var(--text-accent-hover);
+}
+
+button.relay-banner-action:focus-visible,
+button.relay-read-only-header-button:focus-visible {
+	outline: 2px solid var(--interactive-accent);
+	outline-offset: 2px;
 }
 
 .nav-file-title.system3-conflict::after {
