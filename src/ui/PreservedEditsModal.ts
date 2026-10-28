@@ -1,4 +1,5 @@
 import { Modal, type App } from "obsidian";
+import { getDocsUrl, openDocs } from "../documentationLinks";
 
 /**
  * Offers to compare or discard the edits a read-only document preserves;
@@ -25,6 +26,17 @@ export class PreservedEditsModal extends Modal {
 				`separately while this file follows the shared version. Keep them ` +
 				`to restore when you can write, or revert them now.`,
 		});
+
+		const docsLink = contentEl.createEl("p").createEl("a", {
+			text: "Learn more about read-only access",
+			cls: "relay-preserved-edits-docs",
+			attr: {
+				href: getDocsUrl("read-only-content-stashed"),
+				target: "_blank",
+				rel: "noopener noreferrer",
+			},
+		});
+		docsLink.addEventListener("click", (event) => openDocs("read-only-content-stashed", event));
 
 		const buttons = contentEl.createDiv({ cls: "modal-button-container" });
 		const keep = buttons.createEl("button", {

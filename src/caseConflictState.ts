@@ -2,6 +2,7 @@ import { TFolder, type TAbstractFile } from "obsidian";
 import { basename, dirname } from "path-browserify";
 import { canonicalSpelling } from "./casePaths";
 import type { SharedFolder } from "./SharedFolder";
+import type { DocsPage } from "./documentationLinks";
 
 /**
  * What the conflict does on this machine:
@@ -135,12 +136,10 @@ export interface CaseConflictExplanation {
 	rows: CaseConflictRow[];
 	body: string;
 	fix: string;
-	docs: { label: string; url: string };
+	docs: { label: string; page: DocsPage };
 	/** Rename either spelling; the first is this machine's. */
 	actions: { label: string; path: string; kind: "file" | "folder" }[];
 }
-
-const DOCS_URL = "https://docs.relay.md/";
 
 export function explainCaseConflict(
 	state: CaseConflictState,
@@ -179,7 +178,7 @@ export function explainCaseConflict(
 		rows,
 		body,
 		fix: `To fix it, rename either ${item}.`,
-		docs: { label: "Learn more about name conflicts", url: DOCS_URL },
+		docs: { label: "Learn more about name conflicts", page: "name-conflicts" },
 		actions: [
 			{ label: `Rename this ${item}`, path, kind },
 			{ label: `Rename ${other}`, path: otherPath, kind },
