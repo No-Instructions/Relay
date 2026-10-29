@@ -13,6 +13,7 @@ import {
 	type CachedMetadata,
 } from "obsidian";
 import ViewActions from "src/components/ViewActions.svelte";
+import { ReaderModeAction } from "./ui/ReaderModeAction";
 import { mountComponent, type MountedComponent } from "src/ui/svelteHost.svelte";
 import * as Y from "yjs";
 import { Document, isDocument } from "./Document";
@@ -606,6 +607,7 @@ export class LiveView<ViewType extends TextFileView>
 	private _offOfflineOnline?: () => void;
 	private _forkNotice?: Banner;
 	private _readOnlyBanner?: Banner;
+	private _readerModeAction?: ReaderModeAction;
 	private _offAccessStatus?: () => void;
 	private _offPermissions?: () => void;
 	private _previousMarkdownMode?: "preview" | "source";
@@ -907,6 +909,11 @@ export class LiveView<ViewType extends TextFileView>
 		const viewActionsElement =
 			this.view.containerEl.querySelector(".view-actions");
 		if (viewActionsElement && viewActionsElement.firstChild) {
+			if (this.view instanceof MarkdownView && this.readOnly) {
+				this.view.containerEl.addClass("relay-read-only");
+				this._readerModeAction ??= new ReaderModeAction(this.view.containerEl);
+				this._readerModeAction.setActive(true);
+			}
 			if (!this._viewActions) {
 				this.clearViewActions();
 				if (this.offConnectionStatusSubscription) {
@@ -920,6 +927,7 @@ export class LiveView<ViewType extends TextFileView>
 						state: this.document.state,
 						remote: this.document.sharedFolder.remote,
 						tracking: this.live,
+						readerMode: this.readOnly,
 						draftMode: this.document.isDraft,
 						enableDraftMode: flags().enableDraftMode || this.document.isDraft,
 						folderConnected: this.document.sharedFolder.connected,
@@ -935,6 +943,7 @@ export class LiveView<ViewType extends TextFileView>
 							state: state,
 							remote: this.document.sharedFolder.remote,
 							tracking: this.live,
+							readerMode: this.readOnly,
 							draftMode: this.document.isDraft,
 							enableDraftMode: flags().enableDraftMode || this.document.isDraft,
 							folderConnected: this.document.sharedFolder.connected,
@@ -952,6 +961,7 @@ export class LiveView<ViewType extends TextFileView>
 					const currentFlags = flags();
 					this._viewActions?.set({
 						tracking: this.live,
+						readerMode: this.readOnly,
 						draftMode: this.document.isDraft,
 						enableDraftMode: currentFlags.enableDraftMode || this.document.isDraft,
 						folderConnected: this.document.sharedFolder.connected,
@@ -968,6 +978,7 @@ export class LiveView<ViewType extends TextFileView>
 				state: this.document.state,
 				remote: this.document.sharedFolder.remote,
 				tracking: this.live,
+				readerMode: this.readOnly,
 				draftMode: this.document.isDraft,
 				enableDraftMode: flags().enableDraftMode || this.document.isDraft,
 				folderConnected: this.document.sharedFolder.connected,
@@ -1091,6 +1102,8 @@ export class LiveView<ViewType extends TextFileView>
 	}
 
 	private clearReadOnlyPresentation(): void {
+		this._readerModeAction?.destroy();
+		this._readerModeAction = undefined;
 		if (this.view instanceof MarkdownView) {
 			const cm = (this.view.editor as { cm?: EditorView } | undefined)?.cm;
 			if (cm) configureAccessMode(cm, false);
@@ -1117,14 +1130,23 @@ export class LiveView<ViewType extends TextFileView>
 		if (!modeChanged && !forceEditorConfiguration) return;
 		const previousReading = this._lastEditableReading;
 		this._lastEditableReading = readOnly;
+		// Replace the native button and Relay action in one update, before paint.
+		if (readOnly) {
+			view.containerEl.addClass("relay-read-only");
+			this._readerModeAction ??= new ReaderModeAction(view.containerEl);
+			this._readerModeAction.setActive(true);
+			if (modeChanged) this._viewActions?.setSync?.({ readerMode: true });
+		} else {
+			if (modeChanged) this._viewActions?.setSync?.({ readerMode: false });
+			this._readerModeAction?.destroy();
+			this._readerModeAction = undefined;
+			view.containerEl.removeClass("relay-read-only");
+		}
 		queueMicrotask(() => {
 			if (this._released || this._leavingMarkdownFile) return;
 			const currentReadOnly = this.readOnly;
 			if (this._lastEditableReading !== readOnly || currentReadOnly !== readOnly) {
 				return;
-			}
-			if (modeChanged) {
-				view.containerEl.toggleClass("relay-read-only", readOnly);
 			}
 			this.reconcileReadOnlyBanner(view, readOnly);
 
