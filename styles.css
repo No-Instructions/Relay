@@ -260,23 +260,23 @@ button.system3-login-button {
 }
 
 /* The read-only indicator occupies Obsidian's native mode-button slot. */
-.workspace-leaf-content.relay-read-only .view-actions > .system3-view-action {
-  display: none;
+.workspace-leaf-content.relay-read-only .view-actions:has(> .relay-reader-action) > .system3-view-action {
+	display: none;
 }
 .workspace-leaf-content.relay-read-only .view-actions > .relay-reader-action {
-  color: var(--interactive-accent);
-  cursor: default;
+	color: var(--interactive-accent);
+	cursor: default;
 }
 .workspace-leaf-content.relay-read-only .view-actions > .relay-reader-action:hover {
-  background-color: transparent;
+	background-color: transparent;
 }
 /* Keep a native mode button invisible until it can be replaced before paint. */
 .workspace-leaf-content.relay-read-only .view-actions > button.view-action:is(
-  :has(> svg.lucide-book-open),
-  :has(> svg.lucide-edit-3),
-  [aria-label^="Current view:"]
+	:has(> svg.lucide-book-open),
+	:has(> svg.lucide-edit-3),
+	[aria-label^="Current view:"]
 ) {
-  visibility: hidden;
+	visibility: hidden;
 }
 
 /* A banner that renders its own content handles its own clicks. */

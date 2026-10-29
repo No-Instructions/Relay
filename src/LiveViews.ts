@@ -608,6 +608,7 @@ export class LiveView<ViewType extends TextFileView>
 	private _forkNotice?: Banner;
 	private _readOnlyBanner?: Banner;
 	private _readerModeAction?: ReaderModeAction;
+	private _readerModeInstalled = false;
 	private _offAccessStatus?: () => void;
 	private _offPermissions?: () => void;
 	private _previousMarkdownMode?: "preview" | "source";
@@ -909,10 +910,10 @@ export class LiveView<ViewType extends TextFileView>
 		const viewActionsElement =
 			this.view.containerEl.querySelector(".view-actions");
 		if (viewActionsElement && viewActionsElement.firstChild) {
-			if (this.view instanceof MarkdownView && this.readOnly) {
+			if (this.view instanceof MarkdownView && this.readOnly && !this._released && !this._leavingMarkdownFile) {
 				this.view.containerEl.addClass("relay-read-only");
 				this._readerModeAction ??= new ReaderModeAction(this.view.containerEl);
-				this._readerModeAction.setActive(true);
+				this._readerModeInstalled = this._readerModeAction.setActive(true);
 			}
 			if (!this._viewActions) {
 				this.clearViewActions();
@@ -927,7 +928,7 @@ export class LiveView<ViewType extends TextFileView>
 						state: this.document.state,
 						remote: this.document.sharedFolder.remote,
 						tracking: this.live,
-						readerMode: this.readOnly,
+						readerMode: this.readerMode,
 						draftMode: this.document.isDraft,
 						enableDraftMode: flags().enableDraftMode || this.document.isDraft,
 						folderConnected: this.document.sharedFolder.connected,
@@ -943,7 +944,7 @@ export class LiveView<ViewType extends TextFileView>
 							state: state,
 							remote: this.document.sharedFolder.remote,
 							tracking: this.live,
-							readerMode: this.readOnly,
+							readerMode: this.readerMode,
 							draftMode: this.document.isDraft,
 							enableDraftMode: flags().enableDraftMode || this.document.isDraft,
 							folderConnected: this.document.sharedFolder.connected,
@@ -961,7 +962,7 @@ export class LiveView<ViewType extends TextFileView>
 					const currentFlags = flags();
 					this._viewActions?.set({
 						tracking: this.live,
-						readerMode: this.readOnly,
+						readerMode: this.readerMode,
 						draftMode: this.document.isDraft,
 						enableDraftMode: currentFlags.enableDraftMode || this.document.isDraft,
 						folderConnected: this.document.sharedFolder.connected,
@@ -978,7 +979,7 @@ export class LiveView<ViewType extends TextFileView>
 				state: this.document.state,
 				remote: this.document.sharedFolder.remote,
 				tracking: this.live,
-				readerMode: this.readOnly,
+				readerMode: this.readerMode,
 				draftMode: this.document.isDraft,
 				enableDraftMode: flags().enableDraftMode || this.document.isDraft,
 				folderConnected: this.document.sharedFolder.connected,
@@ -1073,6 +1074,11 @@ export class LiveView<ViewType extends TextFileView>
 		return this.document.canWriteContent === false || this.reading;
 	}
 
+	private get readerMode(): boolean {
+		return this.view instanceof MarkdownView && !this._released && !this._leavingMarkdownFile &&
+			this.readOnly && this._readerModeInstalled === true;
+	}
+
 	private setMarkdownMode(view: MarkdownView, mode: "preview" | "source"): void {
 		void setMarkdownViewMode(view, mode).then(() => {
 			if (!this._released) this.applyEditableState(true);
@@ -1102,6 +1108,7 @@ export class LiveView<ViewType extends TextFileView>
 	}
 
 	private clearReadOnlyPresentation(): void {
+		this._readerModeInstalled = false;
 		this._readerModeAction?.destroy();
 		this._readerModeAction = undefined;
 		if (this.view instanceof MarkdownView) {
@@ -1134,10 +1141,14 @@ export class LiveView<ViewType extends TextFileView>
 		if (readOnly) {
 			view.containerEl.addClass("relay-read-only");
 			this._readerModeAction ??= new ReaderModeAction(view.containerEl);
-			this._readerModeAction.setActive(true);
-			if (modeChanged) this._viewActions?.setSync?.({ readerMode: true });
+			const wasInstalled = this._readerModeInstalled;
+			this._readerModeInstalled = this._readerModeAction.setActive(true);
+			if (modeChanged || wasInstalled !== this._readerModeInstalled) {
+				this._viewActions?.setSync({ readerMode: this._readerModeInstalled });
+			}
 		} else {
-			if (modeChanged) this._viewActions?.setSync?.({ readerMode: false });
+			if (modeChanged || this._readerModeInstalled) this._viewActions?.setSync({ readerMode: false });
+			this._readerModeInstalled = false;
 			this._readerModeAction?.destroy();
 			this._readerModeAction = undefined;
 			view.containerEl.removeClass("relay-read-only");
