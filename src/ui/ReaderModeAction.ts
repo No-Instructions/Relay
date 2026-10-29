@@ -1,46 +1,5 @@
-/** Replace Obsidian's mode button with a read-only indicator in the same slot. */
-const SVG_NS = "http://www.w3.org/2000/svg";
-const READER_PATHS = [
-	"M11 7v14",
-	"M11 7a4 4 0 0 0-4-4H3a1 1 0 0 0-1 1v13a1 1 0 0 0 1 1h5a3 3 0 0 1 3 3",
-	"M11 7a4 4 0 0 1 4-4h4a1 1 0 0 1 1 1v6.5",
-	"M11 21a2.5 2.5 0 0 1 2.5-2.5",
-	"M22 17v-2a2 2 0 1 0-4 0v2",
-];
-
-function readerIcon(doc: Document): SVGSVGElement {
-	const svg = doc.createElementNS(SVG_NS, "svg");
-	for (const [name, value] of Object.entries({
-		width: "24",
-		height: "24",
-		viewBox: "0 0 24 24",
-		fill: "none",
-		stroke: "currentColor",
-		"stroke-width": "2",
-		"stroke-linecap": "round",
-		"stroke-linejoin": "round",
-		class: "svg-icon inline-icon relay-book-open-lock",
-	})) {
-		svg.setAttribute(name, value);
-	}
-	for (const d of READER_PATHS) {
-		const path = doc.createElementNS(SVG_NS, "path");
-		path.setAttribute("d", d);
-		svg.append(path);
-	}
-	const lock = doc.createElementNS(SVG_NS, "rect");
-	for (const [name, value] of Object.entries({
-		x: "16",
-		y: "17",
-		width: "7",
-		height: "5",
-		rx: "1",
-	})) {
-		lock.setAttribute(name, value);
-	}
-	svg.append(lock);
-	return svg;
-}
+import ReaderModeIcon from "src/components/ReaderModeIcon.svelte";
+import { mountComponent, type MountedComponent } from "src/ui/svelteHost.svelte";
 
 function readerIndicator(doc: Document): HTMLSpanElement {
 	const indicator = doc.createElement("span");
@@ -48,14 +7,15 @@ function readerIndicator(doc: Document): HTMLSpanElement {
 	indicator.setAttribute("role", "img");
 	indicator.setAttribute("aria-label", "Shared folder is read only");
 	indicator.setAttribute("title", "Shared folder is read only");
-	indicator.append(readerIcon(doc));
 	return indicator;
 }
 
+/** Replace Obsidian's mode button with a read-only indicator in the same slot. */
 export class ReaderModeAction {
 	private actions?: HTMLElement;
 	private native?: HTMLButtonElement;
 	private replacement?: HTMLSpanElement;
+	private icon?: MountedComponent;
 	private observer?: MutationObserver;
 
 	constructor(private readonly container: HTMLElement) {}
@@ -88,7 +48,13 @@ export class ReaderModeAction {
 				button.querySelector(":scope > svg.lucide-book-open, :scope > svg.lucide-edit-3"));
 		if (!native) return;
 		this.native = native;
-		this.replacement ??= readerIndicator(native.ownerDocument);
+		if (!this.replacement) {
+			this.replacement = readerIndicator(native.ownerDocument);
+			this.icon = mountComponent(ReaderModeIcon, {
+				target: this.replacement,
+				props: {},
+			});
+		}
 		// Moving the existing indicator here also removes it from any old slot.
 		// The native button and its listeners remain intact for restoration.
 		native.replaceWith(this.replacement);
@@ -100,6 +66,8 @@ export class ReaderModeAction {
 		if (this.replacement?.parentNode && this.native) {
 			this.replacement.replaceWith(this.native);
 		}
+		this.icon?.destroy();
+		this.icon = undefined;
 		this.replacement = undefined;
 		this.native = undefined;
 		this.actions = undefined;
