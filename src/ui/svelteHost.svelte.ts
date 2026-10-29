@@ -1,5 +1,5 @@
 /* global $state -- rune the Svelte compiler resolves in this module */
-import { mount, unmount, type Component } from "svelte";
+import { flushSync, mount, unmount, type Component } from "svelte";
 
 /** A Svelte component mounted from TypeScript, with props the host can update. */
 export interface MountedComponent<
@@ -7,6 +7,8 @@ export interface MountedComponent<
 > {
 	/** Assign new prop values; the component re-renders on the next tick. */
 	set(patch: Partial<Props>): void;
+	/** Apply a visual state change before the browser can paint. */
+	setSync(patch: Partial<Props>): void;
 	/** Remove the component from the DOM. */
 	destroy(): void;
 }
@@ -28,6 +30,9 @@ export function mountComponent<Props extends Record<string, unknown>>(
 	return {
 		set(patch) {
 			Object.assign(props, patch);
+		},
+		setSync(patch) {
+			flushSync(() => Object.assign(props, patch));
 		},
 		destroy() {
 			void unmount(instance);

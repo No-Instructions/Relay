@@ -8,6 +8,7 @@
 	export let state: ConnectionState;
 	export let remote: RemoteSharedFolder;
 	export let tracking: boolean = false;
+	export let readerMode: boolean = false;
 	export let draftMode: boolean = false;
 	export let isLoggedOut: boolean = false;
 	export let onLogin: (() => Promise<boolean>) | undefined = undefined;
@@ -69,7 +70,9 @@
 	};
 </script>
 
-{#if isLoggedOut}
+{#if readerMode}
+	<!-- ReaderModeAction installs the read-only indicator in the mode-button slot. -->
+{:else if isLoggedOut}
 	<button
 		class="clickable-icon view-action system3-view-action mod-warning"
 		aria-label="Login to enable Live edits"
