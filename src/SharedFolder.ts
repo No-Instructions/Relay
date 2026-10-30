@@ -627,6 +627,8 @@ export class SharedFolder extends HasProvider {
 					return null;
 				}
 			},
+			persistStateBarrier: (guid, state) =>
+				this._hsmStore.saveState(guid, { ...state, folder: this.guid }),
 			onEffect: async (guid, effect) => {
 				if (effect.type === "PERSIST_STATE") {
 					// Persisted fork/LCA state writes run in the background; track

@@ -261,6 +261,7 @@ export type StatePath =
 	| "idle.loadingDiskContents"
 	| "idle.synced"
 	| "idle.localAhead"
+	| "idle.reading"
 	| "idle.remoteAhead"
 	| "idle.diskAhead"
 	| "idle.diverged"
@@ -274,6 +275,7 @@ export type StatePath =
 	| "active.tracking"
 	| "active.reading"
 	| "active.reading.repairing"
+	| "active.reading.stashing"
 	| "active.merging.twoWay"
 	| "active.merging.threeWay"
 	| "active.conflict.bannerShown"
@@ -742,6 +744,12 @@ export interface WriteDiskEffect {
 	expectedDisk?: { hash: string; mtime: number };
 }
 
+/** Save the current Reader document through the host's normal save queue. */
+export interface SaveReaderDocumentEffect {
+	type: "SAVE_READER_DOCUMENT";
+	guid: string;
+}
+
 export interface PersistStateEffect {
 	type: "PERSIST_STATE";
 	guid: string;
@@ -812,6 +820,7 @@ export type MergeEffect =
 	| DispatchCM6Effect
 	| SetCM6Effect
 	| WriteDiskEffect
+	| SaveReaderDocumentEffect
 	| PersistStateEffect
 	| SyncToRemoteEffect
 	| EnqueueSyncEffect
@@ -1010,6 +1019,8 @@ export interface IYDocPersistence {
 	initializeFromRemote?(update: Uint8Array, origin?: unknown): Promise<boolean>;
 	/** Delete every stored row for this document so a rebuild starts empty. */
 	clearDocumentData?(): Promise<void>;
+	/** Persist a non-monotonic local CRDT mutation without replaying old deletions. */
+	rewriteState?(mutate: () => void): Promise<void>;
 	/**
 	 * OpCapture instance managed by this persistence layer.
 	 * Initialized during the persistence sync lifecycle when captureOpts
@@ -1070,6 +1081,8 @@ export interface DiskContent {
 export type DiskLoader = () => Promise<DiskContent>;
 
 export interface MergeHSMConfig {
+	/** Complete the durable state write before altering retained history. */
+	persistStateBarrier?: (state: PersistedMergeState) => Promise<void>;
 	/** Document GUID */
 	guid: string;
 

@@ -92,6 +92,8 @@ export interface InvariantCheckContext {
 
   /** Whether a fork is active (preserved local state gating sync) */
   hasFork: boolean;
+  /** The fork is retained history and no longer gates incoming updates. */
+  hasRetainedStash?: boolean;
   /** Whether the sync gate holds remote updates back (local-only / draft) */
   localOnly: boolean;
   /** Whether a disk write's merge base waits on the executor's confirmation */
