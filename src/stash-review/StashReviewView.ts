@@ -5,7 +5,7 @@ import { buildConflict } from "../merge-hsm/conflictValue";
 import { buildPickDocument, type PickDocument } from "../conflict-note/pick";
 import { diffDecorations } from "../conflict-note/diff";
 import { SituationBox } from "../conflict-note/SituationBox";
-import { saveStashCopy, type StashReviewSession } from "./session";
+import { saveStashCopy, StashCopySavedError, type StashReviewSession } from "./session";
 
 export const STASH_REVIEW_VIEW = "relay-stash-review";
 type ReviewState = { path?: string; review?: StashReviewSession };
@@ -26,22 +26,29 @@ export class StashReviewView extends MarkdownView {
 	private showChanges = true;
 	private busy = false;
 	private generation = 0;
+	private unsubscribe?: () => void;
 
 	constructor(leaf: WorkspaceLeaf, private readonly resolve: (path: string) => StashReviewSession | null) {
 		super(leaf);
 		this.requestSave = () => {};
 	}
 	getViewType(): string { return STASH_REVIEW_VIEW; }
-	getDisplayText(): string { return "Stashed version"; }
+	getDisplayText(): string { return this.review ? `${this.review.sourcePath} — Stashed version` : "Stashed version"; }
 	getIcon(): string { return "file-diff"; }
 	// Opening a file must replace this fileless pane with its registered view.
 	canAcceptExtension(_extension: string): boolean { return false; }
 	getState(): Record<string, unknown> { return { path: this.review?.sourcePath }; }
 	async save(): Promise<void> {}
+	// Native commands also reach setMode; a comparison has no Markdown preview.
+	async setMode(_mode: MarkdownSubView): Promise<boolean> {
+		const native = this as unknown as NativeMarkdownModes;
+		return (MarkdownView.prototype as unknown as NativeMarkdownModes).setMode.call(this, native.modes.source);
+	}
 
 	async setState(state: ReviewState, _result: ViewStateResult): Promise<void> {
 		const generation = ++this.generation;
-		const review = state.review ?? (state.path ? this.resolve(state.path) : null);
+		this.unsubscribe?.(); this.unsubscribe = undefined;
+		const review = state.review ?? (state.path ? this.resolve(state.path) : this.review);
 		if (!review) {
 			const file = state.path && this.app.vault.getAbstractFileByPath(state.path);
 			if (file instanceof TFile) await this.leaf.openFile(file);
@@ -60,18 +67,24 @@ export class StashReviewView extends MarkdownView {
 		this.showChanges = true;
 		this.setViewData(this.layout.doc, true);
 		const cm = this.cm();
-		cm.dispatch({ effects: StateEffect.appendConfig.of([
+		if (cm.state.doc.toString() !== this.layout.doc) {
+			cm.dispatch({ changes: { from: 0, to: cm.state.doc.length, insert: this.layout.doc }, filter: false });
+		}
+		const decorations = EditorView.decorations.of(diffDecorations(cm.state.doc, this.layout.blocks));
+		cm.dispatch({ effects: this.decorations.get(cm.state) !== undefined
+			? this.decorations.reconfigure(decorations)
+			: StateEffect.appendConfig.of([
 			Prec.highest(EditorState.readOnly.of(true)), Prec.highest(EditorView.editable.of(false)),
 			EditorState.changeFilter.of(() => false),
 			EditorView.theme({ ".cm-cursorLayer": { display: "none" }, ".cm-content": { caretColor: "transparent" } }),
-			this.decorations.of(EditorView.decorations.of(diffDecorations(cm.state.doc, this.layout.blocks))),
+			this.decorations.of(decorations),
 		]) });
 		this.containerEl.addClass("relay-stash-review");
 		this.contentEl.addClass("relay-has-conflict-box");
 		this.box?.destroy(); this.toolbar?.remove();
 		const changes = this.layout.blocks.filter(block => block.kind !== "same").length;
 		this.box = new SituationBox(this.contentEl, {
-			title: "Stashed edits", text: `These edits were stashed when ${review.folderName} became read-only. They haven’t been shared.`,
+			title: "Stashed edits", text: `These edits were stashed when ${review.folderName} became read-only. They haven’t been shared. This comparison was captured when the pane opened.`,
 			status: `${changes} change${changes === 1 ? "" : "s"}`,
 		}, [
 			{ label: "Save a copy", run: () => { void this.complete(true); } },
@@ -91,6 +104,16 @@ export class StashReviewView extends MarkdownView {
 			title.contentEditable = "false";
 		});
 		this.alignNoteControls();
+		this.unsubscribe = review.subscribe(() => {
+			if (generation === this.generation) this.updateActions();
+		});
+		this.updateActions();
+	}
+
+	private updateActions(): void {
+		const held = this.review?.stillHeld();
+		this.box?.setBusy(this.busy || !held);
+		if (!held) { this.modal?.close(); this.box?.setStatus("Stash no longer held"); }
 	}
 
 	private cm(): EditorView { return (this.editor as unknown as { cm: EditorView }).cm; }
@@ -126,7 +149,7 @@ export class StashReviewView extends MarkdownView {
 	}
 
 	private confirmDiscard(): void {
-		if (this.busy) return;
+		if (this.busy || !this.review?.stillHeld()) return;
 		const modal = this.modal = new Modal(this.app);
 		modal.titleEl.setText("Discard stash?");
 		modal.contentEl.createEl("p", { text: "The stashed edits will be discarded. The current note will stay open and continue receiving changes." });
@@ -137,24 +160,35 @@ export class StashReviewView extends MarkdownView {
 	}
 
 	private async complete(copy: boolean): Promise<void> {
-		if (!this.review || this.busy) return;
+		if (!this.review || this.busy || !this.review.stillHeld()) return;
+		const generation = this.generation;
 		this.busy = true; this.box?.setBusy(true);
 		try {
 			const review = this.review;
-			const file = copy ? await saveStashCopy(this.app, review) : (await review.discard(), this.app.vault.getAbstractFileByPath(review.sourcePath));
+			let file;
+			try {
+				file = copy ? await saveStashCopy(this.app, review) : (await review.discard(), this.app.vault.getAbstractFileByPath(review.sourcePath));
+			} catch (error) {
+				if (!(error instanceof StashCopySavedError)) throw error;
+				new Notice(error.message);
+				file = error.file;
+			}
+			if (generation !== this.generation) return;
 			if (file instanceof TFile) await this.leaf.openFile(file, { active: true });
 			else this.leaf.detach();
 		} catch (error) {
 			new Notice(error instanceof Error ? error.message : "The stash could not be completed.");
-		} finally { this.busy = false; this.box?.setBusy(false); }
+		} finally { this.busy = false; this.updateActions(); }
 	}
 
 	async onClose(): Promise<void> {
 		++this.generation;
+		this.unsubscribe?.(); this.unsubscribe = undefined;
 		this.columnObserver?.disconnect();
 		this.contentEl.style.removeProperty("--relay-note-column-left");
 		this.contentEl.style.removeProperty("--relay-note-column-width");
 		this.modal?.close(); this.box?.destroy(); this.toolbar?.remove();
+		this.modal = undefined; this.box = undefined; this.toolbar = undefined;
 		await super.onClose();
 	}
 }

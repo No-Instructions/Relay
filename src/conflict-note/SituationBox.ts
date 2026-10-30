@@ -12,13 +12,14 @@ export class SituationBox {
 	readonly element: HTMLDivElement;
 	readonly body: HTMLDivElement;
 	private readonly buttons: HTMLButtonElement[];
+	private readonly status: HTMLSpanElement;
 
 	constructor(host: HTMLElement, copy: { title: string; text: string; status: string }, actions: SituationAction[]) {
 		this.element = host.createDiv({ cls: "relay-conflict-box" });
 		const head = this.element.createDiv({ cls: "relay-conflict-head", attr: { role: "button", tabindex: "0", "aria-label": copy.title, "aria-expanded": "true" } });
 		setIcon(head.createSpan({ cls: "relay-conflict-chevron" }), "chevron-down");
 		head.createDiv({ cls: "relay-conflict-title", text: copy.title });
-		head.createSpan({ cls: "relay-conflict-status", text: copy.status });
+		this.status = head.createSpan({ cls: "relay-conflict-status", text: copy.status });
 		this.body = this.element.createDiv({ cls: "relay-conflict-body" });
 		this.body.createEl("p", { cls: "relay-conflict-text", text: copy.text });
 		const options = this.body.createDiv({ cls: "relay-conflict-options" });
@@ -26,7 +27,7 @@ export class SituationBox {
 			const button = options.createEl("button", { text: action.label, attr: { type: "button" } });
 			if (action.warning) button.addClass("mod-warning");
 			if (action.primary) button.addClass("mod-cta");
-			button.addEventListener("click", action.run);
+			button.addEventListener("click", () => action.run());
 			return button;
 		});
 		const toggle = () => {
@@ -40,5 +41,6 @@ export class SituationBox {
 	}
 
 	setBusy(busy: boolean): void { for (const button of this.buttons) button.disabled = busy; }
+	setStatus(status: string): void { this.status.setText(status); }
 	destroy(): void { this.element.remove(); }
 }
