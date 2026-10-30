@@ -1512,6 +1512,15 @@ export class Document
 		effect: import("./merge-hsm/types").MergeEffect,
 	): Promise<void> {
 		switch (effect.type) {
+			case "SAVE_READER_DOCUMENT":
+				await this.enqueueDiskWrite(async () => {
+					const hsm = this.hsm;
+					if (!hsm?.isReadMode()) return;
+					const contents = hsm.getReadModeText();
+					if (contents === null) return;
+					await this.writeDiskContents(contents, { createIfMissing: false });
+				});
+				break;
 			case "WRITE_DISK":
 				await this.handleWriteDisk(
 					effect.contents,

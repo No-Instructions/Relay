@@ -281,6 +281,7 @@ export const MACHINE: MachineDefinition = {
 		invoke: {
 			src: 'fork-reconcile',
 			onDone: [
+				{ target: 'idle.reading', guard: 'readerStashReady' },
 				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['clearForkAndUpdateLCA'] },
 				{ target: 'idle.localAhead', guard: 'awaitingProvider' },
 				{ target: 'idle.conflict', guard: 'hasPreexistingConflict', actions: ['prepareIdleConflictFromFork'] },
@@ -315,6 +316,36 @@ export const MACHINE: MachineDefinition = {
 			CM6_CHANGE: { target: 'idle.localAhead', actions: ['accumulateCM6Change'] },
 			SERVER_AHEAD: POCKET_SERVER_AHEAD('idle.localAhead'),
 			RECOVER_LCA: RECOVER_LCA_HANDLER,
+			...IDLE_LIFECYCLE,
+		},
+	},
+
+	'idle.reading': {
+		resources: {
+			residency: ['awake'],
+			localDoc: 'present',
+			remoteDoc: 'optional',
+			lcaMetadata: 'optional',
+			lcaContents: 'optional',
+			pendingDiskContents: 'optional',
+			fork: 'optional',
+			conflict: 'absent',
+		},
+		capabilities: {
+			canMergeRemote: true,
+			canPersistFullLca: true,
+			canAcceptLocalContent: false,
+			canSyncOutbound: false,
+		},
+		entry: ['mergeRemoteToLocal', 'saveReaderDocument'],
+		always: [{ target: 'idle.loading', guard: 'isWriteMode' }],
+		on: {
+			REMOTE_UPDATE: { target: 'idle.reading', actions: ['applyRemoteToRemoteDoc', 'mergeRemoteToLocal', 'saveReaderDocument'] },
+			REMOTE_DOC_UPDATED: { target: 'idle.reading', actions: ['mergeRemoteToLocal', 'saveReaderDocument'] },
+			PROVIDER_SYNCED: { target: 'idle.reading', actions: ['markProviderSynced', 'mergeRemoteToLocal', 'saveReaderDocument'] },
+			DISK_CHANGED: { target: 'idle.reading', actions: ['storeDiskMetadataOnly', 'saveReaderDocument'] },
+			SAVE_COMPLETE: { target: 'idle.reading', actions: ['updateDiskFromSave'] },
+			SERVER_AHEAD: { target: 'idle.reading', actions: ['actOnServerAhead'] },
 			...IDLE_LIFECYCLE,
 		},
 	},
@@ -814,8 +845,8 @@ export const MACHINE: MachineDefinition = {
 	// Remote updates merge into localDoc and the editor renders localDoc.
 	// Editor, machine, and disk edits are rejected and restored, and nothing
 	// flushes outbound. On each provider sync the audit compares localDoc
-	// with remoteDoc; ops the server lacks are preserved as a fork, and while
-	// a fork is held the editor renders remoteDoc instead.
+	// with remoteDoc. Unpublished operations are cancelled from the live note;
+	// a retained snapshot keeps their content available for review.
 	// =========================================================================
 
 	'active.reading': {
@@ -842,9 +873,11 @@ export const MACHINE: MachineDefinition = {
 			'auditReadModeFork',
 			'mergeRemoteToLocal',
 			'renderSharedVersionToEditors',
+			'saveReaderDocument',
 		],
 		// A promoted/reopened fork stays here until the replica handshake.
 		always: [
+			{ target: 'active.reading.stashing', guard: 'readForkNeedsStashing' },
 			{ target: 'active.conflict.bannerShown', guard: 'writeModeWithSyncedReadFork', actions: ['presentReadFork'] },
 			{ target: 'active.tracking', guard: 'writeModeWithoutFork' },
 		],
@@ -852,15 +885,15 @@ export const MACHINE: MachineDefinition = {
 			CM6_CHANGE: { target: 'active.reading', actions: ['rejectAndRestoreCM6'] },
 			REMOTE_UPDATE: {
 				target: 'active.reading',
-				actions: ['applyRemoteToRemoteDoc', 'mergeRemoteToLocal', 'renderSharedVersionToEditors'],
+				actions: ['applyRemoteToRemoteDoc', 'mergeRemoteToLocal', 'renderSharedVersionToEditors', 'saveReaderDocument'],
 			},
 			REMOTE_DOC_UPDATED: {
 				target: 'active.reading',
-				actions: ['mergeRemoteToLocal', 'renderSharedVersionToEditors'],
+				actions: ['mergeRemoteToLocal', 'renderSharedVersionToEditors', 'saveReaderDocument'],
 			},
 			SERVER_AHEAD: POCKET_SERVER_AHEAD('active.reading'),
 			SAVE_COMPLETE: { target: 'active.reading', actions: ['updateDiskFromSave'] },
-			DISK_CHANGED: { target: 'active.reading', actions: ['storeDiskMetadataOnly'] },
+			DISK_CHANGED: { target: 'active.reading', actions: ['storeDiskMetadataOnly', 'saveReaderDocument'] },
 			CONNECTED: { target: 'active.reading', actions: ['setOnlineWithoutFlush'] },
 			DISCONNECTED: { target: 'active.reading', actions: ['setOffline'] },
 			PROVIDER_SYNCED: {
@@ -881,6 +914,47 @@ export const MACHINE: MachineDefinition = {
 		},
 	},
 
+	'active.reading.stashing': {
+		resources: {
+			residency: ['awake'],
+			localDoc: 'optional',
+			remoteDoc: 'present',
+			lcaMetadata: 'optional',
+			lcaContents: 'optional',
+			pendingDiskContents: 'optional',
+			fork: 'optional',
+			conflict: 'absent',
+		},
+		capabilities: {
+			canMergeRemote: true,
+			canUseRemoteDoc: true,
+			canAcceptLocalContent: false,
+			canSyncOutbound: false,
+		},
+		invoke: {
+			src: 'read-stash',
+			onDone: [
+				{ target: 'active.reading', guard: 'readRepairSucceeded', actions: ['clearReadRepairStatus'] },
+				{ target: 'active.reading' },
+			],
+			onError: { target: 'active.reading', actions: ['storeInvokeError'] },
+		},
+		on: {
+			CM6_CHANGE: { target: 'active.reading.stashing', actions: ['rejectAndRestoreCM6'] },
+			REMOTE_UPDATE: { target: 'active.reading.stashing', actions: ['applyRemoteToRemoteDoc'] },
+			SERVER_AHEAD: POCKET_SERVER_AHEAD('active.reading.stashing'),
+			DISK_CHANGED: { target: 'active.reading.stashing', actions: ['storeDiskMetadataOnly'] },
+			CONNECTED: { target: 'active.reading.stashing', actions: ['setOnlineWithoutFlush'] },
+			DISCONNECTED: { target: 'active.reading.stashing', actions: ['setOffline'] },
+			PROVIDER_SYNCED: { target: 'active.reading.stashing', actions: ['markProviderSynced'] },
+			// The access mode set here decides where the repair's completion goes.
+			PROMOTE_TO_WRITE: { target: 'active.reading.stashing', actions: ['setWriteAccessMode'] },
+			DEMOTE_TO_READ: { target: 'active.reading.stashing', actions: ['setReadAccessMode'] },
+			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
+			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
+			ERROR: { target: 'active.reading.stashing', actions: ['storeError'] },
+		},
+	},
 	'active.reading.repairing': {
 		resources: {
 			residency: ['awake'],

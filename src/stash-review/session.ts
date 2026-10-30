@@ -17,8 +17,8 @@ export interface StashReviewSession {
 export function prepareStashReview(document: Document): StashReviewSession | null {
 	const hsm = document.hsm, file = document.tfile;
 	const fork = hsm?.state.fork;
-	const remote = hsm?.getRemoteDoc();
-	if (!hsm || !file || !fork || !remote) return null;
+	const current = hsm?.getReadModeText();
+	if (!hsm || !file || !fork || current == null) return null;
 	const stash = preservedForkText(hsm.getLocalDoc(), fork);
 	if (stash === null) {
 		new Notice("The stashed edits could not be opened. They have been kept.");
@@ -27,19 +27,17 @@ export function prepareStashReview(document: Document): StashReviewSession | nul
 	const stillHeld = () => hsm.state.fork === fork;
 	return {
 		sourcePath: file.path, folderName: document.sharedFolder.name,
-		stash, current: remote.getText("contents").toString(), stillHeld,
+		stash, current, stillHeld,
 		subscribe: listener => hsm.stateChanges.subscribe(listener),
 		async discard() {
 			if (!stillHeld()) throw new Error("This stash is no longer held.");
 			hsm.send({ type: "DISCARD_LOCAL_FORK" });
 			if (hsm.state.statePath !== "active.reading.repairing" && stillHeld()) throw new Error("The stash cannot be discarded in the note's current state. Reopen the note and try again.");
-			// The fork clears before the local document finishes rebuilding.
-			// Complete the repair and save its content before opening the note,
-			// so native Reading view cannot render the old file from disk.
+			// Wait for the durable release of the retained snapshot. The note's
+			// normal sync and save paths already hold the current content.
 			await hsm.awaitReadRepair();
 			await hsm.awaitState(state => state !== "active.reading.repairing");
 			if (hsm.hasFork()) throw new Error("The stash could not be discarded.");
-			await document.save();
 		},
 	};
 }

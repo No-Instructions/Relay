@@ -537,7 +537,9 @@ export function restoreDocAtSnapshot(
 	let decoded: Y.Snapshot;
 	try {
 		decoded = Y.decodeSnapshot(snapshot.snapshot);
-		if (!snapshotContains(snapshotFromDoc(doc), snapshot)) return null;
+		// Cancellation can revive items deleted at the requested snapshot.
+		// Restoration needs the structs, not the source's current delete set.
+		if (!svContains(snapshotStateVector(snapshotFromDoc(doc)), decoded.sv)) return null;
 	} catch {
 		return null;
 	}
