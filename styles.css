@@ -270,6 +270,10 @@ button.system3-login-button {
 .workspace-leaf-content.relay-read-only .view-actions > .relay-reader-action:hover {
 	background-color: transparent;
 }
+/* Disabled native inputs can still receive touch feedback in WebKit. */
+.workspace-leaf-content.relay-read-only input.task-list-item-checkbox:disabled {
+	pointer-events: none;
+}
 /* Keep a native mode button invisible until it can be replaced before paint. */
 .workspace-leaf-content.relay-read-only .view-actions > button.view-action:is(
 	:has(> svg.lucide-book-open),
