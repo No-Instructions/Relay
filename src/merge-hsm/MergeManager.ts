@@ -127,6 +127,8 @@ export interface MergeManagerConfig {
   /** Callback when an effect is emitted by any HSM */
   onEffect?: (guid: string, effect: MergeEffect) => void | Promise<void>;
 
+  persistStateBarrier?: (guid: string, state: PersistedMergeState) => Promise<void>;
+
 
   /**
    * Callback to get disk state for a document (for polling).
@@ -396,6 +398,8 @@ export class MergeManager {
   private hashFn?: (contents: string) => Promise<string>;
   private loadAllStates?: () => Promise<PersistedStateMeta[]>;
   private onEffect?: (guid: string, effect: MergeEffect) => void | Promise<void>;
+
+  private persistStateBarrier?: MergeManagerConfig['persistStateBarrier'];
   private getDiskState?: (path: string) => Promise<{
     contents: string;
     mtime: number;
@@ -416,6 +420,7 @@ export class MergeManager {
     this.hashFn = config.hashFn;
     this.loadAllStates = config.loadAllStates;
     this.onEffect = config.onEffect;
+    this.persistStateBarrier = config.persistStateBarrier;
     this.getDiskState = config.getDiskState;
     this.loadState = config.loadState;
     this.createPersistence = config.createPersistence;
@@ -721,6 +726,7 @@ export class MergeManager {
       isFolderConnected,
       getAccessMode,
       yaml: this._yaml ?? undefined,
+      persistStateBarrier: state => this.persistStateBarrier?.(guid, state) ?? Promise.resolve(),
     });
 
     hsm.setOnTransition((info) => {
@@ -1496,6 +1502,7 @@ export class MergeManager {
     this.onEffect = undefined;
     this.getDiskState = undefined;
     this.loadState = undefined;
+    this.persistStateBarrier = undefined;
     this.createPersistence = null as unknown as typeof this.createPersistence;
     this.getPersistenceMetadata = undefined;
     this._yaml = null;
