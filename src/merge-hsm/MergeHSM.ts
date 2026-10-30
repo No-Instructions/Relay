@@ -5195,14 +5195,17 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		// out — REMOTE_UPDATE will reenter idle.diverged once the provider syncs.
 		const remoteDoc = this.requireRemoteDoc("idle three-way merge");
 		if (!remoteDoc) {
+			this.emitEffect({ type: "REQUEST_PROVIDER_SYNC", guid: this._guid });
 			return { success: false, awaitingProvider: true };
 		}
 		const crdtContent = remoteDoc.getText("contents").toString();
 
 		// If the provider hasn't synced yet, remoteDoc may not reflect the
-		// server's CRDT state.  Defer the merge until PROVIDER_SYNCED
-		// delivers the real remote content.
+		// server's CRDT state. Defer the merge until PROVIDER_SYNCED
+		// delivers the real remote content, and ask for that sync: a closed
+		// note has no session that would otherwise bring it.
 		if (!this._isProviderSynced()) {
+			this.emitEffect({ type: "REQUEST_PROVIDER_SYNC", guid: this._guid });
 			return { success: false, awaitingProvider: true };
 		}
 

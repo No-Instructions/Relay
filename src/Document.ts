@@ -1823,7 +1823,16 @@ export class Document
 		}
 		const cleanupIfDone = () => {
 			if (hsm.matches("idle.localAhead")) return;
-			if (!hsm.state.lca && hsm.matches("idle.diverged")) return;
+			// A diverged note's merge waits for the remote replica, with or
+			// without an LCA: hold the connection until its handshake completes
+			// and the merge that sync re-runs has finished. A note that stays
+			// diverged after that waits on something else and releases it.
+			if (
+				hsm.matches("idle.diverged") &&
+				(!this.synced || hsm.getActiveInvoke())
+			) {
+				return;
+			}
 			// Keep the integration up while a retryable error is pending so the
 			// reconnect can deliver the remote update that re-arms it.
 			if (hsm.matches("idle.error") && hsm.state.errorRetryable) return;
