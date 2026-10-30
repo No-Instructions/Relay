@@ -10,6 +10,7 @@ export interface StashReviewSession {
 	stash: string;
 	current: string;
 	stillHeld(): boolean;
+	subscribe(listener: () => void): () => void;
 	discard(): Promise<void>;
 }
 
@@ -27,10 +28,11 @@ export function prepareStashReview(document: Document): StashReviewSession | nul
 	return {
 		sourcePath: file.path, folderName: document.sharedFolder.name,
 		stash, current: remote.getText("contents").toString(), stillHeld,
+		subscribe: listener => hsm.stateChanges.subscribe(listener),
 		async discard() {
 			if (!stillHeld()) throw new Error("This stash is no longer held.");
 			hsm.send({ type: "DISCARD_LOCAL_FORK" });
-			if (hsm.state.statePath !== "active.reading.repairing" && stillHeld()) throw new Error("The note must be connected before its stash can be discarded.");
+			if (hsm.state.statePath !== "active.reading.repairing" && stillHeld()) throw new Error("The stash cannot be discarded in the note's current state. Reopen the note and try again.");
 			// The fork clears before the local document finishes rebuilding.
 			// Complete the repair and save its content before opening the note,
 			// so native Reading view cannot render the old file from disk.
@@ -53,6 +55,13 @@ interface NativeAvailablePath {
 	getAvailablePath(basePath: string, extension: string): string;
 }
 
+/** The copy is durable even when releasing the original stash fails. */
+export class StashCopySavedError extends Error {
+	constructor(readonly file: TFile, cause: unknown) {
+		super(`Saved a copy as ${file.path}, but the stash could not be discarded.${cause instanceof Error ? ` ${cause.message}` : ""}`);
+	}
+}
+
 /** Use Obsidian's Duplicate operations beside the original, with the stash as content. */
 export async function saveStashCopy(app: App, review: StashReviewSession): Promise<TFile> {
 	if (!review.stillHeld()) throw new Error("This stash is no longer held.");
@@ -63,6 +72,7 @@ export async function saveStashCopy(app: App, review: StashReviewSession): Promi
 	const file = await app.vault.copy(source, path);
 	// Duplicate copies the current file; the review's captured stash is the copy's content.
 	await app.vault.modify(file, review.stash);
-	await review.discard();
+	try { await review.discard(); }
+	catch (error) { throw new StashCopySavedError(file, error); }
 	return file;
 }
