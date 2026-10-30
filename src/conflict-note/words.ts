@@ -13,6 +13,8 @@ export interface WordRanges {
 export function changedWords(oldText: string, newText: string): WordRanges {
 	const out: WordRanges = { old: [], new: [] };
 	if (!oldText || !newText) return out;
+	// Line highlighting remains useful when a word-level comparison would be expensive.
+	if (oldText.length + newText.length > 8000) return out;
 	let a = 0;
 	let b = 0;
 	for (const part of diffWordsWithSpace(oldText, newText)) {
