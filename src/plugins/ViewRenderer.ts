@@ -12,7 +12,7 @@ export interface ViewRenderer {
 	 * @param document - The document containing the updated state
 	 * @param viewMode - Current view mode (e.g., "preview", "source", "live-preview")
 	 */
-	render(document: Document, viewMode: string): void;
+	render(document: Document, viewMode: string, text?: string): void;
 	
 	/**
 	 * Clean up any UI elements or listeners when the renderer is no longer needed.
