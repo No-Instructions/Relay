@@ -26,6 +26,7 @@ export class ViewHookPlugin extends HasLogging {
 	private saving = false;
 	private previewRestore?: number;
 	private renderQueued = false;
+	private lastReaderRender?: { text: string; viewMode: string };
 
 	constructor(view: MarkdownView, document: Document) {
 		super();
@@ -91,7 +92,7 @@ export class ViewHookPlugin extends HasLogging {
 		this.previewRestore = win.setTimeout(() => {
 			this.previewRestore = undefined;
 			if (this.destroyed) return;
-			this.renderAll();
+			this.renderAll(true);
 			this.view.previewMode.rerender(true);
 		}, 0);
 	}
@@ -267,21 +268,27 @@ export class ViewHookPlugin extends HasLogging {
 	/**
 	 * Update all UI renderers when document changes
 	 */
-	private renderAll(): void {
+	private renderAll(force = false): void {
 		let text: string | null;
+		let reading = false;
 		try {
 			const hsm = this.document.hsm;
-			text = hsm?.statePath.startsWith("active.reading")
+			reading = hsm?.statePath.startsWith("active.reading") === true;
+			text = reading && hsm
 				? hsm.getReadModeText()
 				: this.document.localText;
 		} catch (error) {
+			this.lastReaderRender = undefined;
 			this.error("Error reading content for render:", error);
 			return;
 		}
+		if (!reading || text === null) this.lastReaderRender = undefined;
 		if (text === null) return;
 		const viewMode =
 			// @ts-ignore
 			this.view.getMode?.() || this.view.getViewType?.() || "unknown";
+		if (reading && !force && this.lastReaderRender?.text === text &&
+			this.lastReaderRender.viewMode === viewMode) return;
 		this.runWithRelaySaving(() => {
 			this.renderers.forEach((renderer) => {
 				try {
@@ -291,6 +298,7 @@ export class ViewHookPlugin extends HasLogging {
 				}
 			});
 		});
+		if (reading) this.lastReaderRender = { text, viewMode };
 	}
 	/**
 	 * Calculate incremental buffer changes using diff-match-patch
@@ -326,6 +334,7 @@ export class ViewHookPlugin extends HasLogging {
 		this.renderers.length = 0;
 
 		// Clear references
+		this.lastReaderRender = undefined;
 		this._ytext = null;
 		this.view = null as unknown as typeof this.view;
 		this.document = null as unknown as typeof this.document;
