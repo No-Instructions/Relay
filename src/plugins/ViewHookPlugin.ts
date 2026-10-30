@@ -268,10 +268,16 @@ export class ViewHookPlugin extends HasLogging {
 	 * Update all UI renderers when document changes
 	 */
 	private renderAll(): void {
-		const hsm = this.document.hsm;
-		const text = hsm?.statePath.startsWith("active.reading")
-			? hsm.getReadModeText()
-			: this.document.localText;
+		let text: string | null;
+		try {
+			const hsm = this.document.hsm;
+			text = hsm?.statePath.startsWith("active.reading")
+				? hsm.getReadModeText()
+				: this.document.localText;
+		} catch (error) {
+			this.error("Error reading content for render:", error);
+			return;
+		}
 		if (text === null) return;
 		const viewMode =
 			// @ts-ignore
