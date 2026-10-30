@@ -438,14 +438,29 @@ export class Document
 					mergeManager.seedAppliedRemoteUpdate(this.guid, keyframe);
 				}
 
+				let gaps = 0;
 				for (const update of buffered) {
-					if (mergeManager.classifyUpdate(this.guid, update) === "apply") {
-						mergeManager.handleRemoteUpdate(this.guid, update);
-						mergeManager.advanceAppliedRemoteUpdate(this.guid, update);
+					switch (mergeManager.classifyUpdate(this.guid, update)) {
+						case "apply":
+							mergeManager.handleRemoteUpdate(this.guid, update);
+							mergeManager.advanceAppliedRemoteUpdate(this.guid, update);
+							break;
+						case "stale":
+							break; // subsumed by the keyframe
+						case "gap":
+							// Buffering starts before the keyframe is requested,
+							// so every update the server applied after serving it
+							// is in the buffer and follows on from it. A gap here
+							// means the stream lost an update or the keyframe is
+							// missing or behind; the update is dropped.
+							gaps++;
+							break;
 					}
-					// 'stale' → subsumed by the keyframe. 'gap' should not
-					// happen after a keyframe; if it does the update is
-					// dropped — the keyframe is the best we have.
+				}
+				if (gaps > 0) {
+					this.warn(
+						`[onServerUpdate] dropped ${gaps} of ${buffered.length} buffered update(s) with a gap behind the keyframe (keyframe=${keyframe ? keyframe.length : "none"} bytes)`,
+					);
 				}
 			})
 			.catch((e) => {
