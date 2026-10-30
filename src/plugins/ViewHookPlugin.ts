@@ -24,6 +24,7 @@ export class ViewHookPlugin extends HasLogging {
 	private _ytext: YText | null = null;
 	private destroyed = false;
 	private saving = false;
+	private previewRestore?: number;
 
 	constructor(view: MarkdownView, document: Document) {
 		super();
@@ -75,6 +76,25 @@ export class ViewHookPlugin extends HasLogging {
 		});
 	}
 
+	private get readOnly(): boolean {
+		return this.document.canWriteContent === false ||
+			this.document.hsm?.statePath?.startsWith("active.reading") === true;
+	}
+
+	private restorePreview(): void {
+		const win = this.view.containerEl.ownerDocument.defaultView;
+		if (!win) return;
+		if (this.previewRestore !== undefined) win.clearTimeout(this.previewRestore);
+		// Native checkbox handling also schedules a DOM update. Reparse after it
+		// so neither that tick nor cached section HTML can outlive a denied edit.
+		this.previewRestore = win.setTimeout(() => {
+			this.previewRestore = undefined;
+			if (this.destroyed) return;
+			this.renderAll();
+			this.view.previewMode.rerender(true);
+		}, 0);
+	}
+
 	/**
 	 * Attach the document observer once localDoc is available.
 	 * Waits for the HSM to enter active mode if needed.
@@ -121,6 +141,10 @@ export class ViewHookPlugin extends HasLogging {
 				// @ts-ignore
 				saveFrontmatter(old: (...args: unknown[]) => unknown) {
 					return function (this: unknown, data: unknown) {
+						if (that.readOnly) {
+							that.restorePreview();
+							return;
+						}
 						that.debug("saveFrontmatter hook triggered");
 						that.document.hsm?.send({
 							type: 'OBSIDIAN_SAVE_FRONTMATTER',
@@ -170,6 +194,10 @@ export class ViewHookPlugin extends HasLogging {
 			getPatcher().patch(view.previewMode as unknown as Record<string, unknown>, {
 				edit(old: (...args: unknown[]) => unknown) {
 					return function (this: unknown, data: string) {
+						if (that.readOnly) {
+							that.restorePreview();
+							return;
+						}
 						that.debug("Preview edit hook triggered");
 						//@ts-ignore
 						if (that.view.getMode?.() === "preview") {
@@ -264,6 +292,8 @@ export class ViewHookPlugin extends HasLogging {
 	 */
 	destroy(): void {
 		this.destroyed = true;
+		if (this.previewRestore !== undefined) this.view.containerEl.ownerDocument.defaultView?.clearTimeout(this.previewRestore);
+		this.previewRestore = undefined;
 		this.debug("destroyed");
 
 		// Clean up document observer

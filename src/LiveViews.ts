@@ -14,6 +14,7 @@ import {
 } from "obsidian";
 import ViewActions from "src/components/ViewActions.svelte";
 import { ReaderModeAction } from "./ui/ReaderModeAction";
+import { ReaderInteractionGuard } from "./ui/ReaderInteractionGuard";
 import { mountComponent, type MountedComponent } from "src/ui/svelteHost.svelte";
 import * as Y from "yjs";
 import { Document, isDocument } from "./Document";
@@ -609,6 +610,7 @@ export class LiveView<ViewType extends TextFileView>
 	private _readOnlyBanner?: Banner;
 	private _readerModeAction?: ReaderModeAction;
 	private _readerModeInstalled = false;
+	private _readerInteractionGuard?: ReaderInteractionGuard;
 	private _offAccessStatus?: () => void;
 	private _offPermissions?: () => void;
 	private _previousMarkdownMode?: "preview" | "source";
@@ -1108,6 +1110,8 @@ export class LiveView<ViewType extends TextFileView>
 	}
 
 	private clearReadOnlyPresentation(): void {
+		this._readerInteractionGuard?.destroy();
+		this._readerInteractionGuard = undefined;
 		this._readerModeInstalled = false;
 		this._readerModeAction?.destroy();
 		this._readerModeAction = undefined;
@@ -1140,6 +1144,8 @@ export class LiveView<ViewType extends TextFileView>
 		// Replace the native button and Relay action in one update, before paint.
 		if (readOnly) {
 			view.containerEl.addClass("relay-read-only");
+			this._readerInteractionGuard ??= new ReaderInteractionGuard(view.containerEl);
+			this._readerInteractionGuard.activate();
 			this._readerModeAction ??= new ReaderModeAction(view.containerEl);
 			const wasInstalled = this._readerModeInstalled;
 			this._readerModeInstalled = this._readerModeAction.setActive(true);
@@ -1148,6 +1154,8 @@ export class LiveView<ViewType extends TextFileView>
 			}
 		} else {
 			if (modeChanged || this._readerModeInstalled) this._viewActions?.setSync({ readerMode: false });
+			this._readerInteractionGuard?.destroy();
+			this._readerInteractionGuard = undefined;
 			this._readerModeInstalled = false;
 			this._readerModeAction?.destroy();
 			this._readerModeAction = undefined;
