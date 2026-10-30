@@ -297,6 +297,11 @@ button.system3-login-button {
 	font-size: var(--font-ui-small);
 }
 
+.relay-read-only-header-label {
+	flex: 0 0 auto;
+	white-space: nowrap;
+}
+
 button.relay-banner-action,
 button.relay-read-only-header-button {
 	display: inline;
@@ -326,8 +331,10 @@ button.relay-read-only-header-button {
 	white-space: nowrap;
 }
 
-button.relay-banner-action:hover,
-button.relay-read-only-header-button:hover {
+button.relay-banner-action:is(:hover, :active, .mobile-tap),
+button.relay-read-only-header-button:is(:hover, :active, .mobile-tap) {
+	background: none;
+	box-shadow: none;
 	color: var(--text-accent-hover);
 }
 
