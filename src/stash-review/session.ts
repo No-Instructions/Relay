@@ -1,4 +1,4 @@
-import { TFile, type App } from "obsidian";
+import { Notice, TFile, type App } from "obsidian";
 import { isDocument, type Document } from "../Document";
 import type { SharedFolders } from "../SharedFolder";
 import { preservedForkText } from "../merge-hsm/snapshots";
@@ -19,7 +19,10 @@ export function prepareStashReview(document: Document): StashReviewSession | nul
 	const remote = hsm?.getRemoteDoc();
 	if (!hsm || !file || !fork || !remote) return null;
 	const stash = preservedForkText(hsm.getLocalDoc(), fork);
-	if (stash === null) { hsm.send({ type: "DISCARD_LOCAL_FORK" }); return null; }
+	if (stash === null) {
+		new Notice("The stashed edits could not be opened. They have been kept.");
+		return null;
+	}
 	const stillHeld = () => hsm.state.fork === fork;
 	return {
 		sourcePath: file.path, folderName: document.sharedFolder.name,
