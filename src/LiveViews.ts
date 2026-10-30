@@ -1066,6 +1066,11 @@ export class LiveView<ViewType extends TextFileView>
 							return old.call(this, { ...state, mode: previousMode }, result);
 						});
 					}
+					if (!live._leavingMarkdownFile && live.readOnly && state && typeof state === "object" &&
+						(!("file" in state) || state.file === live.document.sharedFolder.getPath(live.document.path)) &&
+						"mode" in state && state.mode === "source") {
+						return old.call(this, { ...state, mode: "preview" }, result);
+					}
 					return old.call(this, state, result);
 				};
 			},
