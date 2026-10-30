@@ -22,7 +22,7 @@ export function diffDecorations(doc: Text, blocks: readonly NoteBlock[]): Decora
 	};
 	for (const block of blocks) {
 		// The pick model includes placeholder rows for an empty candidate.
-		// A comparison folds those rows, exactly as the inline differ does.
+		// Fold those rows so an empty side does not repeat the other candidate.
 		for (const side of ["ours", "theirs"] as const) {
 			const candidate = block.rows[side];
 			if (candidate && (candidate.removal || (block.kind === "ours-only" && side === "theirs"))) {

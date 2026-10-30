@@ -63,7 +63,7 @@ export class StashReviewView extends MarkdownView {
 		if (generation !== this.generation) return;
 		this.layout = buildPickDocument(buildConflict({ situation: "no-baseline", base: null,
 			ours: { source: "remote", text: review.current }, theirs: { source: "record", text: review.stash },
-		}), "diff");
+		}));
 		this.showChanges = true;
 		this.setViewData(this.layout.doc, true);
 		const cm = this.cm();
