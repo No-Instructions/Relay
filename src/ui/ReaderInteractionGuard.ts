@@ -35,15 +35,21 @@ export class ReaderInteractionGuard {
 			// An embedded note has its own access policy.
 			if (element.closest(".markdown-embed")) continue;
 			const attribute = element.matches(".inline-title") ? "contenteditable" : "disabled";
-			if (!this.originals.has(element)) {
-				this.originals.set(element, { attribute, value: element.getAttribute(attribute) });
-			}
 			const value = attribute === "contenteditable" ? "false" : "";
-			if (element.getAttribute(attribute) !== value) element.setAttribute(attribute, value);
+			const current = element.getAttribute(attribute);
+			// A value different from our restriction is Obsidian's latest intent.
+			// Our own observer delivery must leave that restore value intact.
+			if (!this.originals.has(element) || current !== value) {
+				this.originals.set(element, { attribute, value: current });
+			}
+			if (current !== value) element.setAttribute(attribute, value);
 		}
 	}
 
 	private restore(element: HTMLElement, original: { attribute: string; value: string | null }): void {
+		// Teardown can precede observer delivery of an external attribute change.
+		const forced = original.attribute === "contenteditable" ? "false" : "";
+		if (element.getAttribute(original.attribute) !== forced) return;
 		if (original.value === null) element.removeAttribute(original.attribute);
 		else element.setAttribute(original.attribute, original.value);
 	}
