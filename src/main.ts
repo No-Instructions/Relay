@@ -1,4 +1,6 @@
 "use strict";
+import { STASH_REVIEW_VIEW, StashReviewView } from "./stash-review/StashReviewView";
+import { findStashReview } from "./stash-review/session";
 import { AttachmentTransfers } from "./AttachmentTransfers";
 
 import type { MergeEvent } from "./merge-hsm/types";
@@ -933,6 +935,7 @@ export default class Live extends Plugin {
 		this.networkStatus = new NetworkStatus(this.timeProvider, HEALTH_URL);
 
 		this.registerView(SERVICE_MESSAGE_VIEW, leaf => new ServiceMessageView(leaf));
+		this.registerView(STASH_REVIEW_VIEW, leaf => new StashReviewView(leaf, path => findStashReview(this.app, this.sharedFolders, path)));
 		const serviceMessages = new ServiceMessages(this.appId, this.manifest.id, this.timeProvider);
 		this.register(() => serviceMessages.destroy());
 		this.register(this.networkStatus.subscribeServiceMessageSelection(selection => serviceMessages.updateSelection(selection)));
