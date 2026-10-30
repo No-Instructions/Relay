@@ -25,6 +25,7 @@ export class ViewHookPlugin extends HasLogging {
 	private destroyed = false;
 	private saving = false;
 	private previewRestore?: number;
+	private renderQueued = false;
 
 	constructor(view: MarkdownView, document: Document) {
 		super();
@@ -114,14 +115,18 @@ export class ViewHookPlugin extends HasLogging {
 		this._ytext = localDoc.getText("contents");
 		this.setupDocumentObserver();
 
-		// Perform initial render using localDoc content
-		this.runWithRelaySaving(() => {
-			(
-				this.view.previewMode as unknown as {
-					renderer: { set(text: string): void };
-				}
-			).renderer.set(this.document.localText);
-		});
+		const hsm = this.document.hsm;
+		if (hsm) this.unsubscribes.push(hsm.onStateChange((from, to) => {
+			if (!from.startsWith("active.reading") && !to.startsWith("active.reading")) return;
+			// A held local document does not change when Reader updates arrive.
+			// Wait for the transition's editor updates, then refresh the other views.
+			if (this.renderQueued || this.destroyed) return;
+			this.renderQueued = true;
+			queueMicrotask(() => {
+				this.renderQueued = false;
+				if (!this.destroyed) this.renderAll();
+			});
+		}));
 		this.renderAll();
 
 		void this.document.connect();
@@ -263,13 +268,18 @@ export class ViewHookPlugin extends HasLogging {
 	 * Update all UI renderers when document changes
 	 */
 	private renderAll(): void {
+		const hsm = this.document.hsm;
+		const text = hsm?.statePath.startsWith("active.reading")
+			? hsm.getReadModeText()
+			: this.document.localText;
+		if (text === null) return;
 		const viewMode =
 			// @ts-ignore
 			this.view.getMode?.() || this.view.getViewType?.() || "unknown";
 		this.runWithRelaySaving(() => {
 			this.renderers.forEach((renderer) => {
 				try {
-					renderer.render(this.document, viewMode);
+					renderer.render(this.document, viewMode, text);
 				} catch (error) {
 					this.error("Error in renderer:", error);
 				}
