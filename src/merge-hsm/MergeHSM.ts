@@ -2792,7 +2792,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	bootstrapEditorView(viewId: string, currentText?: string): void {
 		let text: string | null;
 		if (this._statePath.startsWith("active.reading")) {
-			text = this.readModeSharedText();
+			text = this.getReadModeText();
 		} else if (this._statePath === "active.tracking") {
 			text = this.localDoc
 				? this.localDoc.getText("contents").toString()
@@ -4332,7 +4332,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			presentReadFork: () => this.presentReadFork(),
 			auditReadModeFork: () => this.auditReadModeFork(),
 			renderSharedVersionToEditors: () => {
-				const shared = this.readModeSharedText();
+				const shared = this.getReadModeText();
 				if (shared === null) return;
 				const editorText = this.readCurrentEditorText();
 				if (editorText === null || editorText === shared) {
@@ -4353,7 +4353,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			rejectAndRestoreCM6: (_hsm, event) => {
 				const e = payload(event);
 				if (typeof e.docText === "string") this.lastKnownEditorText = e.docText;
-				const shared = this.readModeSharedText();
+				const shared = this.getReadModeText();
 				if (shared === null) return;
 				if (typeof e.viewId === "string") {
 					if (e.docText !== shared) {
@@ -6445,7 +6445,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	 * With a fork it is remoteDoc, and only once the provider has synced, so an
 	 * unfilled replica is never rendered.
 	 */
-	private readModeSharedText(): string | null {
+	getReadModeText(): string | null {
 		if (this._fork) {
 			if (!this._isProviderSynced()) return null;
 			return this.remoteDoc?.getText("contents").toString() ?? null;
