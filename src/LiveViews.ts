@@ -25,7 +25,8 @@ import NetworkStatus from "./NetworkStatus";
 import { SharedFolder, SharedFolders } from "./SharedFolder";
 import { curryLog, HasLogging, RelayInstances, metrics } from "./debug";
 import { Banner } from "./ui/Banner";
-import { PreservedEditsModal } from "./ui/PreservedEditsModal";
+import { openStashReview } from "./stash-review/StashReviewView";
+import { prepareStashReview } from "./stash-review/session";
 import { HSMEditorPlugin } from "./merge-hsm/integration/HSMEditorPlugin";
 import {
 	yRemoteSelections,
@@ -64,7 +65,6 @@ import { trackPromise } from "./trackPromise";
 import { isDocumentDestroyedError } from "./DocumentDestroyedError";
 import { trackAsyncCleanup } from "./reloadUtils";
 import { transitionViewsOffline } from "./offlineViews";
-import { preservedForkText } from "./merge-hsm/snapshots";
 import type { ObsidianCanvas } from "src/CanvasView";
 
 /**
@@ -831,50 +831,19 @@ export class LiveView<ViewType extends TextFileView>
 		this._forkNotice = new Banner(
 			this.view,
 			{
-				short: "Review edits",
+				short: "Stashed changes",
 				long: "is read-only. You still have edits from when you could write to this folder.",
 				context: { name: this.document.sharedFolder.name, icon: "folder-lock" },
 			},
 			async () => {
 				const hsm = this.document.hsm;
 				if (this._released || this._leavingMarkdownFile || !this.reading || !hsm?.hasFork()) return false;
-				new PreservedEditsModal(this._parent.app, {
-					fileName: this.document.path.split("/").pop() ?? this.document.path,
-					onCompare: () => {
-						const localDoc = hsm.getLocalDoc();
-						const remoteDoc = hsm.getRemoteDoc();
-						const preservedText = preservedForkText(
-							localDoc,
-							hsm.state.fork,
-						);
-						if (preservedText === null || !remoteDoc) return;
-						const preserved = new DiskBuffer(
-							this._parent.app.vault,
-							this.document.path + " (Your edits)",
-							preservedText,
-						);
-						const shared = new DiskBuffer(
-							this._parent.app.vault,
-							this.document.path + " (Shared version)",
-							remoteDoc.getText("contents").toString(),
-						);
-						this._parent.openDiffView({
-							file1: preserved,
-							file2: shared,
-							showMergeOption: false,
-							oursLabel: "Your edits",
-							theirsLabel: "Shared version",
-							sourceVaultPath: this.document.tfile?.path,
-						});
-					},
-					onDiscard: () => {
-						hsm.send({ type: "DISCARD_LOCAL_FORK" });
-					},
-				}).open();
+				const review = prepareStashReview(this.document);
+				if (review) await openStashReview(this._parent.app, review);
 				// The state subscription hides the notice when the fork clears.
 				return false;
 			},
-			{ namespace: "relay-read-only", priority: 3, actionLabel: "Review edits" },
+			{ namespace: "relay-read-only", priority: 3, actionLabel: "Stashed changes" },
 		);
 	}
 

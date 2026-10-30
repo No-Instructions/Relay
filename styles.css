@@ -796,3 +796,204 @@ canvas.relay-canvas-presence {
 .relay-rename-prompt input {
 	width: 100%;
 }
+
+.markdown-source-view.mod-cm6,
+.relay-conflict-marks {
+	--relay-conflict-ours: var(--color-green);
+	--relay-conflict-theirs: var(--color-blue);
+	--relay-conflict-remove: var(--color-red);
+	--relay-conflict-neutral: var(--text-muted);
+	--relay-conflict-reach: 28px;
+}
+
+/* A change as a pull request shows it: red for the note's lines that would go, green for the lines that would come, the words that differ marked in both, a sign in the margin. */
+.cm-line.relay-conflict-diff {
+	position: relative;
+}
+
+.cm-line.relay-conflict-diff.is-del {
+	background-color: color-mix(in srgb, var(--relay-conflict-remove) 12%, var(--background-primary));
+}
+
+.cm-line.relay-conflict-diff.is-add {
+	background-color: color-mix(in srgb, var(--relay-conflict-ours) 12%, var(--background-primary));
+}
+
+.cm-line.relay-conflict-diff::before {
+	position: absolute;
+	left: -16px;
+	width: 12px;
+	text-align: center;
+	font-family: var(--font-monospace);
+	font-size: 0.85em;
+	text-indent: 0;
+}
+
+.cm-line.relay-conflict-diff.is-del::before {
+	content: "−";
+	color: var(--relay-conflict-remove);
+}
+
+.cm-line.relay-conflict-diff.is-add::before {
+	content: "+";
+	color: var(--relay-conflict-ours);
+}
+
+.relay-conflict-word.is-del {
+	background-color: color-mix(in srgb, var(--relay-conflict-remove) 30%, transparent);
+	border-radius: 2px;
+}
+
+.relay-conflict-word.is-add {
+	background-color: color-mix(in srgb, var(--relay-conflict-ours) 30%, transparent);
+	border-radius: 2px;
+}
+
+/* The situation box above the note: what happened, how much is left, the whole-file choices. It stays while the note scrolls and folds to its title. */
+.view-content.relay-has-conflict-box {
+	display: flex;
+	flex-direction: column;
+}
+
+.view-content.relay-has-conflict-box > .markdown-source-view,
+.view-content.relay-has-conflict-box > .markdown-reading-view {
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+.relay-conflict-box {
+	flex: 0 0 auto;
+	width: var(--relay-note-column-width, auto);
+	margin: 10px 16px 4px;
+	margin-left: var(--relay-note-column-left, 16px);
+	padding: 8px 12px 10px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m, 8px);
+	background: var(--background-secondary);
+	font-family: var(--font-interface);
+}
+
+.relay-conflict-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	cursor: pointer;
+	user-select: none;
+}
+
+.relay-conflict-chevron {
+	display: inline-flex;
+	color: var(--text-muted);
+	transition: transform 120ms ease;
+}
+
+.relay-conflict-box.is-collapsed .relay-conflict-chevron {
+	transform: rotate(-90deg);
+}
+
+.relay-conflict-title {
+	flex: 1 1 auto;
+	font-weight: 600;
+	font-size: var(--font-ui-medium, 15px);
+}
+
+.relay-conflict-status {
+	flex: 0 0 auto;
+	padding: 2px 8px;
+	border-radius: 999px;
+	font-size: var(--font-ui-smaller, 12px);
+	font-variant-numeric: tabular-nums;
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.relay-conflict-status:empty {
+	display: none;
+}
+
+.relay-conflict-body {
+	padding: 6px 0 0 22px;
+}
+
+.relay-conflict-box.is-collapsed .relay-conflict-body {
+	display: none;
+}
+
+.relay-conflict-box.is-collapsed {
+	padding-bottom: 8px;
+}
+
+.relay-conflict-text {
+	margin: 0 0 8px;
+	font-size: var(--font-ui-small, 13px);
+	color: var(--text-muted);
+	line-height: 1.5;
+}
+
+.relay-conflict-link {
+	color: var(--text-accent);
+	text-decoration: underline;
+	cursor: pointer;
+}
+
+.relay-conflict-link.is-sent {
+	color: var(--text-muted);
+	text-decoration: none;
+	cursor: default;
+}
+
+.relay-conflict-hint {
+	margin: 0 0 6px;
+	font-size: var(--font-ui-small, 13px);
+	color: var(--text-normal);
+}
+
+.relay-conflict-options {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 8px;
+}
+
+.relay-conflict-options button.is-chosen {
+	box-shadow: inset 0 0 0 1px var(--interactive-accent);
+}
+
+.relay-conflict-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	margin-top: 10px;
+	font-size: var(--font-ui-small, 13px);
+	color: var(--text-muted);
+	cursor: pointer;
+}
+
+.relay-conflict-toggle .checkbox-container {
+	transform: none;
+}
+
+.relay-stash-toolbar {
+	flex: 0 0 auto;
+	display: flex;
+	justify-content: flex-end;
+	width: var(--relay-note-column-width, auto);
+	margin: 0 24px;
+	margin-left: var(--relay-note-column-left, 24px);
+	padding: 8px 0 10px;
+	font: var(--font-ui-small) var(--font-interface);
+	color: var(--text-muted);
+}
+.relay-stash-toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.relay-stash-toggle .checkbox-container { transform: none; }
+.relay-stash-review .inline-title, .relay-stash-review .view-header-title { pointer-events: none; }
+.relay-stash-review .view-action[aria-label^="Current view:"] { display: none; }
+
+/* The review content already starts below the mobile navigation header. */
+.is-mobile .relay-stash-review .markdown-source-view.mod-cm6 .cm-scroller {
+	padding-block-start: var(--size-4-2) !important;
+}
+.is-mobile .relay-stash-review .view-content {
+	padding-left: 0;
+	padding-right: 0;
+}
