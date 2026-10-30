@@ -135,9 +135,12 @@ export function extractDependencySV(update: Uint8Array): DecodedSV {
 /**
  * Classify a delta update relative to a tracked baseline SV.
  *
- * Uses the delta's dependency SV (min clock per client from decoded structs)
- * to detect real gaps — cases where the delta's ops start beyond what
- * our tracked state covers, meaning intermediate ops are missing.
+ * Each client's runs are walked in clock order from the tracked clock: a run
+ * that starts at or before the clock reached so far extends it, and a run
+ * that starts beyond it (or follows a skip) means intermediate ops are
+ * missing. A merged update carries several runs per client when its edits
+ * landed at different positions, so a later run legitimately starts past the
+ * tracked clock as long as the runs before it reach that far.
  *
  * - 'apply': baseline covers the delta's dependencies — safe to apply
  * - 'stale': delta's ops are all already covered by baseline — drop it
@@ -153,17 +156,22 @@ export function classifyUpdate(
 	if (decoded.structs.length === 0) return "stale";
 
 	let hasNewOps = false;
+	const reached = new Map<number, number>();
 
 	for (const struct of decoded.structs) {
 		const { client, clock } = struct.id;
+		// A skip is a hole in this client's runs; the run after it starts
+		// beyond the clock reached and is classified as a gap.
+		if (struct instanceof Y.Skip) continue;
 		const trackedClock = tracked.get(client) ?? 0;
+		const reachedClock = reached.get(client) ?? trackedClock;
 
-		// This struct starts beyond what we've tracked — missing intermediate ops
-		if (clock > trackedClock) return "gap";
+		// This run starts beyond what the baseline and earlier runs cover
+		if (clock > reachedClock) return "gap";
 
-		// This struct extends beyond what we've tracked — contains new ops
 		const endClock = clock + (struct.length ?? 1);
 		if (endClock > trackedClock) hasNewOps = true;
+		if (endClock > reachedClock) reached.set(client, endClock);
 	}
 
 	return hasNewOps ? "apply" : "stale";
