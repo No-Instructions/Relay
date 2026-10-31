@@ -121,7 +121,7 @@ export function toCanvasPresence(state: NativeCanvasPresenceState): CanvasPresen
 		const { zoom, ...bounds } = state.viewport;
 		result.viewport = { ...bounds, scale: 2 ** zoom };
 	}
-	const nodes: Extract<CanvasPresenceInteraction, { kind: "transform" }>["nodes"] = Object.create(null);
+	const nodes = Object.create(null) as Extract<CanvasPresenceInteraction, { kind: "transform" }>["nodes"];
 	let editing: string | null = null;
 	for (const [id, item] of Object.entries(state.items)) {
 		if (item.classes.includes("is-selected")) result.selection[item.kind === "node" ? "nodes" : "edges"].push(id);
@@ -165,7 +165,7 @@ export function fromCanvasPresence(state: CanvasPresenceState): NativeCanvasPres
 		result.viewport = { ...bounds, zoom: Math.log2(scale) };
 	}
 	// IDs are document identifiers, not object properties inherited from a prototype.
-	result.items = Object.create(null);
+	result.items = Object.create(null) as Record<string, NativeCanvasPresenceItem>;
 	const item = (id: string, kind: "node" | "edge") => result.items[id] ??= { kind, classes: [] };
 	for (const id of state.selection.nodes) item(id, "node").classes.push("is-selected");
 	for (const id of state.selection.edges) item(id, "edge").classes.push("is-selected");
