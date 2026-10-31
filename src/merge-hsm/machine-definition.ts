@@ -630,7 +630,7 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'active.merging.threeWay': {
-		entry: ['replayAccumulatedEvents', 'mergeRemoteToLocal'],
+		entry: ['clearActiveMergeEditorText', 'replayAccumulatedEvents', 'mergeRemoteToLocal'],
 		invoke: {
 			src: 'three-way-merge',
 			onDone: [
@@ -643,7 +643,7 @@ export const MACHINE: MachineDefinition = {
 			CONNECTED: { target: 'active.merging.threeWay', actions: ['flushPendingToRemote'] },
 			DISCONNECTED: { target: 'active.merging.threeWay', actions: ['setOffline'] },
 			PROVIDER_SYNCED: { target: 'active.merging.threeWay', actions: ['markProviderSynced'] },
-			CM6_CHANGE: { target: 'active.merging.threeWay', actions: ['trackEditorText'] },
+			CM6_CHANGE: { target: 'active.merging.threeWay', actions: ['trackActiveMergeEditorText'] },
 			REMOTE_UPDATE: { target: 'active.merging.threeWay', actions: ['applyRemoteToRemoteDoc'] },
 			SERVER_AHEAD: POCKET_SERVER_AHEAD('active.merging.threeWay'),
 			DEMOTE_TO_READ: { target: 'active.reading', actions: ['prepareDemotion'] },
