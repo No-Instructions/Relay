@@ -37,7 +37,7 @@ export class MetadataRenderer extends HasLogging implements ViewRenderer {
 		this.debug("created");
 	}
 
-	render(document: Document, viewMode: string, text = document.localText): void {
+	render(document: Document, viewMode: string): void {
 		if (this.destroyed) {
 			return;
 		}
@@ -52,7 +52,7 @@ export class MetadataRenderer extends HasLogging implements ViewRenderer {
 			}
 
 			// Parse the same content shown by the note.
-			const fmi = getFrontMatterInfo(text);
+			const fmi = getFrontMatterInfo(document.localText);
 			const fm = fmi.frontmatter;
 
 			if (!fm) {

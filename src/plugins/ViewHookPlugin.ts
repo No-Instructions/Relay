@@ -26,7 +26,6 @@ export class ViewHookPlugin extends HasLogging {
 	private saving = false;
 	private previewRestore?: number;
 	private renderQueued = false;
-	private lastReaderRender?: { text: string; viewMode: string };
 
 	constructor(view: MarkdownView, document: Document) {
 		super();
@@ -92,7 +91,7 @@ export class ViewHookPlugin extends HasLogging {
 		this.previewRestore = win.setTimeout(() => {
 			this.previewRestore = undefined;
 			if (this.destroyed) return;
-			this.renderAll(true);
+			this.renderAll();
 			this.view.previewMode.rerender(true);
 		}, 0);
 	}
@@ -109,6 +108,7 @@ export class ViewHookPlugin extends HasLogging {
 			if (hsm?.awaitState) {
 				await trackPromise(`viewHook:awaitActive:${this.document.guid}`, hsm.awaitState((s) => s.startsWith("active.")));
 			}
+			if (this.destroyed || this.document.destroyed) return;
 			localDoc = this.document.localDoc;
 		}
 		if (this.destroyed || this.document.destroyed || !localDoc) return;
@@ -117,14 +117,19 @@ export class ViewHookPlugin extends HasLogging {
 		this.setupDocumentObserver();
 
 		const hsm = this.document.hsm;
+		let ready = this.canRender();
 		if (hsm) this.unsubscribes.push(hsm.onStateChange((from, to) => {
-			if (!from.startsWith("active.reading") && !to.startsWith("active.reading")) return;
-			// Wait for the transition's editor updates, then refresh the other views.
-			if (this.renderQueued || this.destroyed) return;
+			const nextReady = this.canRender();
+			const becameReady = nextReady && !ready;
+			ready = nextReady;
+			const modeChanged = from.startsWith("active.reading") !== to.startsWith("active.reading");
+			if (!nextReady || (!becameReady && !modeChanged) || this.renderQueued) return;
+			// Cancellation can restore deleted structs without a text event.
+			// Refresh when the live document becomes ready, after editor updates.
 			this.renderQueued = true;
 			queueMicrotask(() => {
 				this.renderQueued = false;
-				if (!this.destroyed) this.renderAll();
+				this.renderAll();
 			});
 		}));
 		this.renderAll();
@@ -264,41 +269,25 @@ export class ViewHookPlugin extends HasLogging {
 		return !this.destroyed && !!this.view;
 	}
 
-	/**
-	 * Update all UI renderers when document changes
-	 */
-	private renderAll(force = false): void {
-		if (this.destroyed || this.document.destroyed) return;
-		let text: string | null;
-		let reading = false;
-		try {
-			const hsm = this.document.hsm;
-			reading = hsm?.statePath.startsWith("active.reading") === true;
-			text = reading && hsm
-				? hsm.getReadModeText()
-				: this.document.localText;
-		} catch (error) {
-			this.lastReaderRender = undefined;
-			this.error("Error reading content for render:", error);
-			return;
-		}
-		if (!reading || text === null) this.lastReaderRender = undefined;
-		if (text === null) return;
-		const viewMode =
-			// @ts-ignore
-			this.view.getMode?.() || this.view.getViewType?.() || "unknown";
-		if (reading && !force && this.lastReaderRender?.text === text &&
-			this.lastReaderRender.viewMode === viewMode) return;
+	/** A pending stash still contains unpublished operations in the local document. */
+	private canRender(): boolean {
+		if (this.destroyed || this.document.destroyed || !this.document.localDoc) return false;
+		const hsm = this.document.hsm;
+		return !hsm?.isReadMode() || !hsm.hasFork() || hsm.hasRetainedStash();
+	}
+
+	private renderAll(): void {
+		if (!this.canRender()) return;
+		const viewMode = this.view.getMode?.() || this.view.getViewType?.() || "unknown";
 		this.runWithRelaySaving(() => {
 			this.renderers.forEach((renderer) => {
 				try {
-					renderer.render(this.document, viewMode, text);
+					renderer.render(this.document, viewMode);
 				} catch (error) {
 					this.error("Error in renderer:", error);
 				}
 			});
 		});
-		if (reading) this.lastReaderRender = { text, viewMode };
 	}
 	/**
 	 * Calculate incremental buffer changes using diff-match-patch
@@ -334,7 +323,6 @@ export class ViewHookPlugin extends HasLogging {
 		this.renderers.length = 0;
 
 		// Clear references
-		this.lastReaderRender = undefined;
 		this._ytext = null;
 		this.view = null as unknown as typeof this.view;
 		this.document = null as unknown as typeof this.document;
