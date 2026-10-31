@@ -575,7 +575,7 @@
 			helpText="You must have attachment storage available in order to sync attachments."
 		></SettingItemHeading>
 
-		<SettingGroup>
+		<SettingGroup list>
 			{#if displayName !== $folderStore.name}
 			<SettingItem
 				name="Local path"
