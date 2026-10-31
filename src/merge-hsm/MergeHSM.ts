@@ -6632,6 +6632,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		const capture = this.getOpCapture();
 		const persistence = this.localPersistence;
 		if (!capture || !persistence?.rewriteState) throw new Error("Document history is not ready");
+		// A demotion bookmark may precede disk ingestion. The frozen live
+		// document holds the complete note until cancellation starts. A pending
+		// stash must keep its saved snapshot because it may already be cancelled.
+		if (fork.origin === "demotion") fork.localSnapshot = snapshotFromDoc(doc).snapshot;
 		fork.origin = "stash-pending";
 		// Persist the snapshot before changing the live value. The GC filter
 		// already protects its structs, including during persistence replay.
