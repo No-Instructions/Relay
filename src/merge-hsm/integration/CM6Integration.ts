@@ -53,6 +53,16 @@ export class CM6Integration {
 		);
 	}
 
+	private restoreCurrentReaderText(): boolean {
+		if (!this.hsm.isReadMode()) return false;
+		// Peer updates or stash completion can advance the live document while
+		// an editor update is deferred. Captured ranges no longer address that
+		// editor reliably; restore the current Reader text using its live length.
+		const text = this.hsm.getReadModeText();
+		if (text !== null) this.setEditorText(text);
+		return true;
+	}
+
 	private shouldBypassFrontmatterTransactionFilters(
 		changes: PositionedChange[],
 	): boolean {
@@ -191,7 +201,7 @@ export class CM6Integration {
 			this.log(`dispatchToEditor: editor=${editorAfter} chars after`);
 		} catch (e) {
 			// CM6 throws if dispatch is called during an update (re-entrant).
-			// Defer to the next microtask to break the synchronous cycle.
+			// Defer to the next frame to break the synchronous cycle.
 			if (e instanceof Error && e.message.includes("update is in progress")) {
 				this.warn(
 					`dispatchToEditor: DEFERRED due to re-entrant update. ${changes.length} changes queued for rAF`,
@@ -199,6 +209,7 @@ export class CM6Integration {
 				window.requestAnimationFrame(() => {
 					if (!this.destroyed && this.isEditorStillValid()) {
 						try {
+							if (this.restoreCurrentReaderText()) return;
 							const editorBefore = this.view.state.doc.length;
 							this.log(
 								`dispatchToEditor (rAF): applying ${changes.length} deferred changes, editor=${editorBefore} chars before`,
@@ -283,6 +294,7 @@ export class CM6Integration {
 				this.warn("setEditorText: DEFERRED due to re-entrant update");
 				window.requestAnimationFrame(() => {
 					if (!this.destroyed && this.isEditorStillValid()) {
+						if (this.restoreCurrentReaderText()) return;
 						const replacementChanges = [{ from: 0, to: currentText.length, insert: text }];
 							const dispatchSpec: TransactionSpec = {
 								changes,
