@@ -496,6 +496,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 	// Last known editor text (for drift detection)
 	private lastKnownEditorText: string | null = null;
+	/** Editor input received while active reconciliation awaits its result. */
+	private activeMergeEditorText: string | null = null;
 	/**
 	 * Recent distinct whole-buffer editor replacements, oldest first. Three
 	 * entries cover a detached save followed by two further view echoes during
@@ -3662,6 +3664,14 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			},
 
 			// === Active conflict/merging actions ===
+			clearActiveMergeEditorText: () => { this.activeMergeEditorText = null; },
+			trackActiveMergeEditorText: (_hsm, event) => {
+				const text = payload(event).docText;
+				if (typeof text === "string") {
+					this.lastKnownEditorText = text;
+					this.activeMergeEditorText = text;
+				}
+			},
 			trackEditorText: (_hsm, event) => {
 				const e = payload(event);
 				if (e.docText !== undefined) {
@@ -5583,6 +5593,21 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	// ===========================================================================
 
 	private handleEvent(event: MergeEvent): void {
+		if ((event as { type: string }).type === "done.invoke.three-way-merge" &&
+			this._statePath === "active.merging.threeWay" &&
+			this.activeMergeEditorText !== null && this.localDoc) {
+			const data = dataOf(event);
+			if (typeof data?.baseText === "string") {
+				// A disk read may finish after typing has changed the open note.
+				// Reconcile that actual input before deciding whether the result
+				// is clean or conflicted; the captured disk text is no longer the
+				// editor's side of the comparison.
+				const diskText = this.activeMergeEditorText;
+				const localText = this.localDoc.getText("contents").toString();
+				const result = performThreeWayMerge(data.baseText, localText, diskText);
+				event = Object.assign({}, event, { data: { ...data, ...result, localText, diskText } });
+			}
+		}
 		// Handle Obsidian file lifecycle events (diagnostic, all states)
 		if (event.type === 'OBSIDIAN_FILE_OPENED') {
 			this._obsidianFileOpen = true;
