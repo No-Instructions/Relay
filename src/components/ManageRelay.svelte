@@ -622,7 +622,7 @@
 		</button>
 	{/if}
 </SettingItemHeading>
-<SettingGroup>
+<SettingGroup list>
 	{#each $remoteFolders.values() as remote}
 		{#if $viewAsAdmin ? get(plugin.relayManager.userCan(["folder", "manage_users"], remote)) : get(plugin.relayManager.userCan(["folder", "read_content"], remote))}
 			<SlimSettingItem>
@@ -715,7 +715,7 @@
 	</SettingItemHeading>
 </div>
 
-<SettingGroup>
+<SettingGroup list>
 	{#each $roles.values().sort(userSort) as item}
 		<AccountSettingItem user={item.user}>
 			{#if $canManageUsers}

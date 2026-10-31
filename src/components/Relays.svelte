@@ -227,7 +227,7 @@
 		Relay Servers
 	</span>
 </SettingItemHeading>
-<SettingGroup>
+<SettingGroup list>
 	{#each $relays.values().filter(hasPermissionParents).sort(sortFn) as relay}
 		<SlimSettingItem>
 			<Satellite slot="name" {relay} on:manageRelay>
@@ -259,7 +259,7 @@
 	name="My vault"
 	helpText="The following Shared Folders have been added to your vault. You can see what Relay Server a Shared Folder is connected to below."
 ></SettingItemHeading>
-<SettingGroup>
+<SettingGroup list>
 	{#if $sharedFolders.items().length === 0}
 		<SettingItem
 			description="No shared folders on this device. Share folders from a Relay Server's settings page to begin collaboration."
