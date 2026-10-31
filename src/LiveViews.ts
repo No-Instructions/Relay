@@ -25,7 +25,8 @@ import NetworkStatus from "./NetworkStatus";
 import { SharedFolder, SharedFolders } from "./SharedFolder";
 import { curryLog, HasLogging, RelayInstances, metrics } from "./debug";
 import { Banner } from "./ui/Banner";
-import { openStashReview } from "./stash-review/StashReviewView";
+import { restoreBeforeUnload, sessionOf } from "./conflict-note/editorSession";
+import { openStashReview } from "./stash-review/StashReviewNote";
 import { prepareStashReview } from "./stash-review/session";
 import { HSMEditorPlugin } from "./merge-hsm/integration/HSMEditorPlugin";
 import {
@@ -198,7 +199,7 @@ export class NotSyncedView implements S3View {
 		const readOnlyFolder = this.status.reason === "read-only-folder";
 		const kind = this.view instanceof MarkdownView ? "note" : "file";
 		this.banner ??= new Banner(this.view, {
-			short: readOnlyFolder ? `${this.folder.name} is read-only` : "Not synced",
+			short: "Not synced",
 			long: `${readOnlyFolder ? "is read-only" : this.status.label} — this ${kind} will not be synced`,
 			context: readOnlyFolder ? {
 				name: this.folder.name,
@@ -831,7 +832,7 @@ export class LiveView<ViewType extends TextFileView>
 		this._forkNotice = new Banner(
 			this.view,
 			{
-				short: "Stashed changes",
+				short: "Review edits",
 				long: "is read-only. You still have edits from when you could write to this folder.",
 				context: { name: this.document.sharedFolder.name, icon: "folder-lock" },
 			},
@@ -839,11 +840,11 @@ export class LiveView<ViewType extends TextFileView>
 				const hsm = this.document.hsm;
 				if (this._released || this._leavingMarkdownFile || !this.reading || !hsm?.hasFork()) return false;
 				const review = prepareStashReview(this.document);
-				if (review) await openStashReview(this._parent.app, review);
+				if (review && this.view instanceof MarkdownView) await openStashReview(this.view, review);
 				// The state subscription hides the notice when the fork clears.
 				return false;
 			},
-			{ namespace: "relay-read-only", priority: 3, actionLabel: "Stashed changes" },
+			{ namespace: "relay-read-only", priority: 3, actionLabel: "Review edits" },
 		);
 	}
 
@@ -1139,7 +1140,7 @@ export class LiveView<ViewType extends TextFileView>
 			this.reconcileReadOnlyBanner(view, readOnly);
 
 			// Reading temporarily overrides this pane's existing view preference.
-			if (modeChanged && readOnly) {
+			if (modeChanged && readOnly && !sessionOf(view)) {
 				// A view can report preview while Obsidian is still restoring
 				// its saved source state. Request reading view on every new
 				// read-only session, including that opening transition.
@@ -1269,6 +1270,7 @@ export class LiveView<ViewType extends TextFileView>
 			return;
 		}
 		this._released = true;
+		if (this.view instanceof MarkdownView) restoreBeforeUnload(this.view);
 		this.restoreMarkdownMode();
 		this._offMarkdownState?.();
 		this._offMarkdownState = undefined;

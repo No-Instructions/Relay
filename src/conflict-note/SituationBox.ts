@@ -14,10 +14,10 @@ export class SituationBox {
 	private readonly buttons: HTMLButtonElement[];
 	private readonly status: HTMLSpanElement;
 
-	constructor(host: HTMLElement, copy: { title: string; text: string; status: string }, actions: SituationAction[]) {
+	constructor(host: HTMLElement, copy: { title: string; text: string; status: string }, actions: SituationAction[], onClose?: () => void) {
 		this.element = host.createDiv({ cls: "relay-conflict-box" });
-		const head = this.element.createDiv({ cls: "relay-conflict-head", attr: { role: "button", tabindex: "0", "aria-label": copy.title, "aria-expanded": "true" } });
-		setIcon(head.createSpan({ cls: "relay-conflict-chevron" }), "chevron-down");
+		const head = this.element.createDiv({ cls: "relay-conflict-head", attr: onClose ? {} : { role: "button", tabindex: "0", "aria-label": copy.title, "aria-expanded": "true" } });
+		if (!onClose) setIcon(head.createSpan({ cls: "relay-conflict-chevron" }), "chevron-down");
 		head.createDiv({ cls: "relay-conflict-title", text: copy.title });
 		this.status = head.createSpan({ cls: "relay-conflict-status", text: copy.status });
 		this.body = this.element.createDiv({ cls: "relay-conflict-body" });
@@ -30,6 +30,14 @@ export class SituationBox {
 			button.addEventListener("click", () => action.run());
 			return button;
 		});
+		if (onClose) {
+			this.element.addClass("is-dismissible");
+			const close = head.createEl("button", { cls: "clickable-icon relay-conflict-close", attr: { type: "button", "aria-label": "Close review" } });
+			setIcon(close, "x");
+			this.buttons.push(close);
+			close.addEventListener("click", onClose);
+			return;
+		}
 		const toggle = () => {
 			const collapsed = this.element.classList.toggle("is-collapsed");
 			head.setAttribute("aria-expanded", String(!collapsed));

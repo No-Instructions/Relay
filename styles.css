@@ -960,6 +960,15 @@ canvas.relay-canvas-presence {
 	padding-block-start: var(--size-4-2) !important;
 }
 .is-mobile .relay-stash-review .view-content {
+	padding-top: var(--relay-note-header-inset, 0px);
 	padding-left: 0;
 	padding-right: 0;
+}
+
+.relay-conflict-box.is-dismissible .relay-conflict-body { padding-left: 0; }
+.relay-conflict-close.clickable-icon {
+	flex: 0 0 auto;
+	padding: var(--size-4-1);
+	box-shadow: none;
+	background: transparent;
 }

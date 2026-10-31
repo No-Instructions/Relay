@@ -1,6 +1,5 @@
 import { Notice, TFile, type App } from "obsidian";
-import { isDocument, type Document } from "../Document";
-import type { SharedFolders } from "../SharedFolder";
+import type { Document } from "../Document";
 import { preservedForkText } from "../merge-hsm/snapshots";
 
 /** Captured review content and its lifecycle; the editor only presents it. */
@@ -9,6 +8,8 @@ export interface StashReviewSession {
 	folderName: string;
 	stash: string;
 	current: string;
+	/** The live note advances independently of the captured comparison. */
+	liveText(): string;
 	stillHeld(): boolean;
 	subscribe(listener: () => void): () => void;
 	discard(): Promise<void>;
@@ -18,8 +19,9 @@ export function prepareStashReview(document: Document): StashReviewSession | nul
 	const hsm = document.hsm, file = document.tfile;
 	const fork = hsm?.state.fork;
 	const current = hsm?.getReadModeText();
-	if (!hsm || !file || !fork || current == null) return null;
-	const stash = preservedForkText(hsm.getLocalDoc(), fork);
+	const local = hsm?.getLocalDoc();
+	if (!hsm || !local || !file || !fork || current == null) return null;
+	const stash = preservedForkText(local, fork);
 	if (stash === null) {
 		new Notice("The stashed edits could not be opened. They have been kept.");
 		return null;
@@ -28,7 +30,13 @@ export function prepareStashReview(document: Document): StashReviewSession | nul
 	return {
 		sourcePath: file.path, folderName: document.sharedFolder.name,
 		stash, current, stillHeld,
-		subscribe: listener => hsm.stateChanges.subscribe(listener),
+		liveText: () => hsm.getReadModeText() ?? local.getText("contents").toString(),
+		subscribe: listener => {
+			const text = local.getText("contents");
+			text.observe(listener);
+			const off = hsm.stateChanges.subscribe(listener);
+			return () => { off(); text.unobserve(listener); };
+		},
 		async discard() {
 			if (!stillHeld()) throw new Error("This stash is no longer held.");
 			hsm.send({ type: "DISCARD_LOCAL_FORK" });
@@ -40,13 +48,6 @@ export function prepareStashReview(document: Document): StashReviewSession | nul
 			if (hsm.hasFork()) throw new Error("The stash could not be discarded.");
 		},
 	};
-}
-
-export function findStashReview(app: App, folders: SharedFolders, path: string): StashReviewSession | null {
-	const file = app.vault.getAbstractFileByPath(path);
-	if (!(file instanceof TFile)) return null;
-	const document = folders.lookup(path)?.getFile(file);
-	return document && isDocument(document) ? prepareStashReview(document) : null;
 }
 
 interface NativeAvailablePath {

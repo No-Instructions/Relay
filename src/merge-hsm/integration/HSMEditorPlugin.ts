@@ -12,6 +12,7 @@
  *                 → syncLocalToRemote()
  */
 
+import { liveEditorText, sessionOfEditor } from "../../conflict-note/editorSession";
 import { ViewPlugin, EditorView, ViewUpdate } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
 import { Transaction } from "@codemirror/state";
@@ -577,7 +578,7 @@ export class HSMEditorPluginValue implements PluginValue {
     }
     this.debug(`Initialized for ${this.document.guid} (embed: ${this.embed})`);
 
-    const currentText = this.editor.state.doc.toString();
+    const currentText = liveEditorText(this.editor);
 
     if (bornAttached) {
       // Born attached: render the authoritative document text directly and
@@ -590,7 +591,7 @@ export class HSMEditorPluginValue implements PluginValue {
     }
 
     hsm.attachEditorView(
-      { getViewData: () => this.editor.state.doc.toString() },
+      { getViewData: () => liveEditorText(this.editor) },
       currentText,
     );
 
@@ -694,7 +695,7 @@ export class HSMEditorPluginValue implements PluginValue {
       }
 
       const localText = localDoc.getText("contents").toString();
-      const currentText = this.editor.state.doc.toString();
+      const currentText = liveEditorText(this.editor);
 
       // Do not replace the HSM's legitimate sibling view reference until
       // every late born-attached check has passed. In particular, a nested
@@ -702,13 +703,13 @@ export class HSMEditorPluginValue implements PluginValue {
       // must abort above without leaving its fragment buffer as the HSM's
       // source of editor truth.
       hsm.attachEditorView(
-        { getViewData: () => this.editor.state.doc.toString() },
+        { getViewData: () => liveEditorText(this.editor) },
         currentText,
       );
 
       // Replace whatever the buffer holds — stale disk load, a save echo,
       // pre-bind typing — with the document text.
-      if (currentText !== localText) {
+      if (!sessionOfEditor(this.editor) && currentText !== localText) {
         this.editor.dispatch({
           changes: [{ from: 0, to: currentText.length, insert: localText }],
           annotations: syncDispatchAnnotations(
@@ -764,7 +765,7 @@ export class HSMEditorPluginValue implements PluginValue {
     const restores = this.pendingRestores;
     this.pendingRestores = [];
     if (restores.length === 0 || this.destroyed) return;
-    const currentText = this.editor.state.doc.toString();
+    const currentText = liveEditorText(this.editor);
     let restoredText = currentText;
     const ingestedReplacements =
       this.document?.hsm?.getRecentIngestedEditorReplacementTexts() ?? [];
@@ -794,7 +795,7 @@ export class HSMEditorPluginValue implements PluginValue {
    * This is called on every editor state change.
    */
   update(update: ViewUpdate): void {
-    if (this.destroyed) return;
+    if (this.destroyed || sessionOfEditor(this.editor)) return;
     if (this.subEditor) {
       if (this.inheritsFileAccessMode) this.inheritFileAccessMode();
       return;
