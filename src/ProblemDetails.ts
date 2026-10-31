@@ -17,7 +17,7 @@ export function parseProblemDetails(value: unknown): ProblemDetails | undefined 
 		}
 	}
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-	const prototype = Object.getPrototypeOf(value);
+	const prototype: unknown = Object.getPrototypeOf(value);
 	if (prototype !== Object.prototype && prototype !== null) return undefined;
 	const record = value as Record<string, unknown>;
 	const type = nonemptyString(record.type);
