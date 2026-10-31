@@ -370,6 +370,7 @@ export class CM6Integration {
 				type: "CM6_CHANGE",
 				changes,
 				docText: update.state.doc.toString(),
+				beforeText: update.startState.doc.toString(),
 				viewId: this.viewId,
 				userEvent,
 			});

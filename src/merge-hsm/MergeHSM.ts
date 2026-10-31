@@ -293,6 +293,7 @@ type MergeServiceResult =
 		baseText?: string;
 		localText?: string;
 		diskText?: string;
+		editorText?: string;
 		conflictRegions?: ConflictRegion[];
 		reason?: string;
 		detail?: Record<string, unknown>;
@@ -498,6 +499,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	private lastKnownEditorText: string | null = null;
 	/** Editor input received while active reconciliation awaits its result. */
 	private activeMergeEditorText: string | null = null;
+	private activeMergeEditorBaseText: string | null = null;
 	/**
 	 * Recent distinct whole-buffer editor replacements, oldest first. Three
 	 * entries cover a detached save followed by two further view echoes during
@@ -3664,10 +3666,16 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			},
 
 			// === Active conflict/merging actions ===
-			clearActiveMergeEditorText: () => { this.activeMergeEditorText = null; },
+			clearActiveMergeEditorText: () => {
+				this.activeMergeEditorText = null;
+				this.activeMergeEditorBaseText = null;
+			},
 			trackActiveMergeEditorText: (_hsm, event) => {
 				const text = payload(event).docText;
 				if (typeof text === "string") {
+					if (this.activeMergeEditorText === null) {
+						this.activeMergeEditorBaseText = payload(event).beforeText ?? null;
+					}
 					this.lastKnownEditorText = text;
 					this.activeMergeEditorText = text;
 				}
@@ -3840,8 +3848,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				// Reconciliation starts the editor from disk. A refused idle write
 				// can leave that text stale even when localDoc already equals the
 				// merge result, so CRDT-relative patches cannot gate editor repair.
-				if (data.diskText !== data.merged) {
-					const editorPatches = computeEditorDiffChanges(data.diskText!, data.merged!);
+				const editorText = data.editorText ?? data.diskText!;
+				if (editorText !== data.merged) {
+					const editorPatches = computeEditorDiffChanges(editorText, data.merged!);
 					if (editorPatches.length > 0) {
 						this.emitEffect({ type: "DISPATCH_CM6", changes: editorPatches });
 					}
@@ -5597,15 +5606,32 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			this._statePath === "active.merging.threeWay" &&
 			this.activeMergeEditorText !== null && this.localDoc) {
 			const data = dataOf(event);
-			if (typeof data?.baseText === "string") {
-				// A disk read may finish after typing has changed the open note.
-				// Reconcile that actual input before deciding whether the result
-				// is clean or conflicted; the captured disk text is no longer the
-				// editor's side of the comparison.
-				const diskText = this.activeMergeEditorText;
+			if (typeof data?.baseText === "string" && typeof data.diskText === "string") {
+				const editorText = this.activeMergeEditorText;
+				const editorBase = this.activeMergeEditorBaseText ?? data.baseText;
 				const localText = this.localDoc.getText("contents").toString();
-				const result = performThreeWayMerge(data.baseText, localText, diskText);
-				event = Object.assign({}, event, { data: { ...data, ...result, localText, diskText } });
+				// Keep the disk read in the comparison: it can contain an external
+				// edit that the open editor has not seen. Rebase input from the
+				// buffer it was typed against onto the reconciled stored contents.
+				const stored = performThreeWayMerge(data.baseText, localText, data.diskText);
+				if (stored.success) {
+					const result = performThreeWayMerge(editorBase, stored.merged!, editorText);
+					event = Object.assign({}, event, { data: {
+						...data, ...result, baseText: editorBase,
+						localText: stored.merged, diskText: editorText, editorText,
+					} });
+				} else {
+					// Preserve typed input on the file side of an existing conflict
+					// when it can be combined with the disk edit. If both comparisons
+					// conflict, retain the stored conflict and the untouched live editor.
+					const file = performThreeWayMerge(editorBase, data.diskText, editorText);
+					if (file.success) {
+						const result = performThreeWayMerge(data.baseText, localText, file.merged!);
+						event = Object.assign({}, event, { data: {
+							...data, ...result, localText, diskText: file.merged, editorText,
+						} });
+					}
+				}
 			}
 		}
 		// Handle Obsidian file lifecycle events (diagnostic, all states)
