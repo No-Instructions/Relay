@@ -83,15 +83,15 @@ export function validateOptions(command: CliRegisteredCommand, raw: CliData): Cl
 
 /** Relay owns required checks so help needs no operation arguments. */
 export function nativeFlags(command: CliRegisteredCommand): CliFlags {
-	return Object.fromEntries([
-		...(command.assignment ? [["<key>", { value: command.assignment.value, description: command.assignment.description, required: false }]] : []),
+	return Object.fromEntries<CliFlags[string]>([
+		...(command.assignment ? [["<key>", { value: command.assignment.value, description: command.assignment.description, required: false }] as const] : []),
 		...Object.entries({ ...command.options, ...GLOBAL_OPTIONS }).map(([name, option]) => [
 			name === "copy" ? "--copy" : name, {
 				value: option.value,
 				description: option.description + (option.required ? " (required)" : "") + (command.argument === name ? "; or positional" : ""),
 				required: false,
 			},
-		]),
+		] as const),
 		["-h", { description: "Print help", required: false }],
 	]);
 }
