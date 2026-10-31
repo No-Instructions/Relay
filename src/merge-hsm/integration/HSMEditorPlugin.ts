@@ -991,6 +991,7 @@ export class HSMEditorPluginValue implements PluginValue {
           this.pendingEdits.push({
             changes,
             docText: update.state.doc.toString(),
+            beforeText: update.startState.doc.toString(),
             userEvent,
           });
         }

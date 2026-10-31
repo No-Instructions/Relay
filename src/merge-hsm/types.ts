@@ -366,6 +366,8 @@ export interface CM6ChangeEvent {
 	type: "CM6_CHANGE";
 	changes: PositionedChange[];
 	docText: string;
+	/** Editor contents before this change, for reconciliation of input during load. */
+	beforeText?: string;
 	viewId?: string;
 	userEvent?: string;
 }
