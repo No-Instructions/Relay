@@ -4437,7 +4437,7 @@ export class SharedFolder extends HasProvider {
 			// the slot is still empty (or already carries this identity), so
 			// no step can interleave between the proof and the write.
 			let contestedMeta: Meta | undefined = undefined;
-			let unvettedVariant: string | undefined = undefined;
+			const publication: { unvettedVariant?: string } = {};
 			this.folderDoc.transact(() => {
 				const committedMeta = this.syncStore.getCommittedMeta(file.path);
 				if (committedMeta && committedMeta.id !== meta.id) {
@@ -4448,19 +4448,19 @@ export class SharedFolder extends HasProvider {
 				// before its transfer. One committed since has not been checked
 				// against the disk, so the claim waits for the next decision.
 				if (!committedMeta) {
-					unvettedVariant = this.caseVariantsAlong(file.path)
+					publication.unvettedVariant = this.caseVariantsAlong(file.path)
 						.flatMap(({ variants }) => variants)
 						.find((variant) => !cleared.has(variant));
-					if (unvettedVariant !== undefined) return;
+					if (publication.unvettedVariant !== undefined) return;
 				}
 				if (this.syncStore.willSet(file.path, meta)) {
 					this.log("new meta", file.path, meta);
 					this.syncStore.markUploaded(file.path, meta);
 				}
 			}, this);
-			if (unvettedVariant !== undefined) {
+			if (publication.unvettedVariant !== undefined) {
 				this.log(
-					`[markUploaded] stood down: ${unvettedVariant} was committed during the transfer`,
+					`[markUploaded] stood down: ${publication.unvettedVariant} was committed during the transfer`,
 					file.path,
 				);
 				return;
