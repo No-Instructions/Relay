@@ -11,6 +11,7 @@ export interface ToastMessage {
 
 // Global toast store
 export const toastStore = writable<{ [key: string]: ToastMessage }>({});
+const expiryTimers = new Map<string, number>();
 
 export function showToast(
 	key: string,
@@ -20,6 +21,10 @@ export function showToast(
 	autoDismiss?: number,
 	source: "client" | "server" = "client",
 ) {
+	const previous = expiryTimers.get(key);
+	if (previous !== undefined) window.clearTimeout(previous);
+	expiryTimers.delete(key);
+	const duration = autoDismiss ?? 5000;
 	toastStore.update((toasts) => ({
 		...toasts,
 		[key]: {
@@ -27,17 +32,24 @@ export function showToast(
 			details,
 			type,
 			visible: true,
-			autoDismiss: autoDismiss ?? 5000,
+			autoDismiss: duration,
 			source,
 		},
 	}));
+	// Notification lifetime belongs to the store, including while settings
+	// is closed and there is no mounted Toast component.
+	if (duration > 0) expiryTimers.set(key, window.setTimeout(() => hideToast(key), duration));
 }
 
 export function hideToast(key: string) {
-	toastStore.update((toasts) => ({
-		...toasts,
-		[key]: { ...toasts[key], visible: false },
-	}));
+	const timer = expiryTimers.get(key);
+	if (timer !== undefined) window.clearTimeout(timer);
+	expiryTimers.delete(key);
+	toastStore.update((toasts) => {
+		const remaining = { ...toasts };
+		delete remaining[key];
+		return remaining;
+	});
 }
 
 /**
