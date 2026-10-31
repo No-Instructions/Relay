@@ -512,7 +512,7 @@
 		{/if}
 	</SettingItemHeading>
 
-	<SettingGroup>
+	<SettingGroup list>
 		{#each $virtualFolderRoles as role}
 		<AccountSettingItem user={role.user}>
 			{#if isPrivate}
@@ -575,7 +575,7 @@
 			helpText="You must have attachment storage available in order to sync attachments."
 		></SettingItemHeading>
 
-		<SettingGroup>
+		<SettingGroup list>
 			{#if displayName !== $folderStore.name}
 			<SettingItem
 				name="Local path"
@@ -588,7 +588,7 @@
 			{@const locked = $noStorage && category.requiresStorage}
 			{@const on = category.enabled && !locked}
 			{@const disabled = isUpdating || !category.canToggle}
-			<SlimSettingItem name={category.name} description={category.description}>
+			<SlimSettingItem toggle name={category.name} description={category.description}>
 				<div
 					class="setting-item-control"
 					data-sync-category={name}

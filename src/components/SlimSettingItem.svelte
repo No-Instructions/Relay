@@ -1,9 +1,10 @@
 <script lang="ts">
 	export let name: HTMLSpanElement | string = "";
 	export let description: string = "";
+	export let toggle = false;
 </script>
 
-<div class="setting-item mod-list-item">
+<div class="setting-item mod-list-item" class:mod-toggle={toggle}>
 	<div class="setting-item-info">
 		<div class="setting-item-name truncate">
 			<slot name="name">{name}</slot>
