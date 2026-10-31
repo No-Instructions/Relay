@@ -10,7 +10,7 @@ import { saveStashCopy, StashCopySavedError, type StashReviewSession } from "./s
 export const STASH_REVIEW_VIEW = "relay-stash-review";
 type ReviewState = { path?: string; review?: StashReviewSession };
 interface NativeMarkdownModes {
-	modes: { source: MarkdownSubView };
+	modes: { source: MarkdownSubView & { sourceMode: boolean; toggleSource(): void } };
 	setMode(mode: MarkdownSubView): Promise<boolean>;
 }
 
@@ -24,6 +24,7 @@ export class StashReviewView extends MarkdownView {
 	private modal?: Modal;
 	private readonly decorations = new Compartment();
 	private showChanges = true;
+	private plainSourceMode?: boolean;
 	private busy = false;
 	private generation = 0;
 	private unsubscribe?: () => void;
@@ -42,6 +43,7 @@ export class StashReviewView extends MarkdownView {
 	// Native commands also reach setMode; a comparison has no Markdown preview.
 	async setMode(_mode: MarkdownSubView): Promise<boolean> {
 		const native = this as unknown as NativeMarkdownModes;
+		this.configureSourceMode(this.showChanges);
 		return (MarkdownView.prototype as unknown as NativeMarkdownModes).setMode.call(this, native.modes.source);
 	}
 
@@ -59,12 +61,12 @@ export class StashReviewView extends MarkdownView {
 		// FileView.setState opens a file or replaces the pane with EmptyView.
 		// This pane owns no file, so select the native editor mode directly.
 		const native = this as unknown as NativeMarkdownModes;
+		this.showChanges = true;
 		await native.setMode(native.modes.source);
 		if (generation !== this.generation) return;
 		this.layout = buildPickDocument(buildConflict({ situation: "no-baseline", base: null,
 			ours: { source: "remote", text: review.current }, theirs: { source: "record", text: review.stash },
 		}));
-		this.showChanges = true;
 		this.setViewData(this.layout.doc, true);
 		const cm = this.cm();
 		if (cm.state.doc.toString() !== this.layout.doc) {
@@ -135,6 +137,14 @@ export class StashReviewView extends MarkdownView {
 		this.columnObserver.observe(column);
 		align();
 	}
+	private configureSourceMode(comparison: boolean): void {
+		const source = (this as unknown as NativeMarkdownModes).modes.source;
+		this.plainSourceMode ??= source.sourceMode;
+		// Live Preview replaces callouts, tables and code blocks with widgets
+		// that hide line decorations. Compare their Markdown rows, then restore
+		// the native rendering preference when viewing the plain stash.
+		if (source.sourceMode !== (comparison || this.plainSourceMode)) source.toggleSource();
+	}
 	private toggleChanges(on: boolean): void {
 		if (!this.review || !this.layout || on === this.showChanges) return;
 		const cm = this.cm(), before = cm.scrollDOM.scrollTop, text = on ? this.layout.doc : this.review.stash;
@@ -143,6 +153,7 @@ export class StashReviewView extends MarkdownView {
 		while ((!anchor.text.trim() || !text.includes(anchor.text)) && anchor.number < cm.state.doc.lines) anchor = cm.state.doc.line(anchor.number + 1);
 		const relative = cm.lineBlockAt(anchor.from).top + origin - before, index = text.indexOf(anchor.text);
 		this.showChanges = on;
+		this.configureSourceMode(on);
 		cm.dispatch({ changes: { from: 0, to: cm.state.doc.length, insert: text }, filter: false, effects: this.decorations.reconfigure(on ? EditorView.decorations.of(diffDecorations(Text.of(text.split("\n")), this.layout.blocks)) : []) });
 		cm.requestMeasure({ read: view => index >= 0 ? view.lineBlockAt(index).top + view.documentTop - view.scrollDOM.getBoundingClientRect().top + view.scrollDOM.scrollTop - relative : before,
 			write: top => { cm.scrollDOM.scrollTop = before === 0 ? 0 : top; } });
