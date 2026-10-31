@@ -26,7 +26,7 @@ export class PreviewRenderer extends HasLogging implements ViewRenderer {
 		this.debug("created");
 	}
 
-	render(document: Document, viewMode: string, text = document.localText): void {
+	render(document: Document, viewMode: string): void {
 		if (this.destroyed) {
 			this.debug("Skipping render - renderer destroyed");
 			return;
@@ -37,6 +37,7 @@ export class PreviewRenderer extends HasLogging implements ViewRenderer {
 		}
 
 		try {
+			const text = document.localText;
 			this.debug("Rendering preview from document");
 
 			const internals = this.view as unknown as PreviewViewInternals;
