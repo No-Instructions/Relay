@@ -111,7 +111,7 @@ export class ViewHookPlugin extends HasLogging {
 			}
 			localDoc = this.document.localDoc;
 		}
-		if (this.destroyed || !localDoc) return;
+		if (this.destroyed || this.document.destroyed || !localDoc) return;
 
 		this._ytext = localDoc.getText("contents");
 		this.setupDocumentObserver();
@@ -119,7 +119,6 @@ export class ViewHookPlugin extends HasLogging {
 		const hsm = this.document.hsm;
 		if (hsm) this.unsubscribes.push(hsm.onStateChange((from, to) => {
 			if (!from.startsWith("active.reading") && !to.startsWith("active.reading")) return;
-			// A held local document does not change when Reader updates arrive.
 			// Wait for the transition's editor updates, then refresh the other views.
 			if (this.renderQueued || this.destroyed) return;
 			this.renderQueued = true;
@@ -269,6 +268,7 @@ export class ViewHookPlugin extends HasLogging {
 	 * Update all UI renderers when document changes
 	 */
 	private renderAll(force = false): void {
+		if (this.destroyed || this.document.destroyed) return;
 		let text: string | null;
 		let reading = false;
 		try {

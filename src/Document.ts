@@ -547,7 +547,7 @@ export class Document
 			if (acquiredIdleIntegration) {
 				this.destroyIdleProviderIntegration();
 				if (shouldCleanupIdleSession()) {
-					sharedFolder?.tokenStore.removeFromRefreshQueue(refreshQueueKey);
+					sharedFolder?.tokenStore?.removeFromRefreshQueue(refreshQueueKey);
 				}
 				return;
 			}
@@ -1003,7 +1003,9 @@ export class Document
 		this._activeProviderIntegration = false;
 
 		// Guard: sharedFolder may be null if document was orphaned (file moved out of folder)
-		const mergeManager = this.sharedFolder?.mergeManager;
+		// Destruction ends the HSM directly; releasing its lock must not start
+		// another idle reconciliation after the document lifetime has ended.
+		const mergeManager = this.destroyed ? undefined : this.sharedFolder?.mergeManager;
 		if (mergeManager) {
 			// MergeManager.unload() sends RELEASE_LOCK and runs async IDB cleanup.
 			const p = mergeManager.unload(this.guid);
@@ -1518,7 +1520,9 @@ export class Document
 					if (!hsm?.isReadMode()) return;
 					const contents = hsm.getReadModeText();
 					if (contents === null) return;
-					await this.writeDiskContents(contents, { createIfMissing: false });
+					// An open native note owns its save lifecycle. Writing beneath
+					// its dirty buffer would trigger Obsidian's external-edit merge.
+					await this.writeDiskContents(contents, { createIfMissing: false, excludeWhileActive: true });
 				});
 				break;
 			case "WRITE_DISK":
