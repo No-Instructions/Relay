@@ -53,6 +53,15 @@ export class CM6Integration {
 		);
 	}
 
+	private restoreCurrentReaderText(): boolean {
+		if (!this.hsm.isReadMode()) return false;
+		// Peer updates or read repair can advance the live note while an editor
+		// update is deferred. Replace from the current text and editor length.
+		const text = this.hsm.getReadModeText();
+		if (text !== null) this.setEditorText(text);
+		return true;
+	}
+
 	private shouldBypassFrontmatterTransactionFilters(
 		changes: PositionedChange[],
 	): boolean {
@@ -199,6 +208,7 @@ export class CM6Integration {
 				window.requestAnimationFrame(() => {
 					if (!this.destroyed && this.isEditorStillValid()) {
 						try {
+							if (this.restoreCurrentReaderText()) return;
 							const editorBefore = this.view.state.doc.length;
 							this.log(
 								`dispatchToEditor (rAF): applying ${changes.length} deferred changes, editor=${editorBefore} chars before`,
@@ -283,6 +293,7 @@ export class CM6Integration {
 				this.warn("setEditorText: DEFERRED due to re-entrant update");
 				window.requestAnimationFrame(() => {
 					if (!this.destroyed && this.isEditorStillValid()) {
+						if (this.restoreCurrentReaderText()) return;
 						const replacementChanges = [{ from: 0, to: currentText.length, insert: text }];
 							const dispatchSpec: TransactionSpec = {
 								changes,
