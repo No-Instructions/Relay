@@ -200,7 +200,7 @@ export const customFetch = async (
 	config?: RelayRequestInit,
 ): Promise<Response> => {
 	const input = typeof Request !== "undefined" && url instanceof Request ? url : undefined;
-	const urlString = input?.url ?? String(url);
+	const urlString = typeof url === "string" ? url : "href" in url ? url.href : url.url;
 	const method = (config?.method ?? input?.method ?? "GET").toUpperCase();
 	const domain = classifyNetworkDomain(urlString, config?.relayNetworkDomain);
 	const signal = config?.signal ?? input?.signal;
