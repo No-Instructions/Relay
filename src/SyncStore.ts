@@ -381,6 +381,7 @@ export class SyncStore extends Observable<SyncStore> {
 	 * claims vouching for themselves.
 	 */
 	hasKnown(path: string): boolean {
+		path = this.key(path);
 		if (this.deleteSet.has(path)) {
 			return false;
 		}

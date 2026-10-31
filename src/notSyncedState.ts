@@ -16,7 +16,7 @@ export function notSyncedPillState(sharedFolder: SharedFolder, file: TFile): Not
 		return { label: "Syncing this file type is disabled", reason: "file-type-disabled" };
 	}
 	if (sharedFolder.ready && !sharedFolder.canManageFiles &&
-		!sharedFolder.syncStore.has(sharedFolder.getVirtualPath(file.path))) {
+		!sharedFolder.syncStore.hasKnown(sharedFolder.getVirtualPath(file.path))) {
 		return {
 			label: "This file is only on this device: the folder is read-only for you",
 			reason: "read-only-folder",
