@@ -2266,7 +2266,7 @@ export class RelayManager extends HasLogging {
 	// Called when this client has just created a private folder: its creator
 	// grant is on its way from the server. Clears itself when the first role
 	// record for this user on the folder arrives, whatever that record says.
-	expectCreatorGrant(folder: RemoteFolder | RemoteSharedFolder): void {
+	expectCreatorGrant(folder: RemoteFolder): void {
 		this.pendingCreatorGrants.add(folder.id);
 		this.settlePendingCreatorGrants();
 	}
