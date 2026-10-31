@@ -24,8 +24,11 @@ export function httpUrl(value: unknown): string | undefined {
 export function readMessageActions(value: unknown): ServiceMessageAction[] {
 	if (!Array.isArray(value)) return [];
 	const actions: ServiceMessageAction[] = [];
-	for (const action of value) {
-		if (!action || typeof action !== "object" || typeof action.label !== "string" || !action.label.trim()) continue;
+	const entries: unknown[] = value;
+	for (const entry of entries) {
+		if (!entry || typeof entry !== "object") continue;
+		const action = entry as Record<string, unknown>;
+		if (typeof action.label !== "string" || !action.label.trim()) continue;
 		const label: string = action.label;
 		if (action.type === "settings") {
 			const path: unknown = action.path ?? "/";
