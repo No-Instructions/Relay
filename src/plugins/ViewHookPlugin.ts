@@ -113,6 +113,16 @@ export class ViewHookPlugin extends HasLogging {
 
 		this._ytext = localDoc.getText("contents");
 		this.setupDocumentObserver();
+		const hsm = this.document.hsm;
+		if (hsm) {
+			this.unsubscribes.push(
+				hsm.onStateChange((from, to) => {
+					if (from === "active.reading.repairing" && to !== from) {
+						this.refreshDocumentObserver();
+					}
+				}),
+			);
+		}
 
 		// Perform initial render using localDoc content
 		this.runWithRelaySaving(() => {
@@ -250,6 +260,16 @@ export class ViewHookPlugin extends HasLogging {
 		};
 
 		this._ytext.observe(this.observer);
+	}
+
+	/** Follow localDoc replacements and immediately refresh Reading projections. */
+	private refreshDocumentObserver(): void {
+		const next = this.document.localDoc?.getText("contents") ?? null;
+		if (!next || next === this._ytext) return;
+		if (this.observer) this._ytext?.unobserve(this.observer);
+		this._ytext = next;
+		this.setupDocumentObserver();
+		this.renderAll();
 	}
 
 	/**
