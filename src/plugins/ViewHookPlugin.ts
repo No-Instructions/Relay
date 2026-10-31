@@ -1,3 +1,4 @@
+import { sessionOf } from "../conflict-note/editorSession";
 import { MarkdownView } from "obsidian";
 import { getPatcher } from "../Patcher";
 import type { EditorView } from "@codemirror/view";
@@ -277,7 +278,7 @@ export class ViewHookPlugin extends HasLogging {
 	}
 
 	private renderAll(): void {
-		if (!this.canRender()) return;
+		if (!this.canRender() || sessionOf(this.view)) return;
 		const viewMode = this.view.getMode?.() || this.view.getViewType?.() || "unknown";
 		this.runWithRelaySaving(() => {
 			this.renderers.forEach((renderer) => {

@@ -8,6 +8,7 @@
  * - Connects conflict decoration plugin to HSM for inline resolution
  */
 
+import { sessionOfEditor } from "../../conflict-note/editorSession";
 import type { EditorView, ViewUpdate } from "@codemirror/view";
 import { Transaction, type TransactionSpec } from "@codemirror/state";
 import { editorInfoField, getFrontMatterInfo, type Vault } from "obsidian";
@@ -126,7 +127,7 @@ export class CM6Integration {
 	) {
 		this.hsm = hsm;
 		this.view = view;
-		this.isEditorStillValid = isEditorStillValid;
+		this.isEditorStillValid = () => !sessionOfEditor(view) && isEditorStillValid();
 		this.viewId = `cm6-${++viewIdCounter}`;
 		this.log = curryLog("[CM6Integration]", "log");
 		this.warn = curryLog("[CM6Integration]", "warn");
