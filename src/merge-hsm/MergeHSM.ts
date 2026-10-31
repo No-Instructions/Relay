@@ -44,6 +44,7 @@ import {
 import type {
 	MergeState,
 	MergeEvent,
+	CM6ChangeEvent,
 	MergeEffect,
 	StatePath,
 	LCAState,
@@ -601,7 +602,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	private _accumulatedEvents: Array<
 		| { type: "REMOTE_UPDATE"; update: Uint8Array; affectsText?: boolean }
 		| { type: "DISK_CHANGED"; contents: string; mtime: number; hash: string }
-		| { type: "CM6_CHANGE"; changes: unknown[]; docText: string; userEvent?: string; viewId?: string }
+		| CM6ChangeEvent
 	> = [];
 
 	// Mode decision during loading state (null = not decided, 'idle' or 'active')
@@ -3783,7 +3784,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				}
 			},
 			accumulateCM6Change: (_hsm, event) => {
-				const e = payload(event);
+				if (event.type !== "CM6_CHANGE") return;
+				const e = event;
 				if (e.docText !== undefined) {
 					this.lastKnownEditorText = e.docText;
 				}
@@ -3796,13 +3798,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 						(ev) => ev.type !== "CM6_CHANGE",
 					);
 				}
-				this._accumulatedEvents.push({
-					type: "CM6_CHANGE",
-					changes: e.changes!,
-					docText: e.docText!,
-					userEvent: e.userEvent,
-					viewId: e.viewId,
-				});
+				this._accumulatedEvents.push({ ...event });
 			},
 			accumulateDiskChanged: (_hsm, event) => {
 				const e = payload(event);
