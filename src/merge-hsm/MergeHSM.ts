@@ -5478,6 +5478,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		contents: string,
 		hash: string | undefined,
 		mtime?: number,
+		readerRepair = false,
 	): void {
 		// The disk record this write's merge was predicated on rides along so
 		// the executor can validate the file still matches it before the
@@ -5490,10 +5491,21 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			type: "WRITE_DISK",
 			guid: this._guid,
 			contents,
+			...(readerRepair ? { readerRepair: true as const } : {}),
 			...(hash ? { hash } : {}),
 			...(mtime !== undefined ? { mtime } : {}),
 			...(expectedDisk ? { expectedDisk } : {}),
 		});
+	}
+
+	/** Whether a queued explicit Reader restore still names current shared state. */
+	acceptsReadRepairDiskWrite(contents: string): boolean {
+		return (
+			this.isReadMode() &&
+			this._fork === null &&
+			this.localDoc?.getText("contents").toString() === contents &&
+			this.remoteDoc?.getText("contents").toString() === contents
+		);
 	}
 
 	private updateDiskFromConfirmedWrite(identity: {
@@ -6734,6 +6746,14 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		this._ingestionTexts = [];
 		this._bridge.resetPendingCounters();
 		this.collectUnpinnedLocalDeletes();
+		const sharedText = this.getReadModeText();
+		// Revert is an explicit request to replace the held local file with the
+		// shared version. The ordinary WRITE_DISK lane excludes active notes;
+		// mark this repair so the executor can admit it only while read authority
+		// and the retained live head still match.
+		if (sharedText !== null) {
+			this.emitWriteDisk(sharedText, undefined, undefined, true);
+		}
 		return { success: true };
 	}
 

@@ -1530,6 +1530,7 @@ export class Document
 					effect.contents,
 					effect.mtime,
 					effect.expectedDisk,
+					effect.readerRepair === true,
 				);
 				break;
 			case "PERSIST_STATE":
@@ -1600,6 +1601,7 @@ export class Document
 		contents: string,
 		mtime?: number,
 		expectedDisk?: { hash: string; mtime: number },
+		readerRepair = false,
 	): Promise<void> {
 		return this.enqueueDiskWrite(async () => {
 			if (expectedDisk && !(await this.diskStillMatchesRecord(expectedDisk))) {
@@ -1619,7 +1621,8 @@ export class Document
 			}
 			const wrote = await this.writeDiskContents(contents, {
 				createIfMissing: true,
-				excludeWhileActive: true,
+				excludeWhileActive: !readerRepair,
+				onlyWhileReadRepair: readerRepair,
 				mtime,
 			});
 			if (wrote) {
@@ -1704,6 +1707,7 @@ export class Document
 			createIfMissing: boolean;
 			onlyIfMissing?: boolean;
 			excludeWhileActive?: boolean;
+			onlyWhileReadRepair?: boolean;
 			/**
 			 * Re-ask the merge machine, immediately before the bytes go out,
 			 * whether the document still accepts a copy from elsewhere. For
@@ -1729,6 +1733,16 @@ export class Document
 			}
 			if (options.excludeWhileActive && this.userLock) {
 				this.warn("[writeDiskContents] Skipping idle write for active document", this.path);
+				return false;
+			}
+			if (
+				options.onlyWhileReadRepair &&
+				!this._hsm?.acceptsReadRepairDiskWrite(contents)
+			) {
+				this.warn(
+					"[writeDiskContents] Skipping stale Reader repair write",
+					this.path,
+				);
 				return false;
 			}
 			if (
