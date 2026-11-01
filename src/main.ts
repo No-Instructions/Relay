@@ -1,4 +1,5 @@
 "use strict";
+import { noteEditorSessionExtension, restoreBeforeUnload, restoreEditorSessions } from "./conflict-note/editorSession";
 import { AttachmentTransfers } from "./AttachmentTransfers";
 
 import type { MergeEvent } from "./merge-hsm/types";
@@ -933,6 +934,7 @@ export default class Live extends Plugin {
 		this.networkStatus = new NetworkStatus(this.timeProvider, HEALTH_URL);
 
 		this.registerView(SERVICE_MESSAGE_VIEW, leaf => new ServiceMessageView(leaf));
+		this.registerEditorExtension(noteEditorSessionExtension);
 		const serviceMessages = new ServiceMessages(this.appId, this.manifest.id, this.timeProvider);
 		this.register(() => serviceMessages.destroy());
 		this.register(this.networkStatus.subscribeServiceMessageSelection(selection => serviceMessages.updateSelection(selection)));
@@ -1628,6 +1630,7 @@ export default class Live extends Plugin {
 			// When this is called, the active editors haven't yet updated.
 			onUnloadFile(old: (...args: unknown[]) => unknown) {
 				return function (this: MarkdownView, file: TFile) {
+					restoreBeforeUnload(this);
 					if (file instanceof TFile) {
 						try {
 							if (typeof this.getViewData === 'function') {
@@ -1994,6 +1997,8 @@ export default class Live extends Plugin {
 			this.savingFlagPolyfill?.disarm();
 		});
 		this.savingFlagPolyfill = null;
+
+		teardownStep("noteEditorSessions.restore", restoreEditorSessions);
 
 		// Cleanup all monkeypatches and destroy the singleton
 		teardownStep("Patcher.destroy", () => {

@@ -16,6 +16,8 @@ import {
 	isParentOf,
 	followRedone,
 	getItemCleanStart,
+	getItem,
+	ContentDeleted,
 	createID,
 	isDeleted,
 	addToDeleteSet,
@@ -31,6 +33,8 @@ import {
 	Transaction,
 	type UndoManager,
 	Doc,
+	snapshot,
+	type Snapshot,
 } from "yjs/dist/src/internals";
 
 import * as time from "lib0/time";
@@ -299,6 +303,47 @@ export class OpCapture {
 		return this.entries.slice(mark).filter((e) => e.origin === origin);
 	}
 
+	/**
+	 * Operations whose visible effects are absent from an authoritative head.
+	 * Provider delivery flags cannot establish server acceptance: the server
+	 * may reject an update after this client has handed it to the provider.
+	 */
+	unpublishedSince(server: Snapshot): CapturedOp | null {
+		const local = snapshot(this.doc);
+		const insertions = new DeleteSet();
+		const deletions = new DeleteSet();
+		for (const [client, end] of local.sv) {
+			const start = server.sv.get(client) ?? 0;
+			if (end > start) addToDeleteSet(insertions, client, start, end - start);
+		}
+		for (const [client, ranges] of local.ds.clients) {
+			const accepted = server.ds.clients.get(client) ?? [];
+			let acceptedIndex = 0;
+			for (const range of ranges) {
+				let start = range.clock;
+				const end = start + range.len;
+				while (acceptedIndex < accepted.length && accepted[acceptedIndex].clock + accepted[acceptedIndex].len <= start) acceptedIndex++;
+				for (let i = acceptedIndex; i < accepted.length; i++) {
+					const other = accepted[i];
+					if (other.clock >= end) break;
+					if (other.clock > start) addToDeleteSet(deletions, client, start, other.clock - start);
+					start = Math.max(start, other.clock + other.len);
+				}
+				if (start < end) addToDeleteSet(deletions, client, start, end - start);
+			}
+		}
+		let changed = false;
+		this.doc.transact(tr => {
+			iterateDeletedStructs(tr, insertions, item => {
+				if (item instanceof Item && !item.deleted && this.scope.some(type => isParentOf(type, item))) changed = true;
+			});
+			iterateDeletedStructs(tr, deletions, item => {
+				if (item instanceof Item && item.deleted && !isDeleted(insertions, item.id) && this.scope.some(type => isParentOf(type, item))) changed = true;
+			});
+		});
+		return changed ? new CapturedOp(deletions, insertions, this, time.getUnixTime()) : null;
+	}
+
 	// -----------------------------------------------------------------------
 	// Mutate
 	// -----------------------------------------------------------------------
@@ -470,7 +515,7 @@ export class OpCapture {
 	 *
 	 * Throws if any entry has been synced to remote (use reverse() instead).
 	 */
-	cancel(entries: CapturedOp[]): void {
+	cancel(entries: CapturedOp[], authoritativeDoc?: Doc): void {
 		if (entries.length === 0) return;
 
 		for (const entry of entries) {
@@ -536,6 +581,27 @@ export class OpCapture {
 									this.scope.some((type) => isParentOf(type, struct)) &&
 									!isDeleted(entry.insertions, struct.id)
 								) {
+									// A rejected deletion may already have been collected
+									// locally. Its accepted content is still on the server
+									// under the same item IDs; refill it before reviving it.
+									if (struct.content instanceof ContentDeleted) {
+										const source = authoritativeDoc && getItem(authoritativeDoc.store, struct.id);
+										if (!(source instanceof Item) || source.deleted || source.content instanceof ContentDeleted) {
+											throw new Error("OpCapture.cancel(): deleted content is unavailable");
+										}
+										const offset = struct.id.clock - source.id.clock;
+										const length = Math.min(struct.length, source.length - offset);
+										if (length < struct.length) {
+											getItemCleanStart(transaction, createID(struct.id.client, struct.id.clock + length));
+										}
+										let content = source.content.copy();
+										if (offset > 0) content = content.splice(offset);
+										if (content.getLength() > length) content.splice(length);
+										struct.content = content;
+										// Item.info bit 2 is Yjs's countable flag; a persisted
+										// ContentDeleted item was decoded without it.
+										struct.info = (struct.info & ~2) | (content.isCountable() ? 2 : 0);
+									}
 									struct.deleted = false;
 									const parent = struct.parent as YType;
 									if (parent._length != null) {
