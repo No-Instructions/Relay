@@ -37,10 +37,8 @@ export class PreviewRenderer extends HasLogging implements ViewRenderer {
 		}
 
 		try {
-			this.debug("Rendering preview from document");
-
-			// Use localText to get editor state from localDoc
 			const text = document.localText;
+			this.debug("Rendering preview from document");
 
 			const internals = this.view as unknown as PreviewViewInternals;
 

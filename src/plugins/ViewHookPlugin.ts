@@ -1,3 +1,4 @@
+import { sessionOf } from "../conflict-note/editorSession";
 import { MarkdownView } from "obsidian";
 import { getPatcher } from "../Patcher";
 import type { EditorView } from "@codemirror/view";
@@ -25,6 +26,7 @@ export class ViewHookPlugin extends HasLogging {
 	private destroyed = false;
 	private saving = false;
 	private previewRestore?: number;
+	private renderQueued = false;
 
 	constructor(view: MarkdownView, document: Document) {
 		super();
@@ -107,21 +109,30 @@ export class ViewHookPlugin extends HasLogging {
 			if (hsm?.awaitState) {
 				await trackPromise(`viewHook:awaitActive:${this.document.guid}`, hsm.awaitState((s) => s.startsWith("active.")));
 			}
+			if (this.destroyed || this.document.destroyed) return;
 			localDoc = this.document.localDoc;
 		}
-		if (this.destroyed || !localDoc) return;
+		if (this.destroyed || this.document.destroyed || !localDoc) return;
 
 		this._ytext = localDoc.getText("contents");
 		this.setupDocumentObserver();
 
-		// Perform initial render using localDoc content
-		this.runWithRelaySaving(() => {
-			(
-				this.view.previewMode as unknown as {
-					renderer: { set(text: string): void };
-				}
-			).renderer.set(this.document.localText);
-		});
+		const hsm = this.document.hsm;
+		let ready = this.canRender();
+		if (hsm) this.unsubscribes.push(hsm.onStateChange((from, to) => {
+			const nextReady = this.canRender();
+			const becameReady = nextReady && !ready;
+			ready = nextReady;
+			const modeChanged = from.startsWith("active.reading") !== to.startsWith("active.reading");
+			if (!nextReady || (!becameReady && !modeChanged) || this.renderQueued) return;
+			// Cancellation can restore deleted structs without a text event.
+			// Refresh when the live document becomes ready, after editor updates.
+			this.renderQueued = true;
+			queueMicrotask(() => {
+				this.renderQueued = false;
+				this.renderAll();
+			});
+		}));
 		this.renderAll();
 
 		void this.document.connect();
@@ -259,13 +270,16 @@ export class ViewHookPlugin extends HasLogging {
 		return !this.destroyed && !!this.view;
 	}
 
-	/**
-	 * Update all UI renderers when document changes
-	 */
+	/** A pending stash still contains unpublished operations in the local document. */
+	private canRender(): boolean {
+		if (this.destroyed || this.document.destroyed || !this.document.localDoc) return false;
+		const hsm = this.document.hsm;
+		return !hsm?.isReadMode() || !hsm.hasFork() || hsm.hasRetainedStash();
+	}
+
 	private renderAll(): void {
-		const viewMode =
-			// @ts-ignore
-			this.view.getMode?.() || this.view.getViewType?.() || "unknown";
+		if (!this.canRender() || sessionOf(this.view)) return;
+		const viewMode = this.view.getMode?.() || this.view.getViewType?.() || "unknown";
 		this.runWithRelaySaving(() => {
 			this.renderers.forEach((renderer) => {
 				try {

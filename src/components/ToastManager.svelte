@@ -14,7 +14,7 @@
 			message={toast.message}
 			details={toast.details}
 			type={toast.type}
-			autoDismiss={toast.autoDismiss}
+			autoDismiss={0}
 			source={toast.source}
 			on:dismiss={() => hideToast(key)}
 		/>

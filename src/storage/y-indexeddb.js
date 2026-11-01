@@ -347,6 +347,9 @@ export class IndexeddbPersistence extends Observable {
      */
     this._pendingWrites = new Set()
     this._compactionRequested = false
+    this._rewriting = false
+    /** @type {Promise<void>} */
+    this._rewriteQueue = Promise.resolve()
     /**
      * Track pending compaction operation for proper teardown.
      * @type {Promise<void>|null}
@@ -551,7 +554,7 @@ export class IndexeddbPersistence extends Observable {
 
   _scheduleCompaction () {
     this._compactionRequested = true
-    if (this._destroyed) return
+    if (this._destroyed || this._rewriting) return
     if (this._storeTimeoutId !== null) {
       this.timeProvider.clearTimeout(this._storeTimeoutId)
     }
@@ -567,7 +570,7 @@ export class IndexeddbPersistence extends Observable {
     if (this._pendingCompaction) return this._pendingCompaction
     this._pendingCompaction = Promise.resolve()
       .then(async () => {
-        if (!this._compactionRequested || this._destroyed || !this.db) return
+        if (!this._compactionRequested || this._destroyed || this._rewriting || !this.db) return
         this._compactionRequested = false
         while (this._pendingWrites.size > 0) {
           await Promise.all(Array.from(this._pendingWrites))
@@ -677,6 +680,56 @@ export class IndexeddbPersistence extends Observable {
     this._dbsize = 0
     this._serverSynced = undefined
     this._origin = undefined
+  }
+
+  /**
+   * Cancellation revives tombstones, which an append-only Yjs update cannot
+   * express. Serialize the resulting document in place of the old update
+   * rows. The caller's GC filter retains any historical snapshots.
+   * @param {() => void} mutate
+   */
+  rewriteState (mutate) {
+    const task = this._rewriteQueue.then(() => this._rewriteState(mutate))
+    this._rewriteQueue = task.catch(() => {})
+    return task
+  }
+
+  /** @param {() => void} mutate */
+  async _rewriteState (mutate) {
+    await this.whenSynced
+    this._rewriting = true
+    try {
+      if (this._storeTimeoutId !== null) {
+        this.timeProvider.clearTimeout(this._storeTimeoutId)
+        this._storeTimeoutId = null
+      }
+      if (this._pendingCompaction) await this._pendingCompaction
+      if (!this.db || this._destroyed) throw new Error('Document persistence is closed')
+      mutate()
+      const update = Y.encodeStateAsUpdate(this.doc)
+      const db = this.db
+      /** @type {Promise<void>} */
+      const p = new Promise((resolve, reject) => {
+        const tx = db.transaction([updatesStoreName], 'readwrite')
+        const store = tx.objectStore(updatesStoreName)
+        store.clear()
+        const request = store.add(update)
+        this._dbsize = 1
+        this._compactionRequested = false
+        metrics.setDbSize(this.name, this._dbsize)
+        tx.oncomplete = () => {
+          this._dbref = Number(request.result) + 1
+          resolve()
+        }
+        tx.onerror = () => reject(tx.error)
+        tx.onabort = () => reject(tx.error)
+      })
+      this._trackWrite(p)
+      await p
+    } finally {
+      this._rewriting = false
+      if (this._compactionRequested) this._scheduleCompaction()
+    }
   }
 
   /**

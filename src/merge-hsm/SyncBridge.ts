@@ -43,6 +43,7 @@ export interface SyncBridgeHost {
 	getRemoteDoc(): Y.Doc | null;
 	/** Whether a fork is active (gates outbound sync) */
 	hasFork(): boolean;
+	hasRetainedStash?(): boolean;
 	/** Emit an effect to subscribers */
 	emitEffect(effect: MergeEffect): void;
 	/** Emit state change notification (for pending counter display) */
@@ -536,7 +537,7 @@ export class SyncBridge {
 		const remoteDoc = this.host.getRemoteDoc();
 		if (!localDoc || !remoteDoc) return;
 
-		if (this.host.hasFork()) {
+		if (this.host.hasFork() && !this.host.hasRetainedStash?.()) {
 			this._syncGate.pendingInbound++;
 			return;
 		}
@@ -751,6 +752,9 @@ export class SyncBridge {
 		// Fork gates outbound sync -- divergence is expected while it exists.
 		if (this.host.hasFork()) return;
 
+		// Cancelled local operations may remain as deleted history. Readers
+		// receive server operations but never publish that retained history.
+		if (this.host.isReadMode() && localDoc.getText("contents").toString() === remoteDoc.getText("contents").toString()) return;
 		if (yjsDocsEqual(localDoc, remoteDoc)) return;
 
 		const localSV = Y.encodeStateVector(localDoc);

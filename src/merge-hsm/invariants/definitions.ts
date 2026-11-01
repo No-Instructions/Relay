@@ -31,12 +31,12 @@ function describeGap(local: YjsSnapshot, target: YjsSnapshot): Record<string, un
 
 /**
  * The open editor matches localDoc in active.tracking, and in
- * active.reading without a preserved fork.
+ * active.reading once unpublished edits have been stashed.
  */
 export const EDITOR_MATCHES_LOCAL_DOC: InvariantDefinition = {
   id: 'editor-matches-local-doc',
   name: 'Editor matches localDoc',
-  description: 'In active.tracking and fork-free active.reading, editor content should match localDoc content',
+  description: 'In active.tracking and settled active.reading, editor content matches localDoc content',
   severity: 'warning',
   trigger: 'on-state',
   applicableStates: ['active.tracking', 'active.reading'],
@@ -44,11 +44,8 @@ export const EDITOR_MATCHES_LOCAL_DOC: InvariantDefinition = {
     if (ctx.editorText === null || ctx.localDocText === null) {
       return null; // Can't check without both values
     }
-    if (ctx.statePath.startsWith('active.reading') && ctx.hasFork) {
-      return null; // Fork freezes localDoc; the editor renders remoteDoc
-    }
-    if (ctx.statePath === 'active.reading.repairing') {
-      return null; // localDoc is being rebuilt
+    if (ctx.statePath.startsWith('active.reading') && ctx.hasFork && !ctx.hasRetainedStash) {
+      return null; // Cancellation has not finished yet.
     }
 
     if (ctx.editorText !== ctx.localDocText) {
@@ -82,7 +79,7 @@ export const LOCAL_NOT_BEHIND_REMOTE: InvariantDefinition = {
     'unless a fork or the local-only gate is deliberately holding remote updates back',
   severity: 'warning',
   trigger: 'on-state',
-  applicableStates: ['active.tracking', 'idle.synced'],
+  applicableStates: ['active.tracking', 'active.reading', 'idle.synced', 'idle.reading'],
   check: (ctx: InvariantCheckContext): InvariantViolation | null => {
     // Checked as the machine enters the state, which is when it claims
     // convergence. Within the state a session can fill the replica before
@@ -90,7 +87,7 @@ export const LOCAL_NOT_BEHIND_REMOTE: InvariantDefinition = {
     if (ctx.previousStatePath === ctx.statePath) return null;
     // A fork preserves local state against the remote, and the local-only
     // gate withholds inbound updates: either keeps local behind by design.
-    if (ctx.hasFork || ctx.localOnly) return null;
+    if ((ctx.hasFork && !ctx.hasRetainedStash) || ctx.localOnly) return null;
     // Compared with the remote head the machine has been handed, and only
     // where the live replica holds it. A provider can write the next update
     // into the replica while the merge of the previous one is finishing,
@@ -250,9 +247,6 @@ export const ACTIVE_HAS_LOCAL_DOC: InvariantDefinition = {
     'active.conflict.resolving',
   ],
   check: (ctx: InvariantCheckContext): InvariantViolation | null => {
-    if (ctx.statePath === 'active.reading.repairing') {
-      return null; // localDoc is intentionally absent during the rebuild
-    }
     if (ctx.statePath.startsWith('active.') && ctx.localDocText === null) {
       return {
         invariantId: 'active-has-local-doc',
