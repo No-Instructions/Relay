@@ -5,6 +5,7 @@ import type { PositionedChange } from "../types";
 export interface BufferedCM6Edit {
 	changes: PositionedChange[];
 	docText: string;
+	beforeText?: string;
 	userEvent?: string;
 }
 
@@ -12,6 +13,7 @@ export interface BufferedCM6ReplayEvent {
 	type: "CM6_CHANGE";
 	changes: PositionedChange[];
 	docText: string;
+	beforeText?: string;
 	viewId: string;
 	userEvent?: string;
 }
@@ -65,6 +67,7 @@ export function buildBufferedCM6ReplayEvents(
 		type: "CM6_CHANGE",
 		changes: edit.changes,
 		docText: edit.docText,
+		...(edit.beforeText !== undefined ? { beforeText: edit.beforeText } : {}),
 		viewId,
 		...(edit.userEvent !== undefined ? { userEvent: edit.userEvent } : {}),
 	}));

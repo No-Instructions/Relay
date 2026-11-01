@@ -45,6 +45,7 @@ export interface CheckableHSM {
   getRemoteDoc(): Y.Doc | null;
   getSyncStatus(): SyncStatus;
   hasFork(): boolean;
+  hasRetainedStash?(): boolean;
   readonly isLocalOnly: boolean;
   getProcessedRemoteHead(): YjsSnapshot | null;
   hasPendingDiskConfirmation(): boolean;
@@ -357,6 +358,7 @@ export class InvariantChecker {
       },
       syncStatus: syncStatus.status,
       hasFork: this.hsm.hasFork(),
+      hasRetainedStash: this.hsm.hasRetainedStash?.() ?? false,
       localOnly: this.hsm.isLocalOnly,
       processedRemote: this.hsm.getProcessedRemoteHead(),
       diskWritePending: this.hsm.hasPendingDiskConfirmation(),

@@ -12,6 +12,7 @@ import type * as Y from 'yjs';
 import type {
   MergeState,
   MergeEvent,
+  CM6ChangeEvent,
   MergeEffect,
   StatePath,
   SyncStatus,
@@ -148,7 +149,7 @@ export type SerializableEvent =
   | { type: 'DISK_METADATA_CHANGED'; mtime: number; hash?: string }
   | { type: 'REMOTE_UPDATE'; update: string; affectsText?: boolean } // update is base64
   | { type: 'SAVE_COMPLETE'; mtime: number; hash: string }
-  | { type: 'CM6_CHANGE'; changes: Array<{ from: number; to: number; insert: string }>; docText: string }
+  | CM6ChangeEvent
   | { type: 'PROVIDER_SYNCED' }
   | { type: 'CONNECTED' }
   | { type: 'DISCONNECTED' }
