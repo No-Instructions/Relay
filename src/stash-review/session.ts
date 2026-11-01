@@ -68,9 +68,7 @@ export async function saveStashCopy(app: App, review: StashReviewSession): Promi
 	if (!(source instanceof TFile)) throw new Error("The original note is no longer available.");
 	const base = source.path.slice(0, -(source.extension.length + 1));
 	const path = (app.vault as unknown as NativeAvailablePath).getAvailablePath(base, source.extension);
-	const file = await app.vault.copy(source, path);
-	// Duplicate copies the current file; the review's captured stash is the copy's content.
-	await app.vault.modify(file, review.stash);
+	const file = await app.vault.create(path, review.stash);
 	try { await review.discard(); }
 	catch (error) { throw new StashCopySavedError(file, error); }
 	return file;
