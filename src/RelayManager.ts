@@ -164,6 +164,9 @@ interface Collection<D, A> {
 	delete(id: string): void;
 }
 
+type RecordIngestGuard = (record: RecordModel) => boolean;
+const ingestEveryRecord: RecordIngestGuard = () => true;
+
 /**
  * Marker interface for records that maintain a PocketBase realtime
  * per-record subscription in addition to the top-level collection stream.
@@ -174,6 +177,9 @@ interface HasRecordSubscription {
 	id: string;
 	collectionName: string;
 	offRecordSubscription?: Unsubscriber;
+	recordSubscriptionGeneration: number;
+	recordSubscriptionAttempt?: Promise<boolean>;
+	recordSubscriptionToken?: object;
 }
 
 function hasRecordSubscription(x: unknown): x is HasRecordSubscription {
@@ -182,7 +188,7 @@ function hasRecordSubscription(x: unknown): x is HasRecordSubscription {
 		x !== null &&
 		typeof (x as HasRecordSubscription).id === "string" &&
 		typeof (x as HasRecordSubscription).collectionName === "string" &&
-		"offRecordSubscription" in x
+		typeof (x as HasRecordSubscription).recordSubscriptionGeneration === "number"
 	);
 }
 
@@ -272,6 +278,9 @@ class StorageQuotaAuto
 {
 	public readonly collectionName = "storage_quotas";
 	public offRecordSubscription?: Unsubscriber;
+	public recordSubscriptionGeneration = -1;
+	public recordSubscriptionAttempt?: Promise<boolean>;
+	public recordSubscriptionToken?: object;
 
 	constructor(
 		private storageQuota: StorageQuotaDAO,
@@ -336,11 +345,12 @@ class StorageQuotaCollection
 	collectionName: string = "storage_quotas";
 
 	constructor(
-		private subscribeRecord: (
-			collectionName: string,
-			recordId: string,
-			expand: string[],
-		) => Promise<Unsubscriber | undefined>,
+		private ensureRecordSubscription: (
+			record: HasRecordSubscription,
+		) => Promise<boolean>,
+		private releaseRecordSubscription: (
+			record: HasRecordSubscription,
+		) => void,
 		public storageQuota: ObservableMap<string, StorageQuota>,
 		private relays: ObservableMap<string, Relay>,
 	) {}
@@ -350,6 +360,11 @@ class StorageQuotaCollection
 	}
 
 	clear() {
+		for (const quota of this.storageQuota.values()) {
+			if (hasRecordSubscription(quota)) {
+				this.releaseRecordSubscription(quota);
+			}
+		}
 		this.storageQuota.clear();
 	}
 
@@ -365,16 +380,16 @@ class StorageQuotaCollection
 			return existingStorageQuota;
 		}
 		const storageQuota = new StorageQuotaAuto(update, this.relays);
-		void this.subscribeRecord(this.collectionName, update.id, []).then((unsub) => {
-			storageQuota.offRecordSubscription = unsub;
-		});
 		this.storageQuota.set(update.id, storageQuota);
+		void this.ensureRecordSubscription(storageQuota);
 		return storageQuota;
 	}
 
 	delete(id: string) {
 		const quota = this.storageQuota.get<StorageQuotaAuto>(id);
-		quota?.offRecordSubscription?.();
+		if (quota) {
+			this.releaseRecordSubscription(quota);
+		}
 		this.storageQuota.delete(id);
 	}
 }
@@ -994,25 +1009,34 @@ class Store extends HasLogging {
 		return this.ingestBatch(result?.items);
 	}
 
-	ingestBatch<T>(records?: RecordModel[]): (T | undefined)[] | undefined {
+	ingestBatch<T>(
+		records?: RecordModel[],
+		guard: RecordIngestGuard = ingestEveryRecord,
+	): (T | undefined)[] | undefined {
 		if (!records) {
 			return;
 		}
 		return records.map((record) => {
-			return this.ingest(record);
+			return this.ingest(record, guard);
 		});
 	}
 
-	ingest<T>(record?: RecordModel): T | undefined {
+	ingest<T>(
+		record?: RecordModel,
+		guard: RecordIngestGuard = ingestEveryRecord,
+	): T | undefined {
 		const postie = PostOffice.getInstance();
 		postie.beginTransaction();
-		const result = this._ingest<T>(record);
+		const result = this._ingest<T>(record, guard);
 		postie.commitTransaction();
 		return result;
 	}
 
-	private _ingest<T>(record?: RecordModel): T | undefined {
-		if (!record) {
+	private _ingest<T>(
+		record?: RecordModel,
+		guard: RecordIngestGuard = ingestEveryRecord,
+	): T | undefined {
+		if (!record || !guard(record)) {
 			return;
 		}
 		let result;
@@ -1045,9 +1069,9 @@ class Store extends HasLogging {
 		if (record.expand) {
 			for (const [, value] of Object.entries(record.expand)) {
 				if (Array.isArray(value)) {
-					this.ingestBatch(value);
+					this.ingestBatch(value, guard);
 				} else {
-					this.ingest(value as RecordModel);
+					this.ingest(value as RecordModel, guard);
 				}
 			}
 		}
@@ -1598,6 +1622,9 @@ export class RelayManager extends HasLogging {
 	private _subscribing?: Promise<boolean>;
 	private _unhealthyTicks = 0;
 	private _rolesHydrated = false;
+	private _realtimeRegistrationGeneration = 0;
+	private _realtimeMutationGeneration = 0;
+	private _realtimeRecordGenerations = new Map<string, number>();
 	// Private folders this client created whose creator grant has not arrived
 	// yet. The server writes that grant itself and delivers it over the
 	// realtime feed, not in the create response, so until the first role record
@@ -1727,7 +1754,8 @@ export class RelayManager extends HasLogging {
 			this.users,
 		);
 		const storageQuotaCollection = new StorageQuotaCollection(
-			this.subscribeRecord.bind(this),
+			this.ensureRecordSubscription.bind(this),
+			this.releaseRecordSubscription.bind(this),
 			this.storageQuotas,
 			this.relays,
 		);
@@ -1904,12 +1932,35 @@ export class RelayManager extends HasLogging {
 		e: RecordSubscription<RecordModel>,
 	) => {
 		this.debug(`[Event]: ${collectionName}`, e.action, e.record);
+		if (RECONCILED_COLLECTIONS.includes(collectionName)) {
+			this._realtimeMutationGeneration++;
+			this._realtimeRecordGenerations.set(
+				this.realtimeRecordKey(collectionName, e.record.id),
+				this._realtimeMutationGeneration,
+			);
+		}
 		if (e.action === "delete") {
 			this.store?.delete(e.record);
 		} else {
 			this.store?.ingest(e.record);
 		}
 	};
+
+	private realtimeRecordKey(collectionName: string, id: string): string {
+		return `${collectionName}:${id}`;
+	}
+
+	private realtimeRecordChangedSince(
+		collectionName: string,
+		id: string,
+		generation: number,
+	): boolean {
+		return (
+			(this._realtimeRecordGenerations.get(
+				this.realtimeRecordKey(collectionName, id),
+			) ?? 0) > generation
+		);
+	}
 
 	/**
 	 * Keep this client's realtime feed registered on a live SSE stream.
@@ -1952,11 +2003,16 @@ export class RelayManager extends HasLogging {
 	}
 
 	private async _register(pb: PocketBase): Promise<boolean> {
-		if (this._isSubscribed) {
+		const wasSubscribed = this._isSubscribed;
+		this._isSubscribed = false;
+		if (wasSubscribed) {
 			this.log("realtime feed is down, reconnecting");
 		}
 		await pb.realtime.unsubscribe();
-		this._isSubscribed = true;
+		if (this.destroyed || this.pb !== pb) {
+			return false;
+		}
+		this._realtimeRegistrationGeneration++;
 		const results = await Promise.allSettled(
 			REALTIME_COLLECTIONS.map((collection) =>
 				pb
@@ -1976,10 +2032,15 @@ export class RelayManager extends HasLogging {
 		);
 		if (failure) {
 			this.warn("realtime subscribe failed", failure.reason);
-			this._isSubscribed = false;
 			return false;
 		}
-		await this.resubscribeRecords();
+		if (!(await this.resubscribeRecords())) {
+			return false;
+		}
+		if (this.destroyed || this.pb !== pb) {
+			return false;
+		}
+		this._isSubscribed = true;
 		return true;
 	}
 
@@ -2003,7 +2064,7 @@ export class RelayManager extends HasLogging {
 		) {
 			return;
 		}
-		if (pb.realtime.isConnected) {
+		if (this._isSubscribed && pb.realtime.isConnected) {
 			this._unhealthyTicks = 0;
 			return;
 		}
@@ -2055,22 +2116,107 @@ export class RelayManager extends HasLogging {
 	 * subscriptions. Safe to call repeatedly; each record's existing
 	 * subscription handle is released before a fresh one is installed.
 	 */
-	private async resubscribeRecords(): Promise<void> {
-		if (!this.store?.collections) return;
+	private async resubscribeRecords(): Promise<boolean> {
+		if (!this.store?.collections) return true;
+		let success = true;
 		for (const collection of this.store.collections.values()) {
 			for (const item of collection.items()) {
 				if (!hasRecordSubscription(item)) continue;
-				try {
-					item.offRecordSubscription?.();
-				} catch (e) {
-					this.debug("stale record unsubscribe failed", e);
+				if (!(await this.ensureRecordSubscription(item))) {
+					success = false;
 				}
-				item.offRecordSubscription = await this.subscribeRecord(
-					item.collectionName,
-					item.id,
-					[],
-				);
 			}
+		}
+		return success;
+	}
+
+	/** Install exactly one per-record listener for the current feed generation. */
+	private ensureRecordSubscription(
+		item: HasRecordSubscription,
+	): Promise<boolean> {
+		const generation = this._realtimeRegistrationGeneration;
+		if (item.recordSubscriptionGeneration === generation) {
+			if (item.recordSubscriptionAttempt) {
+				return item.recordSubscriptionAttempt;
+			}
+			if (item.offRecordSubscription) {
+				return Promise.resolve(true);
+			}
+		}
+
+		const previous = item.offRecordSubscription;
+		item.offRecordSubscription = undefined;
+		item.recordSubscriptionGeneration = generation;
+		const token = {};
+		item.recordSubscriptionToken = token;
+		const attempt = (async () => {
+			if (previous) {
+				try {
+					await previous();
+				} catch (error) {
+					this.debug("stale record unsubscribe failed", error);
+				}
+			}
+			const unsubscribe = await this.subscribeRecord(
+				item.collectionName,
+				item.id,
+				[],
+			);
+			if (!unsubscribe) {
+				return false;
+			}
+			if (
+				this.destroyed ||
+				item.recordSubscriptionGeneration !== generation ||
+				item.recordSubscriptionToken !== token
+			) {
+				await unsubscribe();
+				return false;
+			}
+			item.offRecordSubscription = unsubscribe;
+			return true;
+		})()
+			.catch((error) => {
+				this.warn("record subscribe failed", item.collectionName, item.id, error);
+				if (item.recordSubscriptionToken === token) {
+					item.offRecordSubscription = undefined;
+				}
+				return false;
+			})
+			.then((subscribed) => {
+				if (
+					!subscribed &&
+					item.recordSubscriptionToken === token &&
+					this._realtimeRegistrationGeneration === generation
+				) {
+					this._isSubscribed = false;
+				}
+				return subscribed;
+			})
+			.finally(() => {
+				if (item.recordSubscriptionToken === token) {
+					item.recordSubscriptionAttempt = undefined;
+					item.recordSubscriptionToken = undefined;
+				}
+			});
+		item.recordSubscriptionAttempt = attempt;
+		return attempt;
+	}
+
+	/** Invalidate a record listener; an in-flight attempt cleans itself up. */
+	private releaseRecordSubscription(item: HasRecordSubscription): void {
+		item.recordSubscriptionGeneration = -1;
+		item.recordSubscriptionAttempt = undefined;
+		item.recordSubscriptionToken = undefined;
+		const unsubscribe = item.offRecordSubscription;
+		item.offRecordSubscription = undefined;
+		if (!unsubscribe) return;
+		try {
+			void Promise.resolve(unsubscribe()).catch((error) => {
+				this.debug("record unsubscribe failed", error);
+			});
+		} catch (error) {
+			this.debug("record unsubscribe failed", error);
 		}
 	}
 
@@ -2164,6 +2310,15 @@ export class RelayManager extends HasLogging {
 			return this.pb.collection(collection).getFullList<RecordModel>(options);
 		};
 
+		const realtimeGeneration = this._realtimeMutationGeneration;
+		const ingestIfNotNewerLive: RecordIngestGuard = (record) =>
+			!RECONCILED_COLLECTIONS.includes(record.collectionName) ||
+			!this.realtimeRecordChangedSince(
+				record.collectionName,
+				record.id,
+				realtimeGeneration,
+			);
+
 		// Snapshot the reconciled records held before the lists are requested.
 		// A record that arrives over the realtime feed while the lists are in
 		// flight is absent from both and must not be mistaken for a deletion.
@@ -2208,7 +2363,7 @@ export class RelayManager extends HasLogging {
 					return;
 				}
 				for (const record of result) {
-					this.store.ingest(record);
+					this.store.ingest(record, ingestIfNotNewerLive);
 				}
 				const stale = held.get(name);
 				if (!stale) {
@@ -2221,7 +2376,9 @@ export class RelayManager extends HasLogging {
 				// contains was deleted, or became invisible, without a realtime
 				// event reaching this client.
 				for (const id of stale) {
-					this.store.cascade(name, id);
+					if (!this.realtimeRecordChangedSince(name, id, realtimeGeneration)) {
+						this.store.cascade(name, id);
+					}
 				}
 			}),
 		);
@@ -2623,6 +2780,7 @@ export class RelayManager extends HasLogging {
 		this._offFolderRoles?.();
 		this._offFolderRoles = undefined;
 		this.pendingCreatorGrants.clear();
+		this._realtimeRecordGenerations.clear();
 		this.pb?.cancelAllRequests();
 		void this.pb?.realtime?.unsubscribe();
 		this._isSubscribed = false;
