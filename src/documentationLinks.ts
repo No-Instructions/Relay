@@ -5,9 +5,6 @@ const documentationIds = {
 	// Name conflict dialog: names differ only in capitalization, including parent folders.
 	// Explain why some devices cannot download both spellings and how to rename either safely.
 	"name-conflicts": "3dfb637865e1be1",
-	// Local edits held dialog: Reader access prevents syncing earlier local edits.
-	// Explain how to review, retain, or discard those edits and restore them with write access.
-	"read-only-content-stashed": "80ff1f2be92d6ee",
 } as const;
 
 export type DocsPage = keyof typeof documentationIds;
