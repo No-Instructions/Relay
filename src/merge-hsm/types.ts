@@ -735,6 +735,8 @@ export interface WriteDiskEffect {
 	type: "WRITE_DISK";
 	guid: string;
 	contents: string;
+	/** This write is the explicit shared-version restore chosen by a Reader. */
+	readerRepair?: true;
 	/** Hash of the bytes this effect intends to write. */
 	hash?: string;
 	mtime?: number;
