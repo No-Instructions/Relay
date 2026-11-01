@@ -130,6 +130,9 @@ interface DebugSettings {
 	debugging: boolean;
 }
 
+/** How often the realtime feed's health is checked while the network is up. */
+const REALTIME_WATCHDOG_INTERVAL_MS = 30_000;
+
 const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
 	debugging: false,
 };
@@ -1033,6 +1036,14 @@ export default class Live extends Plugin {
 				});
 			}
 			this.networkStatus.start({ monitorConnectivity: !Platform.isIosApp });
+
+			// The PocketBase client abandons its realtime stream for good after
+			// some failures and never says so, so poll the feed's health while
+			// the network is up. RelayManager debounces and refetches as needed.
+			this.timeProvider.setInterval(() => {
+				if (!this.networkStatus.online) return;
+				void this.relayManager?.ensureRealtime();
+			}, REALTIME_WATCHDOG_INTERVAL_MS);
 
 			this.registerView(
 				VIEW_TYPE_DIFFERENCES,

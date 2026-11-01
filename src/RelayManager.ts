@@ -1546,6 +1546,37 @@ class RelayAuto
 	}
 }
 
+/** The collection streams every client keeps open, with their expands. */
+const REALTIME_COLLECTIONS = [
+	{
+		name: "relays",
+		expand: [
+			"relay_invitations_via_relay",
+			"shared_folders_via_relay",
+			"shared_folders_via_relay.creator",
+			"subscriptions_via_relay",
+			"subscriptions_via_relay.relay",
+			"subscriptions_via_relay.relay.storage_quota",
+			"creator",
+		],
+	},
+	{ name: "relay_invitations", expand: ["relay"] },
+	{ name: "providers", expand: [] },
+	{ name: "relay_roles", expand: ["user", "relay"] },
+	{ name: "shared_folders", expand: ["relay", "creator"] },
+	{ name: "shared_folder_roles", expand: ["user", "shared_folder"] },
+	{ name: "subscriptions", expand: ["user", "relay"] },
+];
+
+/**
+ * Collections whose full list is complete for the signed-in user, so a
+ * record held locally but missing from a fresh list is known to be gone.
+ */
+const RECONCILED_COLLECTIONS = ["relay_roles", "shared_folder_roles"];
+
+/** Watchdog ticks between full refetches while the realtime feed stays down. */
+export const FALLBACK_REFRESH_TICKS = 10;
+
 export class RelayManager extends HasLogging {
 	providers: ObservableMap<string, Provider>;
 	relays: ObservableMap<string, Relay>;
@@ -1564,6 +1595,8 @@ export class RelayManager extends HasLogging {
 	_offLoginManager: Unsubscriber;
 	_offFeatureFlags: Unsubscriber;
 	private _isSubscribed = false;
+	private _subscribing?: Promise<boolean>;
+	private _unhealthyTicks = 0;
 	private _rolesHydrated = false;
 	// Private folders this client created whose creator grant has not arrived
 	// yet. The server writes that grant itself and delivers it over the
@@ -1878,52 +1911,115 @@ export class RelayManager extends HasLogging {
 		}
 	};
 
-	async subscribe() {
+	/**
+	 * Keep this client's realtime feed registered on a live SSE stream.
+	 *
+	 * Resolves true once every collection stream, and every per-record
+	 * subscription held by the store, is registered on a connected stream.
+	 * A call while the feed is healthy is a no-op, and a call while an
+	 * attempt is already in flight shares that attempt.
+	 *
+	 * The PocketBase client gives up on its stream for good in two cases:
+	 * when the very first connection attempt fails, and when a superseded
+	 * subscription submit errors after a newer stream took over. It keeps
+	 * the listener closures either way, and its subscribe() stacks closures
+	 * per topic without dedup, so a registration first wipes the client's
+	 * subscription map; otherwise every event would be handled twice.
+	 */
+	subscribe(): Promise<boolean> {
+		if (this._subscribing) {
+			return this._subscribing;
+		}
+		const pb = this.pb;
 		if (
-			!this.pb ||
-			!this.pb.authStore.isValid ||
-			this.pb.authStore.model?.id === undefined
+			!pb ||
+			!pb.authStore.isValid ||
+			pb.authStore.model?.id === undefined
 		) {
 			this.warn("unable to subscribe, pocketbase client is not ready");
-			return;
+			return Promise.resolve(false);
 		}
-		const collections = [
-			{
-				name: "relays",
-				expand: [
-					"relay_invitations_via_relay",
-					"shared_folders_via_relay",
-					"shared_folders_via_relay.creator",
-					"subscriptions_via_relay",
-					"subscriptions_via_relay.relay",
-					"subscriptions_via_relay.relay.storage_quota",
-					"creator",
-				],
-			},
-			{ name: "relay_invitations", expand: ["relay"] },
-			{ name: "providers", expand: [] },
-			{ name: "relay_roles", expand: ["user", "relay"] },
-			{ name: "shared_folders", expand: ["relay", "creator"] },
-			{ name: "shared_folder_roles", expand: ["user", "shared_folder"] },
-			{ name: "subscriptions", expand: ["user", "relay"] },
-		];
+		if (this._isSubscribed && pb.realtime.isConnected) {
+			return Promise.resolve(true);
+		}
+		const attempt = this._register(pb).finally(() => {
+			if (this._subscribing === attempt) {
+				this._subscribing = undefined;
+			}
+		});
+		this._subscribing = attempt;
+		return attempt;
+	}
 
-		// Idempotent. PocketBase's subscribe() stacks listener closures onto
-		// a per-topic array with no dedup, so calling this twice would fire
-		// our _handleEvent twice per server event. offline(), logout(), and
-		// destroy() clear the flag so the next call re-registers.
+	private async _register(pb: PocketBase): Promise<boolean> {
 		if (this._isSubscribed) {
+			this.log("realtime feed is down, reconnecting");
+		}
+		await pb.realtime.unsubscribe();
+		this._isSubscribed = true;
+		const results = await Promise.allSettled(
+			REALTIME_COLLECTIONS.map((collection) =>
+				pb
+					.collection(collection.name)
+					.subscribe("*", (e) => this._handleEvent(collection.name, e), {
+						expand: collection.expand.join(","),
+						fetch: customFetch,
+					}),
+			),
+		);
+		if (this.destroyed || this.pb !== pb) {
+			return false;
+		}
+		const failure = results.find(
+			(result): result is PromiseRejectedResult =>
+				result.status === "rejected",
+		);
+		if (failure) {
+			this.warn("realtime subscribe failed", failure.reason);
+			this._isSubscribed = false;
+			return false;
+		}
+		await this.resubscribeRecords();
+		return true;
+	}
+
+	/**
+	 * Watchdog tick, driven by the plugin while the network is up. Reconnects
+	 * a feed the PocketBase client has abandoned, then refetches the store so
+	 * records that changed while the feed was down arrive anyway. A stream in
+	 * the middle of the client's own reconnect also reports disconnected, so
+	 * two consecutive unhealthy ticks are required before intervening. While
+	 * the feed stays down, the store is still refetched every
+	 * FALLBACK_REFRESH_TICKS ticks, so the plugin converges without realtime.
+	 */
+	async ensureRealtime(): Promise<void> {
+		const pb = this.pb;
+		if (
+			this.destroyed ||
+			!pb ||
+			!pb.authStore.isValid ||
+			pb.authStore.model?.id === undefined ||
+			this._subscribing
+		) {
 			return;
 		}
-		this._isSubscribed = true;
-
-		for (const collection of collections) {
-			void this.pb
-				.collection(collection.name)
-				.subscribe("*", (e) => this._handleEvent(collection.name, e), {
-					expand: collection.expand.join(","),
-					fetch: customFetch,
-				});
+		if (pb.realtime.isConnected) {
+			this._unhealthyTicks = 0;
+			return;
+		}
+		this._unhealthyTicks++;
+		if (this._unhealthyTicks < 2) {
+			return;
+		}
+		const connected = await this.subscribe();
+		if (this.destroyed) {
+			return;
+		}
+		if (connected) {
+			this._unhealthyTicks = 0;
+			await this.update();
+		} else if (this._unhealthyTicks % FALLBACK_REFRESH_TICKS === 0) {
+			await this.update();
 		}
 	}
 
@@ -1940,17 +2036,16 @@ export class RelayManager extends HasLogging {
 		if (!this.pb) return;
 		void this.pb.realtime.unsubscribe();
 		this._isSubscribed = false;
+		this._unhealthyTicks = 0;
 	}
 
 	/**
 	 * Rebuild all PocketBase realtime state after coming back online:
-	 * re-register the top-level collection streams, reinstall per-record
-	 * subscriptions on tagged records already in the store, then refresh
-	 * the store contents via a full list fetch.
+	 * register every stream afresh, then refresh the store contents via a
+	 * full list fetch.
 	 */
 	async online(): Promise<void> {
 		await this.subscribe();
-		await this.resubscribeRecords();
 		await this.update();
 	}
 
@@ -2055,13 +2150,13 @@ export class RelayManager extends HasLogging {
 			options:
 				| ((userId: string) => RecordFullListOptions)
 				| RecordFullListOptions = {},
-		): Promise<RecordModel[]> => {
+		): Promise<RecordModel[] | undefined> => {
 			if (
 				!this.pb ||
 				!this.pb.authStore.isValid ||
 				this.pb.authStore.model?.id === undefined
 			) {
-				return Promise.resolve([]);
+				return Promise.resolve(undefined);
 			}
 			if (typeof options === "function") {
 				options = options(this.pb.authStore.model.id as string);
@@ -2069,39 +2164,67 @@ export class RelayManager extends HasLogging {
 			return this.pb.collection(collection).getFullList<RecordModel>(options);
 		};
 
-		const promises = [
-			withPb("users", (userId) => ({
-				filter: `id="${userId}"`,
-				expand: [
-					"relay_roles_via_user",
-					"relay_roles_via_user.relay",
-					"relay_roles_via_user.relay.storage_quota",
-					"relay_roles_via_user.role",
-				].join(","),
-			})),
-			withPb("relay_roles", {
-				expand: "user,role",
-			}),
-			withPb("providers"),
-			withPb("relay_invitations"),
-			withPb("shared_folders", {
-				expand: "relay,creator",
-			}),
-			withPb("shared_folder_roles", {
-				expand: "user,role",
-			}),
-			withPb("subscriptions", {
-				expand: "relay,user",
-			}),
-		];
-		await Promise.all(promises.map(async (promise) => {
-			const result = await promise;
-			for (const record of result) {
-				if (!this.destroyed && this.store) {
-					this.store.ingest(record);
+		// Snapshot the reconciled records held before the lists are requested.
+		// A record that arrives over the realtime feed while the lists are in
+		// flight is absent from both and must not be mistaken for a deletion.
+		const held = new Map<string, Set<string>>();
+		for (const name of RECONCILED_COLLECTIONS) {
+			const ids = new Set<string>();
+			for (const item of this.store?.collections.get(name)?.items() ?? []) {
+				if (hasId(item)) {
+					ids.add(item.id);
 				}
 			}
-		}));
+			held.set(name, ids);
+		}
+
+		const fetches: [string, Promise<RecordModel[] | undefined>][] = [
+			[
+				"users",
+				withPb("users", (userId) => ({
+					filter: `id="${userId}"`,
+					expand: [
+						"relay_roles_via_user",
+						"relay_roles_via_user.relay",
+						"relay_roles_via_user.relay.storage_quota",
+						"relay_roles_via_user.role",
+					].join(","),
+				})),
+			],
+			["relay_roles", withPb("relay_roles", { expand: "user,role" })],
+			["providers", withPb("providers")],
+			["relay_invitations", withPb("relay_invitations")],
+			["shared_folders", withPb("shared_folders", { expand: "relay,creator" })],
+			[
+				"shared_folder_roles",
+				withPb("shared_folder_roles", { expand: "user,role" }),
+			],
+			["subscriptions", withPb("subscriptions", { expand: "relay,user" })],
+		];
+		await Promise.all(
+			fetches.map(async ([name, request]) => {
+				const result = await request;
+				if (!result || this.destroyed || !this.store) {
+					return;
+				}
+				for (const record of result) {
+					this.store.ingest(record);
+				}
+				const stale = held.get(name);
+				if (!stale) {
+					return;
+				}
+				for (const record of result) {
+					stale.delete(record.id);
+				}
+				// The list is complete for this user, so a record it no longer
+				// contains was deleted, or became invisible, without a realtime
+				// event reaching this client.
+				for (const id of stale) {
+					this.store.cascade(name, id);
+				}
+			}),
+		);
 		if (authenticated && !this.destroyed && this.store && !this._rolesHydrated) {
 			this._rolesHydrated = true;
 			// Shared folders derive their role-policy answers on role-map
