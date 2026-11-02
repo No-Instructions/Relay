@@ -23,22 +23,47 @@ export function isRealtimeSubmit(url: string, method?: string): boolean {
 	return path.endsWith("/api/realtime");
 }
 
-/**
- * Sends a realtime subscription submit through the stream's network stack.
- *
- * After every (re)connect of its SSE stream the PocketBase client registers
- * the subscriptions by POSTing them to `/api/realtime` with the stream's
- * client id. The server accepts that POST only from the address the stream
- * came from. The stream is opened by the platform's EventSource, while
- * Relay's request transport may leave through a different stack with a
- * different address, as it does on iOS, where WebKit and CFNetwork can
- * egress separately. Every such POST is then refused, and the client either
- * gives up on the stream or reconnects in a loop. Sending this one request
- * through the same stack as the stream keeps both addresses equal. Every
- * other request keeps the transport the caller chose.
- */
-export function routeRealtimeSubmit(url: string, options: SendOptions): void {
-	if (isRealtimeSubmit(url, options.method)) {
-		options.fetch = streamTransport;
+/** The stream a submit was made for, read from the body the client built. */
+function submittedClientId(body: unknown): string | undefined {
+	try {
+		const parsed = typeof body === "string" ? (JSON.parse(body) as unknown) : body;
+		const clientId = (parsed as { clientId?: unknown } | null)?.clientId;
+		return typeof clientId === "string" ? clientId : undefined;
+	} catch {
+		return undefined;
 	}
+}
+
+/** The rejection the client already ignores for a subscription submit. */
+function replacedStream(): DOMException {
+	return new DOMException(
+		"Realtime subscription submit belongs to a replaced stream",
+		"AbortError",
+	);
+}
+
+export function routeRealtimeSubmit(
+	url: string,
+	options: SendOptions,
+	currentClientId: () => string,
+	transport: Transport = streamTransport,
+): void {
+	if (!isRealtimeSubmit(url, options.method)) {
+		return;
+	}
+	const submitted = submittedClientId(options.body);
+	const owned = submitted !== undefined && currentClientId() === submitted;
+	const stale = () => owned && currentClientId() !== submitted;
+	options.fetch = async (input, init) => {
+		let response: Response;
+		try {
+			response = await transport(input, init);
+		} catch (error) {
+			throw stale() ? replacedStream() : error;
+		}
+		if (response.status >= 400 && stale()) {
+			throw replacedStream();
+		}
+		return response;
+	};
 }

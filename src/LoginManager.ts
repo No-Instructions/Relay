@@ -210,26 +210,10 @@ export class LoginManager extends Observable<LoginManager> {
 		endpointManager: EndpointManager,
 	) {
 		super();
-		const pbLog = curryLog("[Pocketbase]", "debug");
 		this.authStore = new LocalAuthStore(`pocketbase_auth_${vaultName}`);
 		this.endpointManager = endpointManager;
 		this.updateNetworkMetricDomains();
-		// Concurrent consumers must not cancel one another when the transport honors signals.
-		this.pb = new PocketBase(this.endpointManager.getAuthUrl(), this.authStore).autoCancellation(false);
-		this.pb.beforeSend = (url, options) => {
-			pbLog(url, options);
-			if (!this.pb.authStore.isValid && this.user) {
-				this.logout();
-			}
-			options.fetch = customFetch;
-			routeRealtimeSubmit(url, options);
-			options.headers = Object.assign(
-				{},
-				options.headers,
-				getRelayRequestHeaders(),
-			);
-			return { url, options };
-		};
+		this.pb = this.createPocketBase(this.endpointManager.getAuthUrl());
 		this.refreshToken();
 		timeProvider.setInterval(() => this.refreshToken(), 86400000);
 		this.unsubscribes.push(
@@ -443,26 +427,32 @@ export class LoginManager extends Observable<LoginManager> {
 			void this.pb.realtime.unsubscribe();
 
 			// Recreate PocketBase instance with new auth URL
-			const pbLog = curryLog("[Pocketbase]", "debug");
-			this.pb = new PocketBase(this.endpointManager.getAuthUrl(), this.authStore).autoCancellation(false);
-			this.pb.beforeSend = (url, options) => {
-				pbLog(url, options);
-				if (!this.pb.authStore.isValid && this.user) {
-					this.logout();
-				}
-				options.fetch = customFetch;
-				routeRealtimeSubmit(url, options);
-				options.headers = Object.assign(
-					{},
-					options.headers,
-					getRelayRequestHeaders(),
-				);
-				return { url, options };
-			};
+			this.pb = this.createPocketBase(this.endpointManager.getAuthUrl());
 			this.log("Updated PocketBase instance with validated endpoints");
 		}
 		
 		return result;
+	}
+
+	private createPocketBase(authUrl: string): PocketBase {
+		const pbLog = curryLog("[Pocketbase]", "debug");
+		// Concurrent consumers must not cancel one another when the transport honors signals.
+		const pb = new PocketBase(authUrl, this.authStore).autoCancellation(false);
+		pb.beforeSend = (url, options) => {
+			pbLog(url, options);
+			if (!this.pb.authStore.isValid && this.user) {
+				this.logout();
+			}
+			options.fetch = customFetch;
+			routeRealtimeSubmit(url, options, () => pb.realtime.clientId);
+			options.headers = Object.assign(
+				{},
+				options.headers,
+				getRelayRequestHeaders(),
+			);
+			return { url, options };
+		};
+		return pb;
 	}
 
 	get hasUser() {
