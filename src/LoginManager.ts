@@ -24,6 +24,7 @@ import {
 	setNetworkDomainUrls,
 } from "./customFetch";
 import { LocalAuthStore } from "./pocketbase/LocalAuthStore";
+import { routeRealtimeSubmit } from "./pocketbase/realtimeSubmit";
 import type { TimeProvider } from "./TimeProvider";
 import { type ServerFlags, FeatureFlagManager } from "./flagManager";
 import type { NamespacedSettings } from "./SettingsStorage";
@@ -221,6 +222,7 @@ export class LoginManager extends Observable<LoginManager> {
 				this.logout();
 			}
 			options.fetch = customFetch;
+			routeRealtimeSubmit(url, options);
 			options.headers = Object.assign(
 				{},
 				options.headers,
@@ -449,6 +451,7 @@ export class LoginManager extends Observable<LoginManager> {
 					this.logout();
 				}
 				options.fetch = customFetch;
+				routeRealtimeSubmit(url, options);
 				options.headers = Object.assign(
 					{},
 					options.headers,
