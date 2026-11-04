@@ -1208,6 +1208,7 @@ export default class Live extends Plugin {
 		relayId?: string,
 		authoritative?: boolean,
 		remote?: RemoteSharedFolder,
+		ownsPath?: (path: string) => boolean,
 	): SharedFolder {
 		// Validate guid before creating settings (prevents invalid UUIDs from being persisted)
 		if (!guid || !S3RN.validateUUID(guid)) {
@@ -1261,6 +1262,7 @@ export default class Live extends Plugin {
 			authoritative,
 			remote,
 			this.attachmentTransfers,
+			ownsPath,
 		);
 		return folder;
 	}
