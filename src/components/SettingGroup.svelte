@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { requireApiVersion } from "obsidian";
+	import { Platform, requireApiVersion } from "obsidian";
 
 	export let list = false;
 
@@ -8,7 +8,7 @@
 </script>
 
 {#if useGroupLayout}
-	<div class="setting-group" class:mod-list={list}>
+	<div class="setting-group" class:mod-list={list && Platform.isMobile}>
 		<div class="setting-items">
 			<slot></slot>
 		</div>
