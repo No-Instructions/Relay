@@ -99,6 +99,7 @@ import type { ReleaseSettings } from "./UpdateManager";
 import { SyncSettingsManager } from "./SyncSettings";
 import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
+import { SiblingSaveRecorder } from "./SiblingSaves";
 import { isCanvas } from "./Canvas";
 import { EndpointManager, type EndpointSettings } from "./EndpointManager";
 import { generateHash } from "./hashing";
@@ -118,6 +119,7 @@ import { MetadataHealth } from "./MetadataHealth";
 import { createPublicApi, publishPublicApi, type Api } from "./PublicAPI";
 import {
 	TextViewRegistry,
+	iterateTextFileViews,
 	type PluginRegistrationSettings,
 } from "./TextViewRegistry";
 
@@ -1604,6 +1606,23 @@ export default class Live extends Plugin {
 			isPlaintext?: boolean;
 		};
 
+		const siblingSaves = new SiblingSaveRecorder({
+			forEachTextView: (fn) =>
+				iterateTextFileViews(plugin.app.workspace, plugin.textViewRegistry, fn),
+			viewsShareText: (file) => {
+				const folder = plugin.sharedFolders.lookup(file.path);
+				if (!folder) return false;
+				const doc = folder.proxy.getFile(file);
+				return (
+					!!doc &&
+					isDocument(doc) &&
+					doc.hsm?.statePath === "active.tracking"
+				);
+			},
+			debug: (message, ...args) => plugin.debug(message, ...args),
+			warn: (message, ...args) => plugin.warn(message, ...args),
+		});
+
 		const sendDiagnosticToHSM = (file: TFile, event: MergeEvent) => {
 			try {
 				const folder = plugin.sharedFolders.lookup(file.path);
@@ -1657,6 +1676,10 @@ export default class Live extends Plugin {
 			MarkdownView.prototype,
 		) as Record<string, unknown>;
 		getPatcher().patch(TextFileViewPrototype, {
+			// A save by one view of a tracking document is recorded on every
+			// other view fed from the same CRDT, and undone on those views if
+			// the write rejects.
+			save: siblingSaves.wrap,
 			setViewData(old: (...args: unknown[]) => unknown) {
 				return function (this: PatchedMarkdownView, data: string, clear: boolean) {
 					// Universal disk→CRDT ingest point for every TextFileView
