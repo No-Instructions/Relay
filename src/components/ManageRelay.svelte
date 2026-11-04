@@ -715,7 +715,7 @@
 	</SettingItemHeading>
 </div>
 
-<SettingGroup>
+<SettingGroup list>
 	{#each $roles.values().sort(userSort) as item}
 		<AccountSettingItem user={item.user}>
 			{#if $canManageUsers}
