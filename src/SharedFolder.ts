@@ -405,6 +405,7 @@ export class SharedFolder extends HasProvider {
 		authoritative: boolean = false,
 		remote?: RemoteSharedFolder,
 		public attachmentTransfers?: AttachmentTransfers,
+		private ownsPath: (path: string) => boolean = () => true,
 	) {
 		const folderRelayId = remote?.relay.guid ?? relayId;
 		const s3rn = folderRelayId
@@ -1589,7 +1590,8 @@ export class SharedFolder extends HasProvider {
 	}
 
 	public isSyncableTFile(tfile: TAbstractFile): boolean {
-		const inFolder = this.checkPath(tfile.path);
+		const inFolder =
+			this.checkPath(tfile.path) && this.ownsVaultPath(tfile.path);
 		const vpath = this.getVirtualPath(tfile.path);
 		const isSupportedFileType = this.syncStore.canSync(vpath);
 
@@ -2602,6 +2604,7 @@ export class SharedFolder extends HasProvider {
 		diffLog?: string[],
 		restoreDeleted = false,
 	): Promise<IFile | undefined> {
+		if (!this.ownsVirtualPath(vpath)) return undefined;
 		if (!(await this.mayMaterialize(vpath))) return undefined;
 		const live = restoreDeleted ? this.files.get(meta.id) : undefined;
 		if (isDocument(live)) {
@@ -3063,8 +3066,12 @@ export class SharedFolder extends HasProvider {
 			// A restored move has a disk source before an IFile is loaded.
 			// Adopt that source through the same path as a live rename.
 			const pending = this.serverOps.moveFor(guid);
-			const from = pending && this.serverOps.coversPath(pending.from)
+			let from = pending && this.serverOps.coversPath(pending.from)
 				? pending.from : file?.path;
+			if (from && !this.ownsVirtualPath(from)) {
+				if (file?.path === from) this.unloadLiveFile(file);
+				from = undefined;
+			}
 			if (from) {
 				const oldPath = this.getPath(from);
 				const tfile = this.vault.getAbstractFileByPath(oldPath);
@@ -3636,10 +3643,10 @@ export class SharedFolder extends HasProvider {
 		if (file.path === oldPath || this.isReaderFolderRestoreChild(file, oldPath)) return;
 		if (this.consumeReaderRestoreRenameEcho(file, oldPath)) return;
 		this.retryHeldMaterializations();
-		const oldVPath = this.getVirtualPath(oldPath);
-		const newVPath = this.getVirtualPath(file.path);
-		this.cancelPendingCreate(oldVPath);
-		this.cancelPendingCreate(newVPath);
+		const oldVPath = this.getOwnedVirtualPath(oldPath) ?? "";
+		const newVPath = this.getOwnedVirtualPath(file.path) ?? "";
+		if (oldVPath) this.cancelPendingCreate(oldVPath);
+		if (newVPath) this.cancelPendingCreate(newVPath);
 		if (this.consumeMoveEcho(oldVPath, newVPath)) {
 			return;
 		}
@@ -3757,6 +3764,7 @@ export class SharedFolder extends HasProvider {
 		const remoteIds = syncStore.remoteIds;
 		syncStore.forEachWithPending((meta, path) => {
 			if (!this._assertNamespacing(path)) return;
+			if (!this.ownsVirtualPath(path)) return;
 			if (meta && types.contains(meta.type)) {
 				ops.push(this.applyRemoteState(meta.id, path, remoteIds, diffLog));
 			} else if (!meta && types.contains(SyncType.Document)) {
@@ -4271,6 +4279,50 @@ export class SharedFolder extends HasProvider {
 
 	getPath(path: string): string {
 		return join(this.path, path);
+	}
+
+	private ownsVaultPath(path: string): boolean {
+		return this.ownsPath?.(path) ?? true;
+	}
+
+	private ownsVirtualPath(path: string): boolean {
+		if (!this.ownsPath) return true;
+		return this.ownsPath(this.getPath(path));
+	}
+
+	private getOwnedVirtualPath(path: string): string | null {
+		if (!this.ownsVaultPath(path)) return null;
+		try {
+			return this.getVirtualPath(path);
+		} catch {
+			return null;
+		}
+	}
+
+	private unloadLiveFile(file: IFile): void {
+		this.backgroundSync?.cancelDocumentWork?.(file.guid);
+		if (this.files.get(file.guid) === file) this.files.delete(file.guid);
+		this.fset.delete(file);
+		file.destroy();
+	}
+
+	/** Stop live work for paths a newly-added nested registration owns. */
+	public releaseUnownedFiles(): void {
+		for (const vpath of Array.from(this.pendingCreates.keys())) {
+			if (!this.ownsVirtualPath(vpath)) {
+				this.cancelPendingCreate(vpath);
+			}
+		}
+		const pendingUploads: string[] = [];
+		this.pendingUpload.forEach((_guid, vpath) => {
+			if (!this.ownsVirtualPath(vpath)) pendingUploads.push(vpath);
+		});
+		pendingUploads.forEach((vpath) => this.pendingUpload.delete(vpath));
+		for (const file of Array.from(this.files.values())) {
+			if (!this.ownsVirtualPath(file.path)) {
+				this.unloadLiveFile(file);
+			}
+		}
 	}
 
 	assertPath(path: string) {
@@ -5652,14 +5704,16 @@ export class SharedFolder extends HasProvider {
 		const newPath = tfile.path;
 		let newVPath = "";
 		let oldVPath = "";
-		try {
-			newVPath = this.getVirtualPath(newPath);
-		} catch {
+		const ownedNewVPath = this.getOwnedVirtualPath(newPath);
+		if (ownedNewVPath !== null) {
+			newVPath = ownedNewVPath;
+		} else {
 			this.log("Moving out of shared folder");
 		}
-		try {
-			oldVPath = this.getVirtualPath(oldPath);
-		} catch {
+		const ownedOldVPath = this.getOwnedVirtualPath(oldPath);
+		if (ownedOldVPath !== null) {
+			oldVPath = ownedOldVPath;
+		} else {
 			this.log("Moving in from outside of shared folder");
 		}
 
@@ -5707,10 +5761,10 @@ export class SharedFolder extends HasProvider {
 				}, this);
 				if (file) {
 					void file.cleanup();
-					file.destroy();
-					this.fset.delete(file);
+					this.unloadLiveFile(file);
+				} else {
+					this.files.delete(guid);
 				}
-				this.files.delete(guid);
 			} else {
 				// moving within shared folder.. move the live doc.
 				const guid = this.syncStore.get(oldVPath);
@@ -5832,6 +5886,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		relayId?: string,
 		authoritative?: boolean,
 		remote?: RemoteSharedFolder,
+		ownsPath?: (path: string) => boolean,
 	) => SharedFolder;
 	private _offRemoteUpdates?: () => void;
 
@@ -5844,6 +5899,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 			relayId?: string,
 			authoritative?: boolean,
 			remote?: RemoteSharedFolder,
+			ownsPath?: (path: string) => boolean,
 		) => SharedFolder,
 		private settings: NamespacedSettings<SharedFolderSettings[]>,
 		private _hsmStore: HSMStore,
@@ -6040,15 +6096,37 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		return this.relayManager;
 	}
 
-	lookup(path: string): SharedFolder | null {
-		// Return the shared folder that contains the file -- agnostic of whether the file actually exists
-		const folder = this.find((sharedFolder: SharedFolder) => {
-			return sharedFolder.checkPath(path);
+	/**
+	 * The shared folder that owns a vault path, whether or not a file exists
+	 * there. Registrations can nest. The owner is the registration whose root
+	 * sits closest to the path: an ancestor never shadows the folder whose
+	 * membership holds the path, whatever order the folders were registered in.
+	 * Reconciliation includes an exact registration root so an ancestor also
+	 * stands down on the nested directory itself; vault events retain the
+	 * descendant-only boundary used by checkPath.
+	 */
+	private closest(path: string, includeRoot: boolean): SharedFolder | null {
+		const candidate = normalizePath(path);
+		let owner: SharedFolder | null = null;
+		let ownerRootLength = -1;
+		this.forEach((sharedFolder: SharedFolder) => {
+			const root = normalizePath(sharedFolder.path);
+			if (
+				candidate !== root &&
+				!candidate.startsWith(root + sep)
+			) return;
+			if (!includeRoot && candidate === root) return;
+			const rootLength = root.length;
+			if (rootLength > ownerRootLength) {
+				owner = sharedFolder;
+				ownerRootLength = rootLength;
+			}
 		});
-		if (!folder) {
-			return null;
-		}
-		return folder;
+		return owner;
+	}
+
+	lookup(path: string): SharedFolder | null {
+		return this.closest(path, false);
 	}
 
 	destroy() {
@@ -6170,8 +6248,9 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 			);
 		}
 
-		const existing = this.find(
-			(folder) => folder.path == path && folder.guid == guid,
+		const normalizedPath = normalizePath(path);
+		const existing = this.find((folder) =>
+			normalizePath(folder.path) === normalizedPath && folder.guid === guid,
 		);
 		if (existing) {
 			return existing;
@@ -6180,12 +6259,36 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		if (sameGuid) {
 			throw new Error(`This folder is already mounted at ${sameGuid.path}.`);
 		}
-		const samePath = this.find((folder) => folder.path == path);
+		const samePath = this.find(
+			(folder) => normalizePath(folder.path) === normalizedPath,
+		);
 		if (samePath) {
 			throw new Error("Conflict: Tracked folder exists at this location.");
 		}
-		const folder = this.folderBuilder(path, guid, relayId, authoritative, remote);
+		const ownsPath = (candidate: string) =>
+			this.closest(candidate, true)?.guid === guid;
+		const folder = this.folderBuilder(
+			path,
+			guid,
+			relayId,
+			authoritative,
+			remote,
+			ownsPath,
+		);
+		// A registration inside or around another one is served by path
+		// ownership, but every vault event under the overlap is a lookup
+		// whose answer depends on it; record the overlap where it starts.
+		const overlapping = this.filter(
+			(other) => other.checkPath(path) || folder.checkPath(other.path),
+		);
+		if (overlapping.length > 0) {
+			this.warn("nested shared folder registrations", {
+				path,
+				overlaps: overlapping.map((other) => other.path),
+			});
+		}
 		this._set.add(folder);
+		overlapping.forEach((other) => other.releaseUnownedFiles?.());
 		return folder;
 	}
 
