@@ -12,7 +12,12 @@
 	import ToastManager from "./ToastManager.svelte";
 	import { handleServerError } from "../utils/toastStore";
 	import { Platform } from "obsidian";
+	import { onMount } from "svelte";
 	import Announcement from "./Announcement.svelte";
+	import {
+		type HistoryBackTarget,
+		wrapHistoryBack,
+	} from "../ui/settingsHistoryBack";
 
 	import { ownerDoc, ownerWin } from "./ownerWindow";
 	interface RelayEventDetail {
@@ -186,8 +191,35 @@
 		}
 	}
 
+	$: atRoot = !currentRelay && !sharedFolder && !remoteFolder;
+
+	// Obsidian's settings modal is the window's history handler while it is
+	// open: its header back arrow and the mobile hardware back button both
+	// call its onHistoryBack, which on phones leaves this tab for the settings
+	// list. While this view is mounted, back steps through Relay's own view
+	// history first and hands over to Obsidian only from the root view.
+	onMount(() => {
+		const setting = (
+			app as typeof app & { setting?: Partial<HistoryBackTarget> }
+		).setting;
+		if (!setting || typeof setting.onHistoryBack !== "function") {
+			return;
+		}
+		return wrapHistoryBack(setting as HistoryBackTarget, (next) => {
+			if (atRoot) {
+				next();
+				return;
+			}
+			goBack();
+		});
+	});
+
 	function handleGoBack(event: GoBackEvent) {
-		if (event.detail.clear) {
+		goBack(Boolean(event.detail?.clear));
+	}
+
+	function goBack(clear = false) {
+		if (clear) {
 			history.length = 0;
 			currentRelay = undefined;
 			sharedFolder = undefined;
@@ -274,9 +306,12 @@
 </script>
 
 <div class="relay-settings">
-	{#if currentRelay || sharedFolder || remoteFolder}
+	<!-- On phones the settings header overlays the top of the tab and its own
+	     back arrow drives this view's history, so Relay's chevron bar would
+	     only sit hidden beneath it. -->
+	{#if !atRoot && !Platform.isPhone}
 		<ModalSettingsNav on:goBack={handleGoBack}></ModalSettingsNav>
-	{:else if !Platform.isMobile}
+	{:else if atRoot && !Platform.isMobile}
 		<Announcement {plugin} />
 	{/if}
 	<div class="vertical-tab-content">
