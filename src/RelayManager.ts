@@ -21,7 +21,6 @@ import {
 import PocketBase, {
 	type AuthModel,
 	type ListResult,
-	type RecordFullListOptions,
 	type RecordModel,
 	type RecordSubscription,
 } from "pocketbase";
@@ -948,9 +947,41 @@ class RelaySubscriptionCollection
 	}
 }
 
+/** `since`: store clock read before the request was sent. */
+export type IngestSource = { kind: "fetch"; since: number } | { kind: "push" };
+
+/** A record's position in a listing's sort order. */
+export type ListingCursor = { created: string; id: string } | { id: string };
+
+/** A record a listing page did not return. */
+export interface ListingGap {
+	collection: string;
+	id: string;
+	since: number;
+}
+
+interface RecordMeta {
+	seen: number;
+	created?: string;
+	updated?: string;
+}
+
+function recordKey(collectionName: string, id: string): string {
+	return `${collectionName}:${id}`;
+}
+
+function serverTimestamp(value: unknown): string | undefined {
+	return typeof value === "string" && value !== "" ? value : undefined;
+}
+
 class Store extends HasLogging {
 	collections: Map<string, Collection<unknown, unknown>>;
 	relationships: Map<string, Set<string>>;
+	// Advances on every accepted ingest and deletion.
+	private clock = 0;
+	private meta = new Map<string, RecordMeta>();
+	// Store clock at deletion.
+	private tombstones = new Map<string, number>();
 
 	constructor(collections: Collection<unknown, unknown>[]) {
 		super();
@@ -960,6 +991,10 @@ class Store extends HasLogging {
 			this.collections.set(collection.collectionName, collection);
 		}
 		RelayInstances.set(this, "Store");
+	}
+
+	now(): number {
+		return this.clock;
 	}
 
 	getCollection(collectionName: string): Collection<unknown, unknown> {
@@ -979,6 +1014,8 @@ class Store extends HasLogging {
 		});
 		this.collections.clear();
 		this.relationships.clear();
+		this.meta.clear();
+		this.tombstones.clear();
 		postie.commitTransaction();
 	}
 
@@ -994,31 +1031,69 @@ class Store extends HasLogging {
 		return this.ingestBatch(result?.items);
 	}
 
-	ingestBatch<T>(records?: RecordModel[]): (T | undefined)[] | undefined {
+	ingestBatch<T>(
+		records?: RecordModel[],
+		source?: IngestSource,
+	): (T | undefined)[] | undefined {
 		if (!records) {
 			return;
 		}
 		return records.map((record) => {
-			return this.ingest(record);
+			return this.ingest(record, source);
 		});
 	}
 
-	ingest<T>(record?: RecordModel): T | undefined {
+	/** No source: the response to this client's own write. */
+	ingest<T>(record?: RecordModel, source?: IngestSource): T | undefined {
 		const postie = PostOffice.getInstance();
 		postie.beginTransaction();
-		const result = this._ingest<T>(record);
+		const result = this._ingest<T>(
+			record,
+			source ?? { kind: "fetch", since: this.clock },
+		);
 		postie.commitTransaction();
 		return result;
 	}
 
-	private _ingest<T>(record?: RecordModel): T | undefined {
+	// Pushes arrive in server order, so only a fetch can predate a deletion.
+	private isDeleted(key: string, source: IngestSource) {
+		const deletedAt = this.tombstones.get(key);
+		return (
+			source.kind === "fetch" && deletedAt !== undefined && deletedAt > source.since
+		);
+	}
+
+	private isOlder(key: string, record: RecordModel) {
+		const held = this.meta.get(key)?.updated;
+		const updated = serverTimestamp(record.updated);
+		return !!held && !!updated && updated < held;
+	}
+
+	private _ingest<T>(record: RecordModel | undefined, source: IngestSource): T | undefined {
 		if (!record) {
 			return;
+		}
+		const key = recordKey(record.collectionName, record.id);
+		if (this.isDeleted(key, source)) {
+			this.debug("ignoring deleted record", key);
+			return;
+		}
+		if (this.isOlder(key, record)) {
+			this.debug("ignoring older version", key, record.updated);
+			this.ingestExpanded(record, source);
+			return this.collections.get(record.collectionName)?.get(record.id) as T;
 		}
 		let result;
 		const collection = this.collections.get(record.collectionName);
 		if (collection) {
 			result = collection.ingest(record) as T;
+			const held = this.meta.get(key);
+			this.tombstones.delete(key);
+			this.meta.set(key, {
+				seen: ++this.clock,
+				created: serverTimestamp(record.created) ?? held?.created,
+				updated: serverTimestamp(record.updated) ?? held?.updated,
+			});
 		} else {
 			this.error("No collection found for record", record);
 		}
@@ -1042,20 +1117,91 @@ class Store extends HasLogging {
 				this.relationships.set(parent.join(":"), refs);
 			}
 		}
-		if (record.expand) {
-			for (const [, value] of Object.entries(record.expand)) {
-				if (Array.isArray(value)) {
-					this.ingestBatch(value);
-				} else {
-					this.ingest(value as RecordModel);
-				}
+		this.ingestExpanded(record, source);
+		return result;
+	}
+
+	private ingestExpanded(record: RecordModel, source: IngestSource) {
+		if (!record.expand) return;
+		for (const [, value] of Object.entries(record.expand)) {
+			if (Array.isArray(value)) {
+				this.ingestBatch(value, source);
+			} else {
+				this.ingest(value as RecordModel, source);
 			}
 		}
-		return result;
 	}
 
 	delete(record: RecordModel) {
 		this.cascade(record.collectionName, record.id);
+	}
+
+	/** Removes a record a fetch found missing, unless seen after `since`. */
+	forget(collectionName: string, id: string, since: number) {
+		const meta = this.meta.get(recordKey(collectionName, id));
+		if (meta && meta.seen > since) return;
+		if (!this.collections.get(collectionName)?.get(id)) return;
+		this.cascade(collectionName, id);
+	}
+
+	/** Held records in (`after`, `upTo` or end] not in `received` nor seen after `since`. */
+	listingGaps(
+		collectionName: string,
+		since: number,
+		received: ReadonlySet<string>,
+		after: ListingCursor | undefined,
+		upTo: ListingCursor | undefined,
+	): ListingGap[] {
+		const collection = this.collections.get(collectionName);
+		if (!collection) return [];
+		const gaps: ListingGap[] = [];
+		for (const item of collection.items()) {
+			if (!hasId(item) || received.has(item.id)) continue;
+			const meta = this.meta.get(recordKey(collectionName, item.id));
+			if (!meta || meta.seen > since) continue;
+			if (!this.inRange(item.id, meta, after, upTo)) continue;
+			gaps.push({ collection: collectionName, id: item.id, since });
+		}
+		return gaps;
+	}
+
+	private inRange(
+		id: string,
+		meta: RecordMeta,
+		after: ListingCursor | undefined,
+		upTo: ListingCursor | undefined,
+	): boolean {
+		const pastLower = after ? this.sortsAfter(after, id, meta) : true;
+		const pastUpper = upTo ? this.sortsAfter(upTo, id, meta) : false;
+		// Without a position, only the final page can account for it.
+		if (pastLower === undefined || pastUpper === undefined) return !upTo;
+		return pastLower && !pastUpper;
+	}
+
+	/** Held records not in `received` that were seen after `since`. */
+	learnedSince(
+		collectionName: string,
+		since: number,
+		received: ReadonlySet<string>,
+	): string[] {
+		const collection = this.collections.get(collectionName);
+		if (!collection) return [];
+		const ids: string[] = [];
+		for (const item of collection.items()) {
+			if (!hasId(item) || received.has(item.id)) continue;
+			const meta = this.meta.get(recordKey(collectionName, item.id));
+			if (meta && meta.seen > since) ids.push(item.id);
+		}
+		return ids;
+	}
+
+	private sortsAfter(cursor: ListingCursor, id: string, meta: RecordMeta) {
+		if (!("created" in cursor)) return id > cursor.id;
+		if (!meta.created) return undefined;
+		return (
+			meta.created > cursor.created ||
+			(meta.created === cursor.created && id > cursor.id)
+		);
 	}
 
 	graphviz() {
@@ -1102,6 +1248,9 @@ class Store extends HasLogging {
 			collection.delete(id);
 		}
 		this.relationships.delete([collectionName, id].join(":"));
+		const key = recordKey(collectionName, id);
+		this.tombstones.set(key, ++this.clock);
+		this.meta.delete(key);
 
 		// Process children
 		for (const fqid of children || []) {
@@ -1856,12 +2005,13 @@ export class RelayManager extends HasLogging {
 		if (relayInvitation) {
 			return relayInvitation;
 		}
+		const since = this.store?.now() ?? 0;
 		return this.pb
 			.collection("relay_invitations")
 			.getList<RelayInvitationDAO>(0, 200)
 			.then((invitations) => {
 				invitations.items.forEach((invite) => {
-					this.store?.ingest(invite);
+					this.store?.ingest(invite, { kind: "fetch", since });
 				});
 				const invite = this.relayInvitations.find((invite) => {
 					return invite.relayId === relay.id;
@@ -1897,7 +2047,7 @@ export class RelayManager extends HasLogging {
 		if (e.action === "delete") {
 			this.store?.delete(e.record);
 		} else {
-			this.store?.ingest(e.record);
+			this.store?.ingest(e.record, { kind: "push" });
 		}
 	};
 
@@ -2145,37 +2295,147 @@ export class RelayManager extends HasLogging {
 	}
 
 	async refreshRemoteFolder(remoteFolder: RemoteFolder) {
-		if (
-			!this.pb ||
-			!this.pb.authStore.isValid ||
-			this.pb.authStore.model?.id === undefined
-		) {
-			return Promise.resolve([]);
-		}
-		const record = await this.pb
-			.collection("shared_folders")
-			.getOne(remoteFolder.id, {
-				expand: "shared_folder_roles_via_shared_folder",
-			});
-		if (!this.destroyed && this.store) {
-			this.store.ingest(record);
-		}
+		await this.refreshRecord(
+			"shared_folders",
+			remoteFolder.id,
+			"shared_folder_roles_via_shared_folder",
+		);
 	}
 
 	async refreshRelay(relay: Relay) {
+		await this.refreshRecord(
+			"relays",
+			relay.id,
+			"relay_roles_via_relay,shared_folders_via_relay,storage_quota",
+		);
+	}
+
+	private async refreshRecord(collection: string, id: string, expand: string) {
+		const pb = this.pb;
+		const store = this.store;
 		if (
-			!this.pb ||
-			!this.pb.authStore.isValid ||
-			this.pb.authStore.model?.id === undefined
+			!pb ||
+			!pb.authStore.isValid ||
+			pb.authStore.model?.id === undefined ||
+			!store
 		) {
-			return Promise.resolve([]);
+			return;
 		}
-		const record = await this.pb.collection("relays").getOne(relay.id, {
-			expand: "relay_roles_via_relay,shared_folders_via_relay,storage_quota",
+		const since = store.now();
+		let record: RecordModel;
+		try {
+			record = await pb.collection(collection).getOne(id, { expand });
+		} catch (error) {
+			if ((error as { status?: number }).status === 404) {
+				// A signed-out request also gets 404.
+				if ((await this.refreshSelf()) && this.store === store) {
+					store.forget(collection, id, since);
+				}
+				return;
+			}
+			throw error;
+		}
+		if (!this.destroyed && this.store === store) {
+			store.ingest(record, { kind: "fetch", since });
+		}
+	}
+
+	// Cursor, not offset, so a deletion between pages cannot skip a record.
+	private async listCollection(
+		collection: string,
+		options: { expand?: string; order: "created" | "id" },
+	): Promise<ListingGap[]> {
+		const gaps: ListingGap[] = [];
+		const receivedAll = new Set<string>();
+		let firstSince: number | undefined;
+		const cursorOf = (record: RecordModel): ListingCursor =>
+			options.order === "created"
+				? { created: record.created, id: record.id }
+				: { id: record.id };
+		let last: RecordModel | undefined;
+		for (;;) {
+			const pb = this.pb;
+			const store = this.store;
+			if (this.destroyed || !pb || !store) return [];
+			let filter = "";
+			if (last && options.order === "created") {
+				filter = pb.filter(
+					"created > {:created} || (created = {:created} && id > {:id})",
+					{ created: last.created, id: last.id },
+				);
+			} else if (last) {
+				filter = pb.filter("id > {:id}", { id: last.id });
+			}
+			const since = store.now();
+			firstSince ??= since;
+			const page = await pb
+				.collection(collection)
+				.getList<RecordModel>(1, undefined, {
+					sort: options.order === "created" ? "created,id" : "id",
+					filter,
+					expand: options.expand,
+					skipTotal: true,
+				});
+			if (this.destroyed || this.store !== store) return [];
+			const received = new Set<string>();
+			for (const record of page.items) {
+				received.add(record.id);
+				receivedAll.add(record.id);
+				store.ingest(record, { kind: "fetch", since });
+			}
+			const end = page.items.length < page.perPage;
+			const next = page.items[page.items.length - 1];
+			// A server ignoring the cursor would repeat the page forever.
+			if (!end && next && last && next.id === last.id) return gaps;
+			gaps.push(
+				...store.listingGaps(
+					collection,
+					firstSince,
+					received,
+					last && cursorOf(last),
+					end || !next ? undefined : cursorOf(next),
+				),
+			);
+			if (end || !next) break;
+			last = next;
+		}
+		const suspects =
+			firstSince === undefined
+				? []
+				: this.store?.learnedSince(collection, firstSince, receivedAll) ?? [];
+		return [...gaps, ...(await this.refetchMissing(collection, suspects, options.expand))];
+	}
+
+	/** Fetches `ids` by id; returns those the server no longer has. */
+	private async refetchMissing(
+		collection: string,
+		ids: string[],
+		expand: string | undefined,
+	): Promise<ListingGap[]> {
+		const pb = this.pb;
+		const store = this.store;
+		if (!ids.length || this.destroyed || !pb || !store) return [];
+		const since = store.now();
+		const params: Record<string, string> = {};
+		const filter = ids
+			.map((id, i) => {
+				params[`id${i}`] = id;
+				return `id = {:id${i}}`;
+			})
+			.join(" || ");
+		const records = await pb.collection(collection).getFullList<RecordModel>({
+			filter: pb.filter(filter, params),
+			expand,
 		});
-		if (!this.destroyed && this.store) {
-			this.store.ingest(record);
+		if (this.destroyed || this.store !== store) return [];
+		const found = new Set<string>();
+		for (const record of records) {
+			found.add(record.id);
+			store.ingest(record, { kind: "fetch", since });
 		}
+		return ids
+			.filter((id) => !found.has(id))
+			.map((id) => ({ collection, id, since }));
 	}
 
 	/**
@@ -2194,59 +2454,39 @@ export class RelayManager extends HasLogging {
 			!!this.pb &&
 			this.pb.authStore.isValid &&
 			this.pb.authStore.model?.id !== undefined;
-		const withPb = (
-			collection: string,
-			options:
-				| ((userId: string) => RecordFullListOptions)
-				| RecordFullListOptions = {},
-		): Promise<RecordModel[]> => {
-			if (
-				!this.pb ||
-				!this.pb.authStore.isValid ||
-				this.pb.authStore.model?.id === undefined
-			) {
-				return Promise.resolve([]);
-			}
-			if (typeof options === "function") {
-				options = options(this.pb.authStore.model.id as string);
-			}
-			return this.pb.collection(collection).getFullList<RecordModel>(options);
-		};
+		const store = this.store;
+		if (!authenticated || !store) return;
 
-		const promises = [
-			withPb("users", (userId) => ({
-				filter: `id="${userId}"`,
-				expand: [
-					"relay_roles_via_user",
-					"relay_roles_via_user.relay",
-					"relay_roles_via_user.relay.storage_quota",
-					"relay_roles_via_user.role",
-				].join(","),
-			})),
-			withPb("relay_roles", {
-				expand: "user,role",
+		const [signedIn, ...listings] = await Promise.all([
+			this.refreshSelf(),
+			this.listCollection("relays", { expand: "storage_quota", order: "created" }),
+			// The relay must follow its role to be removed with it.
+			this.listCollection("relay_roles", {
+				expand: "user,role,relay",
+				order: "created",
 			}),
-			withPb("providers"),
-			withPb("relay_invitations"),
-			withPb("shared_folders", {
+			this.listCollection("providers", { order: "id" }),
+			this.listCollection("relay_invitations", { order: "created" }),
+			this.listCollection("shared_folders", {
 				expand: "relay,creator",
+				order: "created",
 			}),
-			withPb("shared_folder_roles", {
-				expand: "user,role",
+			this.listCollection("shared_folder_roles", {
+				expand: "user,role,shared_folder",
+				order: "created",
 			}),
-			withPb("subscriptions", {
+			this.listCollection("subscriptions", {
 				expand: "relay,user",
+				order: "created",
 			}),
-		];
-		await Promise.all(promises.map(async (promise) => {
-			const result = await promise;
-			for (const record of result) {
-				if (!this.destroyed && this.store) {
-					this.store.ingest(record);
-				}
-			}
-		}));
-		if (authenticated && !this.destroyed && this.store && !this._rolesHydrated) {
+		]);
+		// Signed-out listings come back empty, not refused.
+		if (this.destroyed || this.store !== store || !signedIn) return;
+		// After every page, so a replacement is held before what it replaces goes.
+		for (const gap of listings.flat()) {
+			store.forget(gap.collection, gap.id, gap.since);
+		}
+		if (!this._rolesHydrated) {
 			this._rolesHydrated = true;
 			// Shared folders derive their role-policy answers on role-map
 			// notifications. Nothing in the maps changed, but a missing role
@@ -2254,6 +2494,21 @@ export class RelayManager extends HasLogging {
 			this.relayRoles.notifyListeners();
 			this.folderRoles.notifyListeners();
 		}
+	}
+
+	/** Whether the server returned the signed-in user's own record. */
+	private async refreshSelf(): Promise<boolean> {
+		const pb = this.pb;
+		const store = this.store;
+		const userId = pb?.authStore.model?.id as string | undefined;
+		if (!pb || !store || !userId) return false;
+		const since = store.now();
+		const users = await pb.collection("users").getFullList<RecordModel>({
+			filter: pb.filter("id = {:id}", { id: userId }),
+		});
+		if (this.destroyed || this.store !== store) return false;
+		store.ingestBatch(users, { kind: "fetch", since });
+		return users.some((user) => user.id === userId);
 	}
 
 	async acceptInvitation(shareKey: string): Promise<Relay> {
