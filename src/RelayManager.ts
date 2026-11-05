@@ -1588,6 +1588,8 @@ export class RelayManager extends HasLogging {
 	private _isSubscribed = false;
 	private _subscribing?: Promise<boolean>;
 	private _subscriptionGeneration = 0;
+	private _subscriptionRetry?: number;
+	private _subscriptionRetryDelay = 1_000;
 	private _rolesHydrated = false;
 	// Private folders this client created whose creator grant has not arrived
 	// yet. The server writes that grant itself and delivers it over the
@@ -1914,6 +1916,40 @@ export class RelayManager extends HasLogging {
 		this._subscriptionGeneration += 1;
 		this._subscribing = undefined;
 		this._isSubscribed = false;
+		this.cancelSubscriptionRetry(true);
+	}
+
+	private cancelSubscriptionRetry(resetDelay = false): void {
+		if (this._subscriptionRetry !== undefined) {
+			window.clearTimeout(this._subscriptionRetry);
+			this._subscriptionRetry = undefined;
+		}
+		if (resetDelay) {
+			this._subscriptionRetryDelay = 1_000;
+		}
+	}
+
+	private scheduleSubscriptionRetry(
+		pb: PocketBase,
+		generation: number,
+	): void {
+		if (
+			this._subscriptionRetry !== undefined ||
+			!this.registrationIsCurrent(pb, generation)
+		) {
+			return;
+		}
+		const delay = this._subscriptionRetryDelay;
+		this._subscriptionRetryDelay = Math.min(delay * 2, 60_000);
+		this._subscriptionRetry = window.setTimeout(() => {
+			this._subscriptionRetry = undefined;
+			if (
+				this.registrationIsCurrent(pb, generation) &&
+				pb.authStore.isValid
+			) {
+				void this.subscribe();
+			}
+		}, delay);
 	}
 
 	/**
@@ -1940,18 +1976,38 @@ export class RelayManager extends HasLogging {
 			!pb.authStore.isValid ||
 			pb.authStore.model?.id === undefined
 		) {
+			this.cancelSubscriptionRetry(true);
 			this.warn("unable to subscribe, pocketbase client is not ready");
 			return Promise.resolve(false);
 		}
 		if (this._isSubscribed && pb.realtime.isConnected) {
+			this.cancelSubscriptionRetry(true);
 			return Promise.resolve(true);
 		}
+		this.cancelSubscriptionRetry();
 		const generation = this._subscriptionGeneration;
-		const attempt = this._register(pb, generation).finally(() => {
-			if (this._subscribing === attempt) {
-				this._subscribing = undefined;
-			}
-		});
+		const attempt = this._register(pb, generation)
+			.catch((error) => {
+				if (this.registrationIsCurrent(pb, generation)) {
+					this.warn("realtime registration failed", error);
+					this._isSubscribed = false;
+				}
+				return false;
+			})
+			.then((healthy) => {
+				if (!this.registrationIsCurrent(pb, generation)) return false;
+				if (healthy) {
+					this.cancelSubscriptionRetry(true);
+				} else {
+					this.scheduleSubscriptionRetry(pb, generation);
+				}
+				return healthy;
+			})
+			.finally(() => {
+				if (this._subscribing === attempt) {
+					this._subscribing = undefined;
+				}
+			});
 		this._subscribing = attempt;
 		return attempt;
 	}
@@ -1999,7 +2055,13 @@ export class RelayManager extends HasLogging {
 			}
 			return false;
 		}
-		return this.registrationIsCurrent(pb, generation);
+		const healthy =
+			this.registrationIsCurrent(pb, generation) &&
+			pb.realtime.isConnected;
+		if (!healthy && this.registrationIsCurrent(pb, generation)) {
+			this._isSubscribed = false;
+		}
+		return healthy;
 	}
 
 	/**
