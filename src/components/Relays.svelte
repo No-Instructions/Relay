@@ -18,6 +18,7 @@
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import type { SharedFolder } from "src/SharedFolder";
 	import SharedFolderSpan from "./SharedFolderSpan.svelte";
+	import MobileSharedFolders from "./MobileSharedFolders.svelte";
 	import { debounce, Notice, Platform } from "obsidian";
 	import SecretText from "./SecretText.svelte";
 	import { flags } from "src/flagManager";
@@ -260,56 +261,67 @@
 </SettingGroup>
 
 <SettingItemHeading
-	name="My vault"
+	name={Platform.isMobile ? "Shared folders in my vault" : "My vault"}
 	helpText="The following Shared Folders have been added to your vault. You can see what Relay Server a Shared Folder is connected to below."
 ></SettingItemHeading>
-<SettingGroup list>
-	{#if $sharedFolders.items().length === 0}
-		<SettingItem
-			description="No shared folders on this device. Share folders from a Relay Server's settings page to begin collaboration."
-		/>
-	{/if}
-	{#each $sharedFolders.items().sort(folderSort) as folder}
-		<SlimSettingItem>
-			<SharedFolderSpan
-				on:manageSharedFolder
-				on:manageRemoteFolder
-				on:manageRelay
-				{folder}
-				slot="name"
+{#if Platform.isMobile}
+	<MobileSharedFolders
+		folders={$sharedFolders.items().sort(folderSort)}
+		relays={$relays.values()}
+		on:manageSharedFolder
+		on:manageRemoteFolder
+		on:manageRelay
+		on:addRemoteFolder={debounce(handleAddFolder)}
+	/>
+{:else}
+	<SettingGroup list>
+		{#if $sharedFolders.items().length === 0}
+			<SettingItem
+				description="No shared folders on this device. Share folders from a Relay Server's settings page to begin collaboration."
 			/>
-			{#if folder.remote}
-				<SettingsControl
-					on:settings={debounce(() => {
-						handleManageRemoteFolder(folder.remote);
-					})}
-					action="manage-folder"
-				></SettingsControl>
-			{:else}
-				<SettingsControl
-					on:settings={debounce(() => {
-						const relay = $relays.values().find((relay) => {
-							return folder.remote?.relay.guid === relay.guid;
-						});
-						handleManageSharedFolder(folder, relay);
-					})}
-					action="manage-folder"
-				></SettingsControl>
-			{/if}
-		</SlimSettingItem>
-	{/each}
+		{/if}
+		{#each $sharedFolders.items().sort(folderSort) as folder}
+			<SlimSettingItem>
+				<SharedFolderSpan
+					on:manageSharedFolder
+					on:manageRemoteFolder
+					on:manageRelay
+					{folder}
+					slot="name"
+				/>
+				{#if folder.remote}
+					<SettingsControl
+						on:settings={debounce(() => {
+							handleManageRemoteFolder(folder.remote);
+						})}
+						action="manage-folder"
+					></SettingsControl>
+				{:else}
+					<SettingsControl
+						on:settings={debounce(() => {
+							const relay = $relays.values().find((relay) => {
+								return folder.remote?.relay.guid === relay.guid;
+							});
+							handleManageSharedFolder(folder, relay);
+						})}
+						action="manage-folder"
+					></SettingsControl>
+				{/if}
+			</SlimSettingItem>
+		{/each}
 
-	<SlimSettingItem name="">
-		<button
-			class="mod-cta system3-button"
-			aria-label="Add remote folder to vault"
-			on:click={debounce(handleAddFolder)}
-			style="max-width: 11em"
-		>
-			Add remote folder
-		</button>
-	</SlimSettingItem>
-</SettingGroup>
+		<SlimSettingItem name="">
+			<button
+				class="mod-cta system3-button"
+				aria-label="Add remote folder to vault"
+				on:click={debounce(handleAddFolder)}
+				style="max-width: 11em"
+			>
+				Add remote folder
+			</button>
+		</SlimSettingItem>
+	</SettingGroup>
+{/if}
 {#if $subscriptions.values().filter((s) => $relays.has(s.relayId)).length > 0}
 	<div class="spacer"></div>
 	<SettingItemHeading
