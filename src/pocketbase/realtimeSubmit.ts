@@ -42,6 +42,19 @@ function replacedStream(): DOMException {
 	);
 }
 
+function reconnectingStream(): Error {
+	return new Error("Realtime subscription submit lost its stream");
+}
+
+function isAbort(error: unknown): boolean {
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"name" in error &&
+		error.name === "AbortError"
+	);
+}
+
 export function routeRealtimeSubmit(
 	url: string,
 	options: SendOptions,
@@ -53,15 +66,22 @@ export function routeRealtimeSubmit(
 	}
 	const submitted = submittedClientId(options.body);
 	const owned = submitted !== undefined && currentClientId() === submitted;
-	const stale = () => owned && currentClientId() !== submitted;
+	const replacement = () => {
+		if (!owned) return false;
+		const current = currentClientId();
+		return current !== "" && current !== submitted;
+	};
+	const betweenStreams = () => owned && currentClientId() === "";
 	options.fetch = async (input, init) => {
 		let response: Response;
 		try {
 			response = await transport(input, init);
 		} catch (error) {
-			throw stale() ? replacedStream() : error;
+			if (replacement()) throw replacedStream();
+			if (betweenStreams() && isAbort(error)) throw reconnectingStream();
+			throw error;
 		}
-		if (response.status >= 400 && stale()) {
+		if (response.status >= 400 && replacement()) {
 			throw replacedStream();
 		}
 		return response;
