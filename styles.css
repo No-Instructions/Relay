@@ -11,6 +11,11 @@
 	display: none;
 }
 
+.is-mobile .relay-hidden-modal-wrapper ~ .prompt .breadcrumb-icon,
+.is-mobile .relay-hidden-modal-wrapper ~ .prompt .breadcrumb-separator {
+	flex-shrink: 0;
+}
+
 .user-awareness-positioning-parent {
 	position: relative;
 }
