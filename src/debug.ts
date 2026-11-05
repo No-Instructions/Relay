@@ -492,6 +492,7 @@ import type {
 	MetricInstance,
 	ObsidianMetricsPlugin,
 } from "./types/obsidian-metrics";
+import type { DiskQueueMetrics } from "./DiskQueueMetrics";
 
 const PAGE_VISIBILITY_STATES = ["visible", "hidden", "prerender", "unloaded", "unknown"];
 
@@ -981,6 +982,7 @@ export function initializeMetrics(
 		type: "visibilitychange",
 		callback: () => void,
 	) => void,
+	diskQueue?: DiskQueueMetrics,
 ): void {
 	// Relay records under the "relay" job in the TSDB store. A plugin with
 	// a mismatched API surface must degrade to no-op metrics, never break
@@ -993,13 +995,13 @@ export function initializeMetrics(
 				);
 				return;
 			}
-			metrics.initializeFromAPI(
-				api.getStore("relay", {
-					displayName: "Relay",
-					description:
-						"Sync engine metrics: document storage, protocol IO, and network requests.",
-				}),
-			);
+			const store = api.getStore("relay", {
+				displayName: "Relay",
+				description:
+					"Sync engine metrics: document storage, protocol IO, network requests, and the Obsidian disk queue.",
+			});
+			metrics.initializeFromAPI(store);
+			diskQueue?.initializeFromAPI(store);
 		} catch (e) {
 			console.warn(
 				"[RelayMetrics] metrics initialization failed; metrics disabled",

@@ -57,6 +57,7 @@ import {
 } from "./debug";
 import { getPatcher, Patcher } from "./Patcher";
 import { SavingFlagPolyfill } from "./SavingFlagPolyfill";
+import { DiskQueueMetrics } from "./DiskQueueMetrics";
 import { LiveTokenStore } from "./LiveTokenStore";
 import NetworkStatus from "./NetworkStatus";
 import { RelayManager } from "./RelayManager";
@@ -585,10 +586,13 @@ export default class Live extends Plugin {
 				disableConsole: false, // Disable console logging
 			},
 		);
+		const diskQueueMetrics = new DiskQueueMetrics(this.app.vault.adapter, this.timeProvider);
+		this.register(() => diskQueueMetrics.destroy());
 		initializeMetrics(
 			this.app,
 			(ref: EventRef) => this.registerEvent(ref),
 			(el, type, callback) => this.registerDomEvent(el, type, callback),
+			diskQueueMetrics,
 		);
 		// While the page is hidden, the PostOffice delivery timer can be throttled
 		// or suspended, so a pending batch may sit undelivered. On returning to the
