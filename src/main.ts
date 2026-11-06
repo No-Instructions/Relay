@@ -187,6 +187,7 @@ export default class Live extends Plugin {
 	relayManager!: RelayManager;
 	deviceManager!: DeviceManager;
 	private relayDebugAPI!: RelayDebugAPI;
+	diskQueueMetrics?: DiskQueueMetrics;
 	private metadataHealth: MetadataHealth | null = null;
 	private savingFlagPolyfill: SavingFlagPolyfill | null = null;
 	settingsTab!: LiveSettingsTab;
@@ -223,6 +224,7 @@ export default class Live extends Plugin {
 
 	async enableDebugging(save?: boolean): Promise<void> {
 		setDebugging(true);
+		this.diskQueueMetrics?.startTrace();
 		console.warn("RelayInstances", RelayInstances);
 		if (save) {
 			return this.debugSettings.update((settings) => ({
@@ -234,6 +236,7 @@ export default class Live extends Plugin {
 
 	async disableDebugging(save?: boolean): Promise<void> {
 		setDebugging(false);
+		this.diskQueueMetrics?.stopTrace();
 		if (save) {
 			return this.debugSettings.update((settings) => ({
 				...settings,
@@ -245,6 +248,8 @@ export default class Live extends Plugin {
 	toggleDebugging(save?: boolean): boolean {
 		const setTo = !this.debugSettings.get().debugging;
 		setDebugging(setTo);
+		if (setTo) this.diskQueueMetrics?.startTrace();
+		else this.diskQueueMetrics?.stopTrace();
 		if (save) {
 			void this.debugSettings.update((settings) => ({
 				...settings,
@@ -586,7 +591,7 @@ export default class Live extends Plugin {
 				disableConsole: false, // Disable console logging
 			},
 		);
-		const diskQueueMetrics = new DiskQueueMetrics(this.app.vault.adapter, this.timeProvider);
+		const diskQueueMetrics = this.diskQueueMetrics = new DiskQueueMetrics(this.app.vault.adapter, this.timeProvider);
 		this.register(() => diskQueueMetrics.destroy());
 		initializeMetrics(
 			this.app,

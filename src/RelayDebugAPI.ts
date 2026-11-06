@@ -36,6 +36,7 @@ import type { CanvasHSM } from './canvas-hsm/CanvasHSM';
 import type { CanvasData } from './CanvasView';
 import type { BlockDecision, ConflictValue } from './merge-hsm/conflictValue';
 import type Live from './main';
+import type { DiskQueueTraceSnapshot } from './DiskQueueTrace';
 import type { RelayCanvasView } from './LiveViews';
 import type { SharedFolder } from './SharedFolder';
 import type { Document } from './Document';
@@ -403,6 +404,10 @@ export interface RelayDebugGlobal {
   getRecentEntries: (guid: string, limit?: number) => Promise<object[]>;
   /** Read Y.Doc text content from IndexedDB without waking the HSM */
   readIdbContent: (guid: string, appId: string) => Promise<{ content: string; snapshot: Uint8Array } | null>;
+  /** Local in-memory adapter queue metadata; no filesystem or network work. */
+  getDiskQueueTrace: () => DiskQueueTraceSnapshot | null;
+  startDiskQueueTrace: () => void;
+  stopDiskQueueTrace: () => void;
   /** Get plugin log entries from the current session, with optional level/pattern filtering */
   getSessionLogs: (options?: SessionLogOptions) => Promise<object[]>;
   /**
@@ -716,6 +721,9 @@ export class RelayDebugAPI {
       getRecentEntries: (guid, limit) => getRecentEntries(guid, limit),
       readIdbContent: readIdbContent,
       getSessionLogs: (options) => getSessionLogs(options),
+      getDiskQueueTrace: () => this.plugin?.diskQueueMetrics?.getTrace() ?? null,
+      startDiskQueueTrace: () => this.plugin?.diskQueueMetrics?.startTrace(),
+      stopDiskQueueTrace: () => this.plugin?.diskQueueMetrics?.stopTrace(),
       openEditor: (path, opts) => this.openEditor(path, opts),
       closeEditor: (handle) => this.closeEditor(handle),
       getEditorContent: (handle) => this.getEditorContent(handle),

@@ -1,10 +1,11 @@
 import { getPatcher } from "./Patcher";
+import { DiskQueueTrace, type DiskQueueTraceSnapshot } from "./DiskQueueTrace";
 import type { TimeProvider } from "./TimeProvider";
 import type { IObsidianMetricsAPI, MetricInstance } from "./types/obsidian-metrics";
 
 type QueueCallback = (this: unknown, ...args: unknown[]) => unknown;
 type QueueMethod = (this: unknown, callback: QueueCallback, ...args: unknown[]) => Promise<unknown>;
-type Operation = { submitted: number; started?: number };
+type Operation = { submitted: number; started?: number; traceId?: number };
 type QueueMetrics = {
 	active: MetricInstance;
 	depth: MetricInstance;
@@ -33,14 +34,40 @@ export class DiskQueueMetrics {
 	private interval: number | null = null;
 	private attached = false;
 	private destroyed = false;
+	private trace: DiskQueueTrace;
 
 	constructor(
 		private adapter: object,
 		private time: Pick<TimeProvider, "setInterval" | "clearInterval">,
 		private now: () => number = () => performance.now(),
-	) {}
+	) {
+		this.trace = new DiskQueueTrace(adapter, now);
+	}
 
-	/** No patch or timer is installed until a metrics store is available. */
+	startTrace(): void {
+		if (this.destroyed || typeof (this.adapter as { queue?: unknown }).queue !== "function") return;
+		this.observe(() => {
+			if (!this.removePatch) this.attach();
+			this.trace.start();
+		});
+	}
+
+	stopTrace(): void {
+		this.observe(() => this.trace.stop());
+		if (!this.metrics) {
+			this.observe(() => this.removePatch?.());
+			this.removePatch = null;
+			this.attached = false;
+			this.waiting.clear();
+			this.running.clear();
+		}
+	}
+
+	getTrace(): DiskQueueTraceSnapshot {
+		return this.trace.snapshot();
+	}
+
+	/** Metrics sampling starts when a store is available; tracing can also attach observation. */
 	initializeFromAPI(api: IObsidianMetricsAPI): void {
 		if (this.destroyed) return;
 		this.observe(() => {
@@ -93,13 +120,14 @@ export class DiskQueueMetrics {
 			queue(original: QueueMethod): QueueMethod {
 				observer.attached = true;
 				return function (callback, ...args) {
-					if (observer.destroyed || !observer.metrics || typeof callback !== "function") {
+					if (observer.destroyed || (!observer.metrics && !observer.trace.recording) || typeof callback !== "function") {
 						return original.call(this, callback, ...args);
 					}
 					let operation: Operation | undefined;
 					observer.observe(() => {
 						operation = { submitted: observer.now() };
-						observer.waiting.set(operation, operation.submitted);
+						operation.traceId = observer.trace.submit(operation.submitted);
+						if (observer.metrics) observer.waiting.set(operation, operation.submitted);
 					});
 					observer.sample();
 					let result: Promise<unknown>;
@@ -135,8 +163,9 @@ export class DiskQueueMetrics {
 		if (!operation || this.destroyed) return;
 		this.observe(() => {
 			operation.started = this.now();
+			this.trace.begin(operation.traceId, operation.started);
 			this.waiting.delete(operation);
-			this.running.set(operation, operation.started);
+			if (this.metrics) this.running.set(operation, operation.started);
 			this.metrics?.wait.observe(this.secondsSince(operation.submitted, operation.started));
 		});
 		this.sample();
@@ -147,6 +176,7 @@ export class DiskQueueMetrics {
 		this.waiting.delete(operation);
 		this.running.delete(operation);
 		this.observe(() => {
+			this.trace.finish(operation.traceId, this.now(), result === "failed");
 			if (operation.started !== undefined) {
 				this.metrics?.run.observe(this.secondsSince(operation.started, this.now()));
 			}
@@ -183,6 +213,7 @@ export class DiskQueueMetrics {
 	destroy(): void {
 		if (this.destroyed) return;
 		this.destroyed = true;
+		this.observe(() => this.trace.destroy());
 		this.observe(() => this.removePatch?.());
 		this.removePatch = null;
 		if (this.interval !== null) {
