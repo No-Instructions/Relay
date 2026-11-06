@@ -11,6 +11,19 @@ export type RelayEvent<T> = {
 };
 
 /**
+ * A move made on this client where either path, or both, is shared. Relay
+ * publishes the moves it tracks; the server may not have one yet. Paths are
+ * vault paths. A folder move
+ * reports the folder, then each descendant in that descendant's own vault
+ * `rename` callback.
+ */
+export interface LocalMove {
+	oldPath: string;
+	newPath: string;
+	kind: "file" | "folder";
+}
+
+/**
  * Relay's data-only plugin boundary.
  *
  * Workspace event delivery is ordered, synchronous, and non-replayed. Events
@@ -29,6 +42,11 @@ export interface ApiV0 {
 	registerTextView(pluginId: string, viewType: string): void;
 	/** Idempotently remove a persisted text-file view registration. */
 	unregisterTextView(pluginId: string, viewType: string): void;
+	/**
+	 * Whether a vault path is inside a shared folder. Its presence means
+	 * `system3-relay:v0:local-move` is available.
+	 */
+	isSharedPath(path: string): boolean;
 }
 
 /**
@@ -59,5 +77,18 @@ declare module "obsidian" {
 			name: "system3-relay:v0:current-user",
 			event: RelayEvent<User | null>,
 		): void;
+		/**
+		 * Fires during the vault `rename` event for each move made on this
+		 * client that touches a shared path, where the moved file is already
+		 * at `newPath`. It does not fire for moves Relay applies from other
+		 * clients, for moves Relay rejects and restores, or for renaming a
+		 * shared folder itself. Any other rename where `isSharedPath` holds
+		 * for either path fires it.
+		 */
+		on(
+			name: "system3-relay:v0:local-move",
+			callback: (event: LocalMove) => void,
+		): EventRef;
+		trigger(name: "system3-relay:v0:local-move", event: LocalMove): void;
 	}
 }
