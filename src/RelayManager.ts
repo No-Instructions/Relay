@@ -2157,7 +2157,12 @@ export class RelayManager extends HasLogging {
 			.getOne(remoteFolder.id, {
 				expand: "shared_folder_roles_via_shared_folder",
 			});
-		if (!this.destroyed && this.store) {
+		// A detail request can finish after this record has been removed.
+		if (
+			!this.destroyed &&
+			this.store &&
+			this.remoteFolders.get(remoteFolder.id) === remoteFolder
+		) {
 			this.store.ingest(record);
 		}
 	}
@@ -2173,7 +2178,11 @@ export class RelayManager extends HasLogging {
 		const record = await this.pb.collection("relays").getOne(relay.id, {
 			expand: "relay_roles_via_relay,shared_folders_via_relay,storage_quota",
 		});
-		if (!this.destroyed && this.store) {
+		if (
+			!this.destroyed &&
+			this.store &&
+			this.relays.get(relay.id) === relay
+		) {
 			this.store.ingest(record);
 		}
 	}
