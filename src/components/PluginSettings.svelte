@@ -1,6 +1,7 @@
 <script lang="ts">
 	import LoggedIn from "./LoggedIn.svelte";
 	import Relays from "./Relays.svelte";
+	import MobileRemoteFolders from "./MobileRemoteFolders.svelte";
 	import ManageRelay from "./ManageRelay.svelte";
 	import { type Relay } from "../Relay";
 	import ModalSettingsNav from "./ModalSettingsNav.svelte";
@@ -30,6 +31,7 @@
 		remoteFolder?: RemoteSharedFolder;
 		component:
 			| typeof Relays
+			| typeof MobileRemoteFolders
 			| typeof ManageRelay
 			| typeof ManageSharedFolder
 			| typeof ManageRemoteFolder;
@@ -62,6 +64,7 @@
 
 	let currentComponent:
 		| typeof Relays
+		| typeof MobileRemoteFolders
 		| typeof ManageRelay
 		| typeof ManageSharedFolder
 		| typeof ManageRemoteFolder = Relays;
@@ -191,7 +194,15 @@
 		}
 	}
 
-	$: atRoot = !currentRelay && !sharedFolder && !remoteFolder;
+	function handleAddRemoteFolder() {
+		history.push({ currentRelay, sharedFolder, remoteFolder, component: currentComponent });
+		currentRelay = undefined;
+		sharedFolder = undefined;
+		remoteFolder = undefined;
+		currentComponent = MobileRemoteFolders;
+	}
+
+	$: atRoot = !currentRelay && !sharedFolder && !remoteFolder && currentComponent !== MobileRemoteFolders;
 
 	// Obsidian's settings modal is the window's history handler while it is
 	// open: its header back arrow and the mobile hardware back button both
@@ -236,6 +247,7 @@
 					sharedFolder = view.sharedFolder;
 					remoteFolder = view.remoteFolder;
 					currentComponent = view.component;
+					if (view.component === MobileRemoteFolders) break;
 				} else if (view.sharedFolder && sharedFolders.has(view.sharedFolder)) {
 					currentRelay = view.currentRelay;
 					sharedFolder = view.sharedFolder;
@@ -345,6 +357,8 @@
 				on:manageSharedFolder={handleManageSharedFolderEvent}
 				on:manageRemoteFolder={handleManageRemoteFolderEvent}
 			></ManageRelay>
+		{:else if currentComponent === MobileRemoteFolders}
+			<MobileRemoteFolders {plugin} on:manageRelay={handleManageRelayEvent} on:manageRemoteFolder={handleManageRemoteFolderEvent} />
 		{:else}
 			<LoggedIn {plugin}>
 				<Relays
@@ -357,6 +371,7 @@
 					on:manageRemoteFolder={handleManageRemoteFolderEvent}
 					on:createRelay={handleCreateRelayEvent}
 					on:joinRelay={handleJoinRelay}
+					on:addRemoteFolder={handleAddRemoteFolder}
 				></Relays>
 			</LoggedIn>
 		{/if}
