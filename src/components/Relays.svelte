@@ -18,7 +18,7 @@
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import type { SharedFolder } from "src/SharedFolder";
 	import SharedFolderSpan from "./SharedFolderSpan.svelte";
-	import { debounce, Notice } from "obsidian";
+	import { debounce, Notice, Platform } from "obsidian";
 	import SecretText from "./SecretText.svelte";
 	import { flags } from "src/flagManager";
 	import { moment } from "obsidian";
@@ -130,6 +130,10 @@
 	}
 
 	function handleAddFolder() {
+		if (Platform.isMobile) {
+			dispatch("addRemoteFolder");
+			return;
+		}
 		// Get all available remote folders that aren't already in vault
 		const availableFolders: RemoteSharedFolder[] = [];
 		let totalRemoteFolders = 0;
