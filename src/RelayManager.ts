@@ -1546,6 +1546,28 @@ class RelayAuto
 	}
 }
 
+/** The collection streams every client keeps open, with their expands. */
+const REALTIME_COLLECTIONS = [
+	{
+		name: "relays",
+		expand: [
+			"relay_invitations_via_relay",
+			"shared_folders_via_relay",
+			"shared_folders_via_relay.creator",
+			"subscriptions_via_relay",
+			"subscriptions_via_relay.relay",
+			"subscriptions_via_relay.relay.storage_quota",
+			"creator",
+		],
+	},
+	{ name: "relay_invitations", expand: ["relay"] },
+	{ name: "providers", expand: [] },
+	{ name: "relay_roles", expand: ["user", "relay"] },
+	{ name: "shared_folders", expand: ["relay", "creator"] },
+	{ name: "shared_folder_roles", expand: ["user", "shared_folder"] },
+	{ name: "subscriptions", expand: ["user", "relay"] },
+];
+
 export class RelayManager extends HasLogging {
 	providers: ObservableMap<string, Provider>;
 	relays: ObservableMap<string, Relay>;
@@ -1564,6 +1586,10 @@ export class RelayManager extends HasLogging {
 	_offLoginManager: Unsubscriber;
 	_offFeatureFlags: Unsubscriber;
 	private _isSubscribed = false;
+	private _subscribing?: Promise<boolean>;
+	private _subscriptionGeneration = 0;
+	private _subscriptionRetry?: number;
+	private _subscriptionRetryDelay = 1_000;
 	private _rolesHydrated = false;
 	// Private folders this client created whose creator grant has not arrived
 	// yet. The server writes that grant itself and delivers it over the
@@ -1766,13 +1792,10 @@ export class RelayManager extends HasLogging {
 	}
 
 	logout() {
+		this.invalidateRegistration();
 		this.store?.clear();
 		this.user = undefined;
 		this.store = undefined;
-		// LoginManager.logout() calls pb.realtime.unsubscribe() which wipes
-		// the client-side subscription map; clear our flag so the next login
-		// re-registers.
-		this._isSubscribed = false;
 		this._rolesHydrated = false;
 	}
 
@@ -1878,53 +1901,167 @@ export class RelayManager extends HasLogging {
 		}
 	};
 
-	async subscribe() {
+	private registrationIsCurrent(
+		pb: PocketBase,
+		generation: number,
+	): boolean {
+		return (
+			!this.destroyed &&
+			this.pb === pb &&
+			this._subscriptionGeneration === generation
+		);
+	}
+
+	private invalidateRegistration(): void {
+		this._subscriptionGeneration += 1;
+		this._subscribing = undefined;
+		this._isSubscribed = false;
+		this.cancelSubscriptionRetry(true);
+	}
+
+	private cancelSubscriptionRetry(resetDelay = false): void {
+		if (this._subscriptionRetry !== undefined) {
+			window.clearTimeout(this._subscriptionRetry);
+			this._subscriptionRetry = undefined;
+		}
+		if (resetDelay) {
+			this._subscriptionRetryDelay = 1_000;
+		}
+	}
+
+	private scheduleSubscriptionRetry(
+		pb: PocketBase,
+		generation: number,
+	): void {
 		if (
-			!this.pb ||
-			!this.pb.authStore.isValid ||
-			this.pb.authStore.model?.id === undefined
+			this._subscriptionRetry !== undefined ||
+			!this.registrationIsCurrent(pb, generation)
 		) {
-			this.warn("unable to subscribe, pocketbase client is not ready");
 			return;
 		}
-		const collections = [
-			{
-				name: "relays",
-				expand: [
-					"relay_invitations_via_relay",
-					"shared_folders_via_relay",
-					"shared_folders_via_relay.creator",
-					"subscriptions_via_relay",
-					"subscriptions_via_relay.relay",
-					"subscriptions_via_relay.relay.storage_quota",
-					"creator",
-				],
-			},
-			{ name: "relay_invitations", expand: ["relay"] },
-			{ name: "providers", expand: [] },
-			{ name: "relay_roles", expand: ["user", "relay"] },
-			{ name: "shared_folders", expand: ["relay", "creator"] },
-			{ name: "shared_folder_roles", expand: ["user", "shared_folder"] },
-			{ name: "subscriptions", expand: ["user", "relay"] },
-		];
+		const delay = this._subscriptionRetryDelay;
+		this._subscriptionRetryDelay = Math.min(delay * 2, 60_000);
+		this._subscriptionRetry = window.setTimeout(() => {
+			this._subscriptionRetry = undefined;
+			if (
+				this.registrationIsCurrent(pb, generation) &&
+				pb.authStore.isValid
+			) {
+				void this.subscribe();
+			}
+		}, delay);
+	}
 
-		// Idempotent. PocketBase's subscribe() stacks listener closures onto
-		// a per-topic array with no dedup, so calling this twice would fire
-		// our _handleEvent twice per server event. offline(), logout(), and
-		// destroy() clear the flag so the next call re-registers.
+	/**
+	 * Keep this client's realtime feed registered on a live SSE stream.
+	 *
+	 * Resolves true once every collection stream, and every per-record
+	 * subscription held by the store, is registered on a connected stream.
+	 * A call while the feed is healthy is a no-op, and a call while an
+	 * attempt is already in flight shares that attempt.
+	 *
+	 * The PocketBase client gives up on its stream for good when the very
+	 * first connection attempt fails. It keeps the listener closures, and its
+	 * subscribe() stacks closures per topic without dedup, so a registration
+	 * first wipes the client's subscription map; otherwise every event would
+	 * be handled twice.
+	 */
+	subscribe(): Promise<boolean> {
+		if (this._subscribing) {
+			return this._subscribing;
+		}
+		const pb = this.pb;
+		if (
+			!pb ||
+			!pb.authStore.isValid ||
+			pb.authStore.model?.id === undefined
+		) {
+			this.cancelSubscriptionRetry(true);
+			this.warn("unable to subscribe, pocketbase client is not ready");
+			return Promise.resolve(false);
+		}
+		if (this._isSubscribed && pb.realtime.isConnected) {
+			this.cancelSubscriptionRetry(true);
+			return Promise.resolve(true);
+		}
+		this.cancelSubscriptionRetry();
+		const generation = this._subscriptionGeneration;
+		const attempt = this._register(pb, generation)
+			.catch((error) => {
+				if (this.registrationIsCurrent(pb, generation)) {
+					this.warn("realtime registration failed", error);
+					this._isSubscribed = false;
+				}
+				return false;
+			})
+			.then((healthy) => {
+				if (!this.registrationIsCurrent(pb, generation)) return false;
+				if (healthy) {
+					this.cancelSubscriptionRetry(true);
+				} else {
+					this.scheduleSubscriptionRetry(pb, generation);
+				}
+				return healthy;
+			})
+			.finally(() => {
+				if (this._subscribing === attempt) {
+					this._subscribing = undefined;
+				}
+			});
+		this._subscribing = attempt;
+		return attempt;
+	}
+
+	private async _register(
+		pb: PocketBase,
+		generation: number,
+	): Promise<boolean> {
 		if (this._isSubscribed) {
-			return;
+			this.log("realtime feed is down, reconnecting");
+		}
+		await pb.realtime.unsubscribe();
+		if (!this.registrationIsCurrent(pb, generation)) {
+			return false;
 		}
 		this._isSubscribed = true;
-
-		for (const collection of collections) {
-			void this.pb
-				.collection(collection.name)
-				.subscribe("*", (e) => this._handleEvent(collection.name, e), {
-					expand: collection.expand.join(","),
-					fetch: customFetch,
-				});
+		const results = await Promise.allSettled(
+			REALTIME_COLLECTIONS.map((collection) =>
+				pb
+					.collection(collection.name)
+					.subscribe("*", (e) => this._handleEvent(collection.name, e), {
+						expand: collection.expand.join(","),
+						fetch: customFetch,
+					}),
+			),
+		);
+		if (!this.registrationIsCurrent(pb, generation)) {
+			return false;
 		}
+		const failure = results.find(
+			(result): result is PromiseRejectedResult =>
+				result.status === "rejected",
+		);
+		if (failure) {
+			this.warn("realtime subscribe failed", failure.reason);
+			this._isSubscribed = false;
+			return false;
+		}
+		try {
+			await this.resubscribeRecords(pb, generation);
+		} catch (error) {
+			if (this.registrationIsCurrent(pb, generation)) {
+				this.warn("realtime record subscribe failed", error);
+				this._isSubscribed = false;
+			}
+			return false;
+		}
+		const healthy =
+			this.registrationIsCurrent(pb, generation) &&
+			pb.realtime.isConnected;
+		if (!healthy && this.registrationIsCurrent(pb, generation)) {
+			this._isSubscribed = false;
+		}
+		return healthy;
 	}
 
 	/**
@@ -1938,19 +2075,17 @@ export class RelayManager extends HasLogging {
 	 */
 	offline(): void {
 		if (!this.pb) return;
+		this.invalidateRegistration();
 		void this.pb.realtime.unsubscribe();
-		this._isSubscribed = false;
 	}
 
 	/**
 	 * Rebuild all PocketBase realtime state after coming back online:
-	 * re-register the top-level collection streams, reinstall per-record
-	 * subscriptions on tagged records already in the store, then refresh
-	 * the store contents via a full list fetch.
+	 * register every stream afresh, then refresh the store contents via a
+	 * full list fetch.
 	 */
 	async online(): Promise<void> {
 		await this.subscribe();
-		await this.resubscribeRecords();
 		await this.update();
 	}
 
@@ -1960,21 +2095,30 @@ export class RelayManager extends HasLogging {
 	 * subscriptions. Safe to call repeatedly; each record's existing
 	 * subscription handle is released before a fresh one is installed.
 	 */
-	private async resubscribeRecords(): Promise<void> {
+	private async resubscribeRecords(
+		pb: PocketBase,
+		generation: number,
+	): Promise<void> {
 		if (!this.store?.collections) return;
 		for (const collection of this.store.collections.values()) {
 			for (const item of collection.items()) {
+				if (!this.registrationIsCurrent(pb, generation)) return;
 				if (!hasRecordSubscription(item)) continue;
 				try {
 					item.offRecordSubscription?.();
 				} catch (e) {
 					this.debug("stale record unsubscribe failed", e);
 				}
-				item.offRecordSubscription = await this.subscribeRecord(
+				const unsubscribe = await this.subscribeRecord(
 					item.collectionName,
 					item.id,
 					[],
 				);
+				if (!this.registrationIsCurrent(pb, generation)) {
+					unsubscribe?.();
+					return;
+				}
+				item.offRecordSubscription = unsubscribe;
 			}
 		}
 	}
@@ -2493,6 +2637,7 @@ export class RelayManager extends HasLogging {
 
 	destroy(): void {
 		this.destroyed = true;
+		this.invalidateRegistration();
 		this._offLoginManager?.();
 		this._offLoginManager = null as unknown as typeof this._offLoginManager;
 		this._offFeatureFlags?.();
@@ -2502,7 +2647,6 @@ export class RelayManager extends HasLogging {
 		this.pendingCreatorGrants.clear();
 		this.pb?.cancelAllRequests();
 		void this.pb?.realtime?.unsubscribe();
-		this._isSubscribed = false;
 		this.loginManager = null as unknown as typeof this.loginManager;
 		this.store?.destroy();
 		this.pb = null;
