@@ -972,3 +972,7 @@ canvas.relay-canvas-presence {
 	box-shadow: none;
 	background: transparent;
 }
+
+.menu.system3-sync-status-folder-menu {
+	right: auto;
+}

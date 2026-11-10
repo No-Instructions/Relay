@@ -379,7 +379,6 @@ export class SyncStatusView extends ItemView {
 			menuEl.addClass("system3-sync-status-folder-menu");
 			menuEl.setCssStyles({
 				left: `${rect.left}px`,
-				right: "auto",
 				width: `${rect.width}px`,
 				minWidth: `${rect.width}px`,
 			});

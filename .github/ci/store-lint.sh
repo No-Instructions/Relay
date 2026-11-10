@@ -17,13 +17,13 @@ ROOT="$(pwd)"
 SCRATCH="${1:-${RUNNER_TEMP:-$(mktemp -d)}/store-lint}"
 mkdir -p "$SCRATCH"
 
-# Only the plugin and an ESLint 9 major are named; npm resolves the rest of
-# the peer set (@eslint/js, typescript-eslint, @eslint/json, obsidian) from
-# the plugin's peerDependencies at install time.
+# The SDK is required by the typed API rules but is not a peer dependency
+# of the lint plugin. Install it explicitly; npm resolves the remaining
+# peer set (@eslint/js, typescript-eslint, @eslint/json).
 (
   cd "$SCRATCH"
   npm init -y > /dev/null
-  npm install --no-audit --no-fund eslint-plugin-obsidianmd@latest eslint@9
+  npm install --no-audit --no-fund eslint-plugin-obsidianmd@latest eslint@9 obsidian@latest
   # Record the resolved versions, then gate each expected package separately
   # so one dropped or renamed peer cannot pass unnoticed.
   npm ls eslint eslint-plugin-obsidianmd typescript-eslint @eslint/js @eslint/json obsidian
