@@ -20,12 +20,16 @@
 		wrapHistoryBack,
 	} from "../ui/settingsHistoryBack";
 
-	import { ownerDoc, ownerWin } from "./ownerWindow";
 	interface RelayEventDetail {
 		relay: Relay;
 	}
 
+	interface ScrollPosition {
+		top: number;
+	}
+
 	interface View {
+		scroll: ScrollPosition;
 		currentRelay?: Relay;
 		sharedFolder?: SharedFolder;
 		remoteFolder?: RemoteSharedFolder;
@@ -71,12 +75,27 @@
 
 	let currentRelay: Relay | undefined;
 	let remoteFolder: RemoteSharedFolder | undefined;
-	const history: View[] = [{ component: Relays }];
+	let scroll: ScrollPosition = { top: 0 };
+	let contentEl: HTMLDivElement;
+	const history: View[] = [{ component: Relays, scroll }];
+
+	function saveView() {
+		scroll.top = contentEl?.scrollTop ?? 0;
+		history.push({
+			currentRelay,
+			sharedFolder,
+			remoteFolder,
+			component: currentComponent,
+			scroll,
+		});
+		scroll = { top: 0 };
+	}
+
+	function restoreScroll(element: HTMLDivElement, position: ScrollPosition) {
+		element.scrollTop = position.top;
+	}
 
 	export let close: () => void;
-	// The element the settings tab mounted this into; its document is the
-	// one the settings UI lives in, which is its own window when popped out.
-	export let containerEl: HTMLElement | undefined = undefined;
 
 	// function getPath(): string {
 	// 	if (sharedFolder) {
@@ -90,6 +109,7 @@
 	// }
 
 	function setPath(path: string) {
+		scroll = { top: 0 };
 		currentRelay = undefined;
 		sharedFolder = undefined;
 		remoteFolder = undefined;
@@ -142,24 +162,14 @@
 	}
 
 	function handleManageRelayEvent(event: ManageRelayEvent) {
-		history.push({
-			currentRelay,
-			sharedFolder,
-			remoteFolder,
-			component: currentComponent,
-		});
+		saveView();
 		currentRelay = event.detail.relay;
 		sharedFolder = undefined;
 		remoteFolder = undefined;
 		currentComponent = ManageRelay;
 	}
 	function handleManageSharedFolderEvent(event: ManageSharedFolderEvent) {
-		history.push({
-			currentRelay,
-			sharedFolder,
-			remoteFolder,
-			component: currentComponent,
-		});
+		saveView();
 		sharedFolder = event.detail.folder;
 		remoteFolder = event.detail.remoteFolder;
 		currentRelay = event.detail.relay;
@@ -167,12 +177,7 @@
 	}
 
 	function handleManageRemoteFolderEvent(event: ManageSharedFolderEvent) {
-		history.push({
-			currentRelay,
-			sharedFolder,
-			remoteFolder,
-			component: currentComponent,
-		});
+		saveView();
 		sharedFolder = undefined; // No local folder
 		remoteFolder = event.detail.remoteFolder;
 		currentRelay = event.detail.relay;
@@ -181,13 +186,9 @@
 
 	async function handleCreateRelayEvent(event: CreateRelayEvent) {
 		try {
-			history.push({
-				currentRelay,
-				sharedFolder,
-				remoteFolder,
-				component: currentComponent,
-			});
-			currentRelay = await plugin.relayManager.createRelay("");
+			const relay = await plugin.relayManager.createRelay("");
+			saveView();
+			currentRelay = relay;
 			currentComponent = ManageRelay;
 		} catch (error: any) {
 			handleServerError(error, "Failed to create relay");
@@ -195,7 +196,7 @@
 	}
 
 	function handleAddRemoteFolder() {
-		history.push({ currentRelay, sharedFolder, remoteFolder, component: currentComponent });
+		saveView();
 		currentRelay = undefined;
 		sharedFolder = undefined;
 		remoteFolder = undefined;
@@ -236,6 +237,7 @@
 			sharedFolder = undefined;
 			remoteFolder = undefined;
 			currentComponent = Relays;
+			scroll = { top: 0 };
 			return;
 		}
 
@@ -247,18 +249,21 @@
 					sharedFolder = view.sharedFolder;
 					remoteFolder = view.remoteFolder;
 					currentComponent = view.component;
-					if (view.component === MobileRemoteFolders) break;
+					scroll = view.scroll;
+					break;
 				} else if (view.sharedFolder && sharedFolders.has(view.sharedFolder)) {
 					currentRelay = view.currentRelay;
 					sharedFolder = view.sharedFolder;
 					remoteFolder = view.remoteFolder;
 					currentComponent = view.component;
+					scroll = view.scroll;
 					break;
 				} else if (view.remoteFolder) {
 					currentRelay = view.currentRelay;
 					sharedFolder = view.sharedFolder;
 					remoteFolder = view.remoteFolder;
 					currentComponent = view.component;
+					scroll = view.scroll;
 					break;
 				} else if (
 					view.currentRelay &&
@@ -268,11 +273,13 @@
 					sharedFolder = view.sharedFolder;
 					remoteFolder = view.remoteFolder;
 					currentComponent = view.component;
+					scroll = view.scroll;
 					break;
 				}
 				view = history.pop();
 			}
 		} else {
+			scroll = { top: 0 };
 			currentRelay = undefined;
 			sharedFolder = undefined;
 			remoteFolder = undefined;
@@ -286,12 +293,14 @@
 	}
 
 	function handleJoinRelay(event: JoinRelayEvent) {
+		scroll = { top: 0 };
 		currentRelay = event.detail.relay;
 		currentComponent = ManageRelay;
 	}
 
 	$: {
 		if (currentRelay && !$relays.has(currentRelay.id)) {
+			scroll = { top: 0 };
 			currentRelay = undefined;
 			currentComponent = Relays;
 		}
@@ -299,21 +308,11 @@
 
 	$: {
 		if (sharedFolder && !sharedFolders.has(sharedFolder)) {
+			scroll = { top: 0 };
 			sharedFolder = undefined;
 			remoteFolder = undefined;
 			currentComponent = Relays;
 		}
-	}
-
-	$: if (currentComponent || currentRelay || sharedFolder || remoteFolder) {
-		ownerWin(containerEl).setTimeout(() => {
-			const content = ownerDoc(containerEl).querySelector(
-				".vertical-tab-content",
-			);
-			if (content) {
-				content.scrollTop = 0;
-			}
-		}, 0);
 	}
 </script>
 
@@ -326,56 +325,58 @@
 	{:else if atRoot && !Platform.isMobile}
 		<Announcement {plugin} />
 	{/if}
-	<div class="vertical-tab-content">
-		{#if remoteFolder}
-			<ManageRemoteFolder
-				{plugin}
-				{remoteFolder}
-				{sharedFolders}
-				{relayRoles}
-				folderRoles={relayManager.folderRoles}
-				on:goBack={handleGoBack}
-				on:close={handleClose}
-				on:manageRelay={handleManageRelayEvent}
-				on:manageSharedFolder={handleManageSharedFolderEvent}
-			></ManageRemoteFolder>
-		{:else if sharedFolder}
-			<ManageSharedFolder
-				{plugin}
-				{sharedFolder}
-				on:goBack={handleGoBack}
-				on:close={handleClose}
-			></ManageSharedFolder>
-		{:else if currentRelay}
-			<ManageRelay
-				{plugin}
-				{relayRoles}
-				relay={currentRelay}
-				{sharedFolders}
-				on:goBack={handleGoBack}
-				on:close={handleClose}
-				on:manageSharedFolder={handleManageSharedFolderEvent}
-				on:manageRemoteFolder={handleManageRemoteFolderEvent}
-			></ManageRelay>
-		{:else if currentComponent === MobileRemoteFolders}
-			<MobileRemoteFolders {plugin} on:manageRelay={handleManageRelayEvent} on:manageRemoteFolder={handleManageRemoteFolderEvent} />
-		{:else}
-			<LoggedIn {plugin}>
-				<Relays
-					{relays}
-					{subscriptions}
-					{providers}
+	{#key scroll}
+		<div class="vertical-tab-content" bind:this={contentEl} use:restoreScroll={scroll}>
+			{#if remoteFolder}
+				<ManageRemoteFolder
 					{plugin}
+					{remoteFolder}
+					{sharedFolders}
+					{relayRoles}
+					folderRoles={relayManager.folderRoles}
+					on:goBack={handleGoBack}
+					on:close={handleClose}
 					on:manageRelay={handleManageRelayEvent}
 					on:manageSharedFolder={handleManageSharedFolderEvent}
+				></ManageRemoteFolder>
+			{:else if sharedFolder}
+				<ManageSharedFolder
+					{plugin}
+					{sharedFolder}
+					on:goBack={handleGoBack}
+					on:close={handleClose}
+				></ManageSharedFolder>
+			{:else if currentRelay}
+				<ManageRelay
+					{plugin}
+					{relayRoles}
+					relay={currentRelay}
+					{sharedFolders}
+					on:goBack={handleGoBack}
+					on:close={handleClose}
+					on:manageSharedFolder={handleManageSharedFolderEvent}
 					on:manageRemoteFolder={handleManageRemoteFolderEvent}
-					on:createRelay={handleCreateRelayEvent}
-					on:joinRelay={handleJoinRelay}
-					on:addRemoteFolder={handleAddRemoteFolder}
-				></Relays>
-			</LoggedIn>
-		{/if}
-	</div>
+				></ManageRelay>
+			{:else if currentComponent === MobileRemoteFolders}
+				<MobileRemoteFolders {plugin} on:manageRelay={handleManageRelayEvent} on:manageRemoteFolder={handleManageRemoteFolderEvent} />
+			{:else}
+				<LoggedIn {plugin}>
+					<Relays
+						{relays}
+						{subscriptions}
+						{providers}
+						{plugin}
+						on:manageRelay={handleManageRelayEvent}
+						on:manageSharedFolder={handleManageSharedFolderEvent}
+						on:manageRemoteFolder={handleManageRemoteFolderEvent}
+						on:createRelay={handleCreateRelayEvent}
+						on:joinRelay={handleJoinRelay}
+						on:addRemoteFolder={handleAddRemoteFolder}
+					></Relays>
+				</LoggedIn>
+			{/if}
+		</div>
+	{/key}
 
 	<ToastManager />
 
