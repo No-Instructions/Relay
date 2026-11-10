@@ -5623,7 +5623,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				// buffer it was typed against onto the reconciled stored contents.
 				const stored = performThreeWayMerge(data.baseText, localText, data.diskText);
 				if (stored.success) {
-					const result = performThreeWayMerge(editorBase, stored.merged!, editorText);
+					const result = performThreeWayMerge(editorBase, stored.merged, editorText);
 					event = Object.assign({}, event, { data: {
 						...data, ...result, baseText: editorBase,
 						localText: stored.merged, diskText: editorText, editorText,
@@ -5634,7 +5634,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 					// conflict, retain the stored conflict and the untouched live editor.
 					const file = performThreeWayMerge(editorBase, data.diskText, editorText);
 					if (file.success) {
-						const result = performThreeWayMerge(data.baseText, localText, file.merged!);
+						const result = performThreeWayMerge(data.baseText, localText, file.merged);
 						event = Object.assign({}, event, { data: {
 							...data, ...result, localText, diskText: file.merged, editorText,
 						} });
@@ -5738,7 +5738,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 		for (const event of events) {
 			// Re-send the event - since we're now in idle/active mode, it will be processed normally
-			this.send(event as MergeEvent);
+			this.send(event);
 		}
 	}
 
