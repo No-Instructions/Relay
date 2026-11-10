@@ -24,12 +24,7 @@
 		relay: Relay;
 	}
 
-	interface ScrollPosition {
-		top: number;
-	}
-
 	interface View {
-		scroll: ScrollPosition;
 		currentRelay?: Relay;
 		sharedFolder?: SharedFolder;
 		remoteFolder?: RemoteSharedFolder;
@@ -41,6 +36,7 @@
 			| typeof ManageRemoteFolder;
 	}
 
+
 	interface SharedFolderEventDetail {
 		folder?: SharedFolder;
 		remoteFolder?: RemoteSharedFolder;
@@ -48,181 +44,136 @@
 	}
 	interface ManageRelayEvent extends CustomEvent<RelayEventDetail> {}
 	interface ManageSharedFolderEvent extends CustomEvent<SharedFolderEventDetail> {}
-	interface GoBackEvent extends CustomEvent {
-		clear?: boolean;
-	}
-	interface CreateRelayEvent extends CustomEvent {}
-	interface CloseEvent extends CustomEvent {}
-	interface JoinRelayEvent extends CustomEvent<RelayEventDetail> {}
+	interface GoBackEvent extends CustomEvent<{ clear?: boolean }> {}
 
 	export let plugin: Live;
 	export let path: string | undefined = undefined;
+	export let close: () => void;
 	const app = plugin.app;
 	const relayManager = plugin.relayManager;
 	const relayRoles = relayManager.relayRoles;
 	const relays = relayManager.relays;
+	const remoteFolders = relayManager.remoteFolders;
 	const subscriptions = relayManager.subscriptions;
 	const providers = relayManager.providers;
 	const sharedFolders = plugin.sharedFolders;
-	let sharedFolder: SharedFolder | undefined;
+	let currentView: View = { component: Relays };
+	let history: View[] = [];
+	let desktopContentEl: HTMLDivElement | undefined;
 
-	let currentComponent:
-		| typeof Relays
-		| typeof MobileRemoteFolders
-		| typeof ManageRelay
-		| typeof ManageSharedFolder
-		| typeof ManageRemoteFolder = Relays;
-
-	let currentRelay: Relay | undefined;
-	let remoteFolder: RemoteSharedFolder | undefined;
-	let scroll: ScrollPosition = { top: 0 };
-	let contentEl: HTMLDivElement;
-	const history: View[] = [{ component: Relays, scroll }];
-
-	function saveView() {
-		scroll.top = contentEl?.scrollTop ?? 0;
-		history.push({
-			currentRelay,
-			sharedFolder,
-			remoteFolder,
-			component: currentComponent,
-			scroll,
-		});
-		scroll = { top: 0 };
+	function activate(view: View) {
+		if (!Platform.isMobile && desktopContentEl) desktopContentEl.scrollTop = 0;
+		currentView = view;
 	}
 
-	function restoreScroll(element: HTMLDivElement, position: ScrollPosition) {
-		element.scrollTop = position.top;
+	function isRoot(view: View): boolean {
+		return !view.currentRelay && !view.sharedFolder && !view.remoteFolder &&
+			view.component !== MobileRemoteFolders;
 	}
 
-	export let close: () => void;
+	function isAvailable(
+		view: View,
+		relayMap: Pick<typeof relays, "has"> = relays,
+		folders: Pick<typeof sharedFolders, "has"> = sharedFolders,
+		remoteMap: Pick<typeof remoteFolders, "has"> = remoteFolders,
+	): boolean {
+		const relay = view.currentRelay ?? view.remoteFolder?.relay;
+		return (!relay || relayMap.has(relay.id)) &&
+			(!view.sharedFolder || folders.has(view.sharedFolder)) &&
+			(!view.remoteFolder || remoteMap.has(view.remoteFolder.id));
+	}
 
-	// function getPath(): string {
-	// 	if (sharedFolder) {
-	// 		const relayParam = currentRelay ? `&relay=${currentRelay.guid}` : "";
-	// 		return `/shared-folders?id=${sharedFolder.guid}${relayParam}`;
-	// 	}
-	// 	if (currentRelay) {
-	// 		return `/relays?id=${currentRelay.guid}`;
-	// 	}
-	// 	return "/";
-	// }
+	function navigateTo(next: View) {
+		const samePage = (page: View) => page.component === next.component &&
+			page.currentRelay === next.currentRelay && page.sharedFolder === next.sharedFolder &&
+			page.remoteFolder === next.remoteFolder;
+		if (Platform.isMobile && samePage(currentView)) return;
+		const parents = history.filter((page) => isAvailable(page));
+		const ancestor = Platform.isMobile ? parents.findIndex(samePage) : -1;
+		if (ancestor >= 0) {
+			activate(parents[ancestor]);
+			history = parents.slice(0, ancestor);
+		} else {
+			history = isAvailable(currentView) ? [...parents, currentView] : parents;
+			activate(next);
+		}
+	}
 
 	function setPath(path: string) {
-		scroll = { top: 0 };
-		currentRelay = undefined;
-		sharedFolder = undefined;
-		remoteFolder = undefined;
-
-		if (path === "/") {
-			currentComponent = Relays;
-			return;
-		}
-
-		const urlParams = new URLSearchParams(path.split("?")[1] || "");
-		const id = urlParams.get("id");
-
-		if (path.startsWith("/relays")) {
-			if (id) {
-				currentRelay = relayManager.relays.find(
-					(relay) => relay.guid === id || relay.id === id,
-				);
-				currentComponent = ManageRelay;
+		const next: View = { component: Relays };
+		const params = new URLSearchParams(path.split("?")[1] || "");
+		const id = params.get("id");
+		if (path.startsWith("/relays") && id) {
+			next.currentRelay = relays.find((relay) => relay.guid === id || relay.id === id);
+			next.component = ManageRelay;
+		} else if (path.startsWith("/shared-folders") && id) {
+			next.sharedFolder = sharedFolders.find((folder) => folder.guid === id);
+			const relayId = params.get("relay");
+			if (relayId) {
+				next.currentRelay = relays.find((relay) => relay.guid === relayId || relay.id === relayId);
+			}
+			if (next.sharedFolder?.remote) {
+				next.remoteFolder = next.sharedFolder.remote;
+				next.currentRelay = next.remoteFolder.relay;
+				next.component = ManageRemoteFolder;
 			} else {
-				currentComponent = Relays;
+				next.component = ManageSharedFolder;
 			}
-			return;
 		}
-
-		if (path.startsWith("/shared-folders")) {
-			if (id) {
-				sharedFolder = sharedFolders.find((f) => f.guid === id);
-				const relayId = urlParams.get("relay");
-				if (relayId) {
-					currentRelay = relayManager.relays.find(
-						(relay) => relay.guid === relayId || relay.id === relayId,
-					);
-				}
-				if (sharedFolder?.remote) {
-					remoteFolder = sharedFolder.remote;
-					currentRelay = sharedFolder.remote.relay;
-					currentComponent = ManageRemoteFolder;
-				} else {
-					currentComponent = ManageSharedFolder;
-				}
-			}
-			return;
-		}
+		const root = history.find(isRoot) ?? (isRoot(currentView) ? currentView : { component: Relays });
+		history = isRoot(next) ? [] : [root];
+		activate(isRoot(next) ? root : next);
 	}
 
-	$: {
-		if (path) {
-			setPath(path);
-		}
-	}
+	$: if (path) setPath(path);
 
 	function handleManageRelayEvent(event: ManageRelayEvent) {
-		saveView();
-		currentRelay = event.detail.relay;
-		sharedFolder = undefined;
-		remoteFolder = undefined;
-		currentComponent = ManageRelay;
+		navigateTo({ component: ManageRelay, currentRelay: event.detail.relay });
 	}
+
 	function handleManageSharedFolderEvent(event: ManageSharedFolderEvent) {
-		saveView();
-		sharedFolder = event.detail.folder;
-		remoteFolder = event.detail.remoteFolder;
-		currentRelay = event.detail.relay;
-		currentComponent = ManageSharedFolder;
+		navigateTo({
+			component: ManageSharedFolder,
+			sharedFolder: event.detail.folder,
+			remoteFolder: event.detail.remoteFolder,
+			currentRelay: event.detail.relay,
+		});
 	}
 
 	function handleManageRemoteFolderEvent(event: ManageSharedFolderEvent) {
-		saveView();
-		sharedFolder = undefined; // No local folder
-		remoteFolder = event.detail.remoteFolder;
-		currentRelay = event.detail.relay;
-		currentComponent = ManageRemoteFolder;
+		navigateTo({
+			component: ManageRemoteFolder,
+			remoteFolder: event.detail.remoteFolder,
+			currentRelay: event.detail.relay,
+		});
 	}
 
-	async function handleCreateRelayEvent(event: CreateRelayEvent) {
+	async function handleCreateRelayEvent() {
+		const source = currentView;
 		try {
-			const relay = await plugin.relayManager.createRelay("");
-			saveView();
-			currentRelay = relay;
-			currentComponent = ManageRelay;
+			const relay = await relayManager.createRelay("");
+			if (currentView === source) navigateTo({ component: ManageRelay, currentRelay: relay });
 		} catch (error: any) {
 			handleServerError(error, "Failed to create relay");
 		}
 	}
 
 	function handleAddRemoteFolder() {
-		saveView();
-		currentRelay = undefined;
-		sharedFolder = undefined;
-		remoteFolder = undefined;
-		currentComponent = MobileRemoteFolders;
+		navigateTo({ component: MobileRemoteFolders });
 	}
 
-	$: atRoot = !currentRelay && !sharedFolder && !remoteFolder && currentComponent !== MobileRemoteFolders;
+	$: atRoot = isRoot(currentView);
 
-	// Obsidian's settings modal is the window's history handler while it is
-	// open: its header back arrow and the mobile hardware back button both
-	// call its onHistoryBack, which on phones leaves this tab for the settings
-	// list. While this view is mounted, back steps through Relay's own view
-	// history first and hands over to Obsidian only from the root view.
+	// The phone header and hardware Back button use the settings modal's
+	// history handler. Leave the Relay tab only after its page stack is empty.
 	onMount(() => {
 		const setting = (
 			app as typeof app & { setting?: Partial<HistoryBackTarget> }
 		).setting;
-		if (!setting || typeof setting.onHistoryBack !== "function") {
-			return;
-		}
+		if (!setting || typeof setting.onHistoryBack !== "function") return;
 		return wrapHistoryBack(setting as HistoryBackTarget, (next) => {
-			if (atRoot) {
-				next();
-				return;
-			}
-			goBack();
+			if (atRoot) next();
+			else goBack();
 		});
 	});
 
@@ -232,151 +183,107 @@
 
 	function goBack(clear = false) {
 		if (clear) {
-			history.length = 0;
-			currentRelay = undefined;
-			sharedFolder = undefined;
-			remoteFolder = undefined;
-			currentComponent = Relays;
-			scroll = { top: 0 };
+			activate(history.find(isRoot) ?? { component: Relays });
+			history = [];
 			return;
 		}
-
-		let view = history.pop();
-		if (view) {
-			while (view) {
-				if (!view.currentRelay && !view.sharedFolder && !view.remoteFolder) {
-					currentRelay = view.currentRelay;
-					sharedFolder = view.sharedFolder;
-					remoteFolder = view.remoteFolder;
-					currentComponent = view.component;
-					scroll = view.scroll;
-					break;
-				} else if (view.sharedFolder && sharedFolders.has(view.sharedFolder)) {
-					currentRelay = view.currentRelay;
-					sharedFolder = view.sharedFolder;
-					remoteFolder = view.remoteFolder;
-					currentComponent = view.component;
-					scroll = view.scroll;
-					break;
-				} else if (view.remoteFolder) {
-					currentRelay = view.currentRelay;
-					sharedFolder = view.sharedFolder;
-					remoteFolder = view.remoteFolder;
-					currentComponent = view.component;
-					scroll = view.scroll;
-					break;
-				} else if (
-					view.currentRelay &&
-					relayManager.relays.get(view.currentRelay.id)
-				) {
-					currentRelay = view.currentRelay;
-					sharedFolder = view.sharedFolder;
-					remoteFolder = view.remoteFolder;
-					currentComponent = view.component;
-					scroll = view.scroll;
-					break;
-				}
-				view = history.pop();
-			}
-		} else {
-			scroll = { top: 0 };
-			currentRelay = undefined;
-			sharedFolder = undefined;
-			remoteFolder = undefined;
-			currentComponent = Relays;
-		}
+		const parents = history.filter((page) => isAvailable(page));
+		activate(parents.pop() ?? { component: Relays });
+		history = parents;
 	}
 
-	function handleClose(event: CloseEvent) {
-		history.length = 0;
+	function handleClose() {
+		history = [];
 		close();
 	}
 
-	function handleJoinRelay(event: JoinRelayEvent) {
-		scroll = { top: 0 };
-		currentRelay = event.detail.relay;
-		currentComponent = ManageRelay;
+	// Retained hidden pages can finish asynchronous work. Only the visible
+	// page may initiate navigation.
+	function fromPage<T>(page: View, handle: (event: T) => unknown) {
+		return (event: T) => {
+			if (page === currentView) handle(event);
+		};
 	}
 
 	$: {
-		if (currentRelay && !$relays.has(currentRelay.id)) {
-			scroll = { top: 0 };
-			currentRelay = undefined;
-			currentComponent = Relays;
-		}
-	}
-
-	$: {
-		if (sharedFolder && !sharedFolders.has(sharedFolder)) {
-			scroll = { top: 0 };
-			sharedFolder = undefined;
-			remoteFolder = undefined;
-			currentComponent = Relays;
+		const parents = history.filter((page) => isAvailable(page, $relays, $sharedFolders, $remoteFolders));
+		if (parents.length !== history.length) history = parents;
+		const relay = currentView.currentRelay ?? currentView.remoteFolder?.relay;
+		if ((relay && !$relays.has(relay.id)) ||
+			(currentView.sharedFolder && !$sharedFolders.has(currentView.sharedFolder))) {
+			goBack();
 		}
 	}
 </script>
 
+{#snippet pageContent(page: View)}
+	{#if page.remoteFolder}
+		<ManageRemoteFolder
+			{plugin}
+			remoteFolder={page.remoteFolder}
+			{sharedFolders}
+			{relayRoles}
+			folderRoles={relayManager.folderRoles}
+			on:goBack={fromPage(page, handleGoBack)}
+			on:close={fromPage(page, handleClose)}
+			on:manageRelay={fromPage(page, handleManageRelayEvent)}
+			on:manageSharedFolder={fromPage(page, handleManageSharedFolderEvent)}
+		></ManageRemoteFolder>
+	{:else if page.sharedFolder}
+		<ManageSharedFolder
+			{plugin}
+			sharedFolder={page.sharedFolder}
+			on:goBack={fromPage(page, handleGoBack)}
+			on:close={fromPage(page, handleClose)}
+		></ManageSharedFolder>
+	{:else if page.currentRelay}
+		<ManageRelay
+			{plugin}
+			{relayRoles}
+			relay={page.currentRelay}
+			{sharedFolders}
+			on:goBack={fromPage(page, handleGoBack)}
+			on:close={fromPage(page, handleClose)}
+			on:manageSharedFolder={fromPage(page, handleManageSharedFolderEvent)}
+			on:manageRemoteFolder={fromPage(page, handleManageRemoteFolderEvent)}
+		></ManageRelay>
+	{:else if page.component === MobileRemoteFolders}
+		<MobileRemoteFolders {plugin} on:manageRelay={fromPage(page, handleManageRelayEvent)} on:manageRemoteFolder={fromPage(page, handleManageRemoteFolderEvent)} />
+	{:else}
+		<LoggedIn {plugin}>
+			<Relays
+				{relays}
+				{subscriptions}
+				{providers}
+				{plugin}
+				on:manageRelay={fromPage(page, handleManageRelayEvent)}
+				on:manageSharedFolder={fromPage(page, handleManageSharedFolderEvent)}
+				on:manageRemoteFolder={fromPage(page, handleManageRemoteFolderEvent)}
+				on:createRelay={fromPage(page, handleCreateRelayEvent)}
+				on:joinRelay={fromPage(page, handleManageRelayEvent)}
+				on:addRemoteFolder={fromPage(page, handleAddRemoteFolder)}
+			></Relays>
+		</LoggedIn>
+	{/if}
+{/snippet}
+
 <div class="relay-settings">
-	<!-- On phones the settings header overlays the top of the tab and its own
-	     back arrow drives this view's history, so Relay's chevron bar would
-	     only sit hidden beneath it. -->
 	{#if !atRoot && !Platform.isPhone}
 		<ModalSettingsNav on:goBack={handleGoBack}></ModalSettingsNav>
 	{:else if atRoot && !Platform.isMobile}
 		<Announcement {plugin} />
 	{/if}
-	{#key scroll}
-		<div class="vertical-tab-content" bind:this={contentEl} use:restoreScroll={scroll}>
-			{#if remoteFolder}
-				<ManageRemoteFolder
-					{plugin}
-					{remoteFolder}
-					{sharedFolders}
-					{relayRoles}
-					folderRoles={relayManager.folderRoles}
-					on:goBack={handleGoBack}
-					on:close={handleClose}
-					on:manageRelay={handleManageRelayEvent}
-					on:manageSharedFolder={handleManageSharedFolderEvent}
-				></ManageRemoteFolder>
-			{:else if sharedFolder}
-				<ManageSharedFolder
-					{plugin}
-					{sharedFolder}
-					on:goBack={handleGoBack}
-					on:close={handleClose}
-				></ManageSharedFolder>
-			{:else if currentRelay}
-				<ManageRelay
-					{plugin}
-					{relayRoles}
-					relay={currentRelay}
-					{sharedFolders}
-					on:goBack={handleGoBack}
-					on:close={handleClose}
-					on:manageSharedFolder={handleManageSharedFolderEvent}
-					on:manageRemoteFolder={handleManageRemoteFolderEvent}
-				></ManageRelay>
-			{:else if currentComponent === MobileRemoteFolders}
-				<MobileRemoteFolders {plugin} on:manageRelay={handleManageRelayEvent} on:manageRemoteFolder={handleManageRemoteFolderEvent} />
-			{:else}
-				<LoggedIn {plugin}>
-					<Relays
-						{relays}
-						{subscriptions}
-						{providers}
-						{plugin}
-						on:manageRelay={handleManageRelayEvent}
-						on:manageSharedFolder={handleManageSharedFolderEvent}
-						on:manageRemoteFolder={handleManageRemoteFolderEvent}
-						on:createRelay={handleCreateRelayEvent}
-						on:joinRelay={handleJoinRelay}
-						on:addRemoteFolder={handleAddRemoteFolder}
-					></Relays>
-				</LoggedIn>
-			{/if}
+	{#if Platform.isMobile}
+		{#each [...history, currentView] as page (page)}
+			<div class="vertical-tab-content relay-settings-page" hidden={page !== currentView}>
+				{@render pageContent(page)}
+			</div>
+		{/each}
+	{:else}
+		<div class="vertical-tab-content relay-settings-page" bind:this={desktopContentEl}>
+			{@render pageContent(currentView)}
 		</div>
-	{/key}
+	{/if}
 
 	<ToastManager />
 
@@ -413,6 +320,10 @@
 		padding-left: 1em;
 		border-top-left-radius: 1em;
 	}
+	.vertical-tab-content[hidden] {
+		display: none;
+	}
+
 	.vertical-tab-content {
 		flex: 1 1 auto;
 		height: auto;
