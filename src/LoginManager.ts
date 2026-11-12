@@ -1,5 +1,16 @@
 "use strict";
 
+import {
+	refreshRelayToken,
+	logoutRelay,
+	recordOAuthResponse,
+} from "../packages/relay-auth/src/session";
+import {
+	RelayOAuthClient,
+	Provider,
+} from "../packages/relay-auth/src/OAuthClient";
+export { Provider } from "../packages/relay-auth/src/OAuthClient";
+
 import type { RequestUrlResponsePromise } from "obsidian";
 import {
 	User,
@@ -10,7 +21,6 @@ import {
 } from "./User";
 import PocketBase, {
 	BaseAuthStore,
-	type AuthProviderInfo,
 	type RecordAuthResponse,
 	type RecordModel,
 } from "pocketbase";
@@ -77,7 +87,12 @@ interface NormalizedOAuthUser {
 function normalizeOAuthUser(rawUser: unknown): NormalizedOAuthUser | null {
 	const user = rawUser as Record<string, unknown>;
 	// Handle Google user
-	if ("email" in user && "name" in user && "given_name" in user && "family_name" in user) {
+	if (
+		"email" in user &&
+		"name" in user &&
+		"given_name" in user &&
+		"family_name" in user
+	) {
 		const googleUser = rawUser as GoogleUser;
 		return {
 			name: googleUser.name,
@@ -91,11 +106,11 @@ function normalizeOAuthUser(rawUser: unknown): NormalizedOAuthUser | null {
 	// Handle GitHub user
 	if ("email" in user && "login" in user && "avatar_url" in user) {
 		const githubUser = rawUser as GitHubUser;
-		const nameParts = (githubUser.name || githubUser.login).split(' ');
+		const nameParts = (githubUser.name || githubUser.login).split(" ");
 		return {
 			name: githubUser.name || githubUser.login,
 			given_name: nameParts[0] || githubUser.login,
-			family_name: nameParts.slice(1).join(' ') || '',
+			family_name: nameParts.slice(1).join(" ") || "",
 			email: githubUser.email,
 			picture: githubUser.avatar_url,
 		};
@@ -148,7 +163,8 @@ export function createUserFromOAuth(
 	getFileUrl?: ProfileFileUrl,
 	streamerMode = false,
 ): User {
-	const normalizedOAuth = rawUser && !streamerMode ? normalizeOAuthUser(rawUser) : null;
+	const normalizedOAuth =
+		rawUser && !streamerMode ? normalizeOAuthUser(rawUser) : null;
 
 	return new User(
 		id,
@@ -170,22 +186,6 @@ export function createUserFromOAuth(
 		),
 		token,
 	);
-}
-
-export class Provider {
-	fullAuthUrl: string;
-	info: AuthProviderInfo;
-	login: (code: string) => Promise<RecordAuthResponse<RecordModel>>;
-
-	constructor(
-		authUrl: string,
-		info: AuthProviderInfo,
-		loginFn: (code: string) => Promise<RecordAuthResponse<RecordModel>>,
-	) {
-		this.fullAuthUrl = authUrl;
-		this.info = info;
-		this.login = loginFn;
-	}
 }
 
 export interface LoginSettings {
@@ -254,9 +254,7 @@ export class LoginManager extends Observable<LoginManager> {
 		if (this.pb.authStore.isValid) {
 			const pb = this.pb;
 			this.user = this.makeUser(pb.authStore);
-			pb
-				.collection("users")
-				.authRefresh()
+			refreshRelayToken(pb)
 				.then((authData) => {
 					if (this.pb !== pb) {
 						return;
@@ -312,12 +310,7 @@ export class LoginManager extends Observable<LoginManager> {
 		);
 		this.notifyListeners();
 		if (authData) {
-			this.pb
-				.collection("oauth2_response")
-				.create({
-					user: authData.record.id,
-					oauth_response: authData.meta?.rawUser as unknown,
-				})
+			recordOAuthResponse(this.pb, authData)
 				.then(() => {
 					this.notifyListeners();
 				})
@@ -416,11 +409,12 @@ export class LoginManager extends Observable<LoginManager> {
 		error?: string;
 		licenseInfo?: unknown;
 	}> {
-		const result = await this.endpointManager.validateAndSetEndpoints(timeoutMs);
+		const result =
+			await this.endpointManager.validateAndSetEndpoints(timeoutMs);
 		if (result.success) {
 			this.updateNetworkMetricDomains();
 		}
-		
+
 		if (result.success && this.endpointManager.hasValidatedEndpoints()) {
 			// Clean up old PocketBase instance before creating new one
 			this.pb.cancelAllRequests();
@@ -430,7 +424,7 @@ export class LoginManager extends Observable<LoginManager> {
 			this.pb = this.createPocketBase(this.endpointManager.getAuthUrl());
 			this.log("Updated PocketBase instance with validated endpoints");
 		}
-		
+
 		return result;
 	}
 
@@ -479,9 +473,7 @@ export class LoginManager extends Observable<LoginManager> {
 	}
 
 	logout() {
-		this.pb.cancelAllRequests();
-		void this.pb.realtime.unsubscribe();
-		this.pb.authStore.clear();
+		logoutRelay(this.pb);
 		this.user = undefined;
 		this.notifyListeners();
 	}
@@ -501,10 +493,10 @@ export class LoginManager extends Observable<LoginManager> {
 			// Extract the base authorization URL (everything before the query parameters)
 			const url = new URL(authUrl);
 			const baseUrl = `${url.protocol}//${url.host}${url.pathname}`;
-			
+
 			// Escape special regex characters
-			const escapedBaseUrl = baseUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-			
+			const escapedBaseUrl = baseUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 			return new RegExp(
 				`^${escapedBaseUrl}.*?[?&]redirect_uri=(${redirectUrl}|${encodeURIComponent(redirectUrl)})`,
 				"i",
@@ -528,15 +520,20 @@ export class LoginManager extends Observable<LoginManager> {
 		if (providers) {
 			const oidcProvider = providers["oidc"];
 			if (oidcProvider?.info?.authUrl) {
-				console.debug("[OIDC Provider] Creating dynamic intercept for authUrl:", oidcProvider.info.authUrl);
+				console.debug(
+					"[OIDC Provider] Creating dynamic intercept for authUrl:",
+					oidcProvider.info.authUrl,
+				);
 				intercepts.push(createInterceptFromAuthUrl(oidcProvider.info.authUrl));
 			}
 		} else {
 			// Fallback generic OIDC pattern when no provider info is available
-			intercepts.push(new RegExp(
-				`.*?/auth.*?[?&]redirect_uri=(${redirectUrl}|${encodeURIComponent(redirectUrl)})`,
-				"i",
-			));
+			intercepts.push(
+				new RegExp(
+					`.*?/auth.*?[?&]redirect_uri=(${redirectUrl}|${encodeURIComponent(redirectUrl)})`,
+					"i",
+				),
+			);
 		}
 
 		return intercepts;
@@ -546,115 +543,35 @@ export class LoginManager extends Observable<LoginManager> {
 		// This method can be called to update webview intercepts with provider info
 		// Implementation depends on how the main plugin handles intercept updates
 		const newIntercepts = this.getWebviewIntercepts(providers);
-		console.debug("[OIDC Provider] Updated webview intercepts:", newIntercepts.map(r => r.source));
+		console.debug(
+			"[OIDC Provider] Updated webview intercepts:",
+			newIntercepts.map((r) => r.source),
+		);
 		return newIntercepts;
 	}
 
+	private oauthClient() {
+		return new RelayOAuthClient(
+			() => this.pb,
+			this.timeProvider,
+			(data, provider) => this.setup(data, provider),
+			this.beforeLogin,
+		);
+	}
 	async initiateManualOAuth2CodeFlow(
 		whichFetch: typeof fetch | typeof customFetch,
 		providerNames: string[],
 	): Promise<Record<string, Provider>> {
-		this.beforeLogin();
-		const authMethods = await this.pb
-			.collection("users")
-			.listAuthMethods({ fetch: whichFetch })
-			.catch((e: { originalError?: unknown }) => {
-				throw e.originalError;
-			});
-
-		const redirectUrl = this.pb.buildUrl("/api/oauth2-redirect");
-		const providers: Record<string, Provider> = {};
-
-		for (const providerName of providerNames) {
-			const provider = authMethods.authProviders.find((provider_) => {
-				return provider_.name === providerName;
-			});
-
-			if (!provider) {
-				this.log(`Warning: unable to find provider: ${providerName}`);
-				continue;
-			}
-
-			const loginFunction = async (code: string) => {
-				return this.pb
-					.collection("users")
-					.authWithOAuth2Code(
-						provider.name,
-						code,
-						provider.codeVerifier,
-						redirectUrl,
-						{
-							fetch: whichFetch,
-						},
-					)
-					.then((authData) => {
-						this.setup(authData, provider.name);
-						return authData;
-					});
-			};
-
-			providers[providerName] = new Provider(
-				provider.authUrl + redirectUrl,
-				provider,
-				loginFunction,
-			);
-		}
-
-		if (Object.keys(providers).length === 0) {
-			throw new Error(
-				`No valid providers found from requested list: ${providerNames.join(", ")}`,
-			);
-		}
-
-		return providers;
+		return this.oauthClient().initiateManualOAuth2CodeFlow(
+			whichFetch,
+			providerNames,
+		);
 	}
-
 	async poll(provider: Provider): Promise<RecordAuthResponse<RecordModel>> {
-		let counter = 0;
-		const interval = 1000;
-		return new Promise((resolve, reject) => {
-			const timer = this.timeProvider.setInterval(() => {
-				counter += 1;
-				if (counter >= 30) {
-					this.timeProvider.clearInterval(timer);
-					return reject(
-						new Error(
-							`Auth timeout: Timed out after ${
-								(counter * interval) / 1000
-							} seconds`,
-						),
-					);
-				}
-				this.pb
-					.collection("code_exchange")
-					.getOne(provider.info.state.slice(0, 15))
-					.then((response) => {
-						if (response) {
-							this.timeProvider.clearInterval(timer);
-							return resolve(
-								provider.login((response as unknown as { code: string }).code),
-							);
-						}
-					})
-					.catch((e) => {});
-			}, interval);
-		});
+		return this.oauthClient().poll(provider);
 	}
-
 	async login(provider: string): Promise<boolean> {
-		this.beforeLogin();
-		try {
-			const authData = await this.pb.collection("users").authWithOAuth2({
-				provider: provider,
-			});
-			return this.setup(authData, provider);
-		} catch (e) {
-			// Clean up realtime subscription to prevent reconnection loops
-			// authWithOAuth2 internally subscribes to @oauth2 via SSE, and if it fails,
-			// PocketBase's realtime client will keep trying to reconnect indefinitely
-			void this.pb.realtime.unsubscribe();
-			throw e;
-		}
+		return this.oauthClient().login(provider);
 	}
 
 	async openLoginPage() {

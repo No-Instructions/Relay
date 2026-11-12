@@ -1,5 +1,10 @@
 "use strict";
 
+import {
+	registerDevice,
+	registerVault,
+} from "../packages/relay-auth/src/registration";
+
 import { Platform } from "obsidian";
 import type { LoginManager } from "./LoginManager";
 import { Observable } from "./observable/Observable";
@@ -92,85 +97,29 @@ export class DeviceManager extends Observable<DeviceManager> {
 
 		try {
 			// Register device
-			await this.registerDevice(deviceId, platform, userId);
+			await registerDevice(
+				this.loginManager.pb,
+				(...values) => this.log(...values),
+				deviceId,
+				platform,
+				userId,
+				(...values) => this.error(...values),
+			);
 
 			// Register vault
-			await this.registerVault(this.appId, deviceId, userId);
+			await registerVault(
+				this.loginManager.pb,
+				(...values) => this.log(...values),
+				this.appId,
+				deviceId,
+				userId,
+				(...values) => this.error(...values),
+			);
 
 			this.registered = true;
 			this.log("Device and vault registered successfully");
 		} catch (error) {
 			this.error("Failed to register device/vault:", error);
-		}
-	}
-
-	private async registerDevice(
-		deviceId: string,
-		platform: string,
-		userId: string,
-	): Promise<void> {
-		const pb = this.loginManager.pb;
-
-		try {
-			// Try to create new device record
-			await pb.collection("devices").create({
-				id: deviceId,
-				name: platform,
-				platform: platform,
-				user: userId,
-			});
-			this.log("Created new device record:", deviceId);
-		} catch (e) {
-			// Record may already exist, try to update
-			const status = (e as { status?: number }).status;
-			if (status === 400 || status === 409) {
-				try {
-					await pb.collection("devices").update(deviceId, {
-						platform: platform,
-						user: userId,
-					});
-					this.log("Updated existing device record:", deviceId);
-				} catch (updateError) {
-					this.error("Failed to update device:", updateError);
-					throw updateError;
-				}
-			} else {
-				throw e;
-			}
-		}
-	}
-
-	private async registerVault(
-		vaultId: string,
-		deviceId: string,
-		userId: string,
-	): Promise<void> {
-		const pb = this.loginManager.pb;
-
-		try {
-			// Try to create new vault record
-			await pb.collection("vaults").create({
-				id: vaultId,
-				device: deviceId,
-				user: userId,
-			});
-			this.log("Created new vault record:", vaultId);
-		} catch (e) {
-			// Record may already exist, try to update
-			const status = (e as { status?: number }).status;
-			if (status === 400 || status === 409) {
-				try {
-					await pb.collection("vaults").update(vaultId, {
-						device: deviceId,
-					});
-					this.log("Updated existing vault record:", vaultId);
-				} catch (updateError) {
-					this.error("Failed to update vault:", updateError);
-					throw updateError;
-				}
-			} else {
-				throw e;
-			}
 		}
 	}
 
