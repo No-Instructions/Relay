@@ -19,6 +19,7 @@ import type {
   PersistedStateMeta,
 } from '../types';
 import { DestroyedError, isDestroyedError } from '../../DestroyedError';
+import { StateMetaIndex, stateMeta } from './StateMetaIndex';
 
 // =============================================================================
 // Database Configuration
@@ -119,13 +120,17 @@ function sanitizeMergeState(state: PersistedMergeState): PersistedMergeState {
  *
  * Holds a single IDB connection for the vault and tracks pending writes
  * so callers can flush before teardown. Created once per vault in the
- * plugin and shared across SharedFolders.
+ * plugin and shared across SharedFolders. Metadata is indexed once per store
+ * lifetime and kept current by committed writes, without retaining note bodies.
  */
 export class HSMStore {
   private _openDb: Promise<IDBDatabase>;
   private _db: Promise<IDBDatabase>;
   private _dbInstance: IDBDatabase | null = null;
   private _pendingWrites = new Set<Promise<unknown>>();
+  private _stateMeta: StateMetaIndex | null = null;
+  private _stateMetaLoad: Promise<StateMetaIndex> | null = null;
+  private _cancelStateMetaLoad: (() => void) | null = null;
   private _destroyed = false;
   private _dbClosed = false;
   private _destroyPromise: Promise<void> | null = null;
@@ -165,8 +170,12 @@ export class HSMStore {
     const p = this._db
       .then(db => {
         if (this._dbClosed) return;
-        const [store] = idb.transact(db, [STORES.states], 'readwrite');
-        return idb.put(store, sanitized as unknown as string);
+        const meta = this._stateMeta || this._stateMetaLoad
+          ? structuredClone(stateMeta(sanitized))
+          : null;
+        return this._write(db, store => { store.put(sanitized); }, index => {
+          if (meta) index.set(meta);
+        });
       })
       .catch(err => {
         if (this._shouldIgnoreClosingError(err)) return;
@@ -189,8 +198,7 @@ export class HSMStore {
     const p = this._db
       .then(db => {
         if (this._dbClosed) return;
-        const [store] = idb.transact(db, [STORES.states], 'readwrite');
-        return idb.del(store, guid);
+        return this._write(db, store => { store.delete(guid); }, index => index.delete(guid));
       })
       .catch(err => {
         if (this._shouldIgnoreClosingError(err)) return;
@@ -217,64 +225,91 @@ export class HSMStore {
   }
 
   async getAllStateMeta(): Promise<PersistedStateMeta[]> {
-    return this._read<PersistedStateMeta[]>([], db => this._collectStateMeta(db));
+    return (await this._getStateMeta()).all();
   }
 
-  private _collectStateMeta(db: IDBDatabase): Promise<PersistedStateMeta[]> {
+  /**
+   * Read only this folder's metadata. Unstamped records are included when their
+   * guid belongs to the folder's committed membership, sampled after loading.
+   */
+  async getFolderStateMeta(
+    folder: string,
+    getMemberGuids: () => Iterable<string> = () => [],
+  ): Promise<PersistedStateMeta[]> {
+    const index = await this._getStateMeta();
+    if (this._destroyed) return [];
+    return index.forFolder(folder, getMemberGuids());
+  }
+
+  private async _getStateMeta(): Promise<StateMetaIndex> {
+    // Match an IndexedDB read's ordering with writes already requested by the
+    // caller, including writes whose transaction has not opened yet.
+    if (this._pendingWrites.size > 0) {
+      await Promise.allSettled([...this._pendingWrites]);
+    }
+    if (this._destroyed) return new StateMetaIndex();
+    if (this._stateMeta) return this._stateMeta;
+    if (!this._stateMetaLoad) {
+      this._stateMetaLoad = this._read(new StateMetaIndex(), db => this._collectStateMeta(db))
+        .then(index => {
+          if (this._destroyed) return new StateMetaIndex();
+          this._stateMeta = index;
+          return index;
+        })
+        .finally(() => {
+          this._stateMetaLoad = null;
+        });
+    }
+    return this._stateMetaLoad;
+  }
+
+  private _collectStateMeta(db: IDBDatabase): Promise<StateMetaIndex> {
+    if (this._destroyed) return Promise.resolve(new StateMetaIndex());
     const [store] = idb.transact(db, [STORES.states], 'readonly');
-    const results: PersistedStateMeta[] = [];
+    const transaction = store.transaction;
+    const index = new StateMetaIndex();
     return new Promise((resolve, reject) => {
       const req = store.openCursor();
-      req.onsuccess = () => {
-        const cursor = req.result;
-        if (!cursor) { resolve(results); return; }
-        const record = cursor.value as PersistedHSMRecord;
-        if (record.kind === 'canvas') {
-          // Canvas records project their own lightweight meta: no
-          // snapshots, no fork, lastStatePath opaque (a canvas state
-          // path, cast for the shared projection shape). Consumers must
-          // discriminate on `kind` before interpreting document fields.
-          results.push({
-            kind: 'canvas',
-            guid: record.guid,
-            path: record.path,
-            folder: record.folder,
-            lcaMeta: record.lca
-              ? { meta: { hash: record.lca.hash, mtime: record.lca.mtime } }
-              : null,
-            disk: record.disk,
-            localSnapshot: record.localSnapshot ?? null,
-            lastStatePath: record.lastStatePath as PersistedStateMeta['lastStatePath'],
-            hasFork: false,
-            persistedAt: record.persistedAt,
-          });
-          cursor.continue();
-          return;
+      let settled = false;
+      const detach = () => {
+        req.onsuccess = null;
+        req.onerror = null;
+        transaction.oncomplete = null;
+        transaction.onabort = null;
+        if (this._cancelStateMetaLoad === cancel) this._cancelStateMetaLoad = null;
+      };
+      const fail = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        detach();
+        index.clear();
+        reject(error);
+      };
+      const cancel = () => {
+        if (settled) return;
+        fail(this._destroyError ?? new DestroyedError('HSMStore', 'metadata scan cancelled'));
+        try {
+          transaction.abort();
+        } catch {
+          // A finished transaction cannot be aborted; its handlers are already detached.
         }
-        const s = record;
-        results.push({
-          guid: s.guid,
-          path: s.path,
-          folder: s.folder,
-          // Records written before snapshots were persisted have no usable
-          // baseline metadata; they project a null lcaMeta and take the
-          // full-load path, where recovery re-derives the baseline.
-          lcaMeta: s.lca?.snapshot
-            ? {
-                meta: { hash: s.lca.hash, mtime: s.lca.mtime },
-                snapshot: s.lca.snapshot,
-              }
-            : null,
-          disk: s.disk,
-          localSnapshot: s.localSnapshot ?? null,
-          lastStatePath: s.lastStatePath,
-          deferredConflict: s.deferredConflict,
-          hasFork: !!s.fork,
-          persistedAt: s.persistedAt,
-        });
+      };
+      this._cancelStateMetaLoad = cancel;
+      transaction.oncomplete = () => {
+        if (settled) return;
+        settled = true;
+        detach();
+        resolve(index);
+      };
+      transaction.onabort = () => fail(transaction.error ?? new Error('Metadata read aborted'));
+      req.onsuccess = () => {
+        if (this._destroyed) { cancel(); return; }
+        const cursor = req.result;
+        if (!cursor) return;
+        index.set(stateMeta(cursor.value as PersistedHSMRecord));
         cursor.continue();
       };
-      req.onerror = () => reject(req.error ?? new Error("IndexedDB open failed"));
+      req.onerror = () => fail(req.error ?? new Error('Metadata cursor failed'));
     });
   }
 
@@ -287,8 +322,7 @@ export class HSMStore {
     const p = this._db
       .then(db => {
         if (this._dbClosed) return;
-        const [statesStore] = idb.transact(db, [STORES.states], 'readwrite');
-        return idb.del(statesStore, IDBKeyRange.lowerBound(''));
+        return this._write(db, store => { store.clear(); }, index => index.clear());
       })
       .catch(err => {
         if (this._shouldIgnoreClosingError(err)) return;
@@ -315,6 +349,9 @@ export class HSMStore {
     this._destroyPromise = (async () => {
       this._destroyError = new DestroyedError('HSMStore', 'destroyed before IndexedDB settled');
       this._destroyed = true;
+      this._cancelStateMetaLoad?.();
+      this._stateMeta?.clear();
+      this._stateMeta = null;
       this._rejectDbForDestroy?.(this._destroyError);
       this._rejectDbForDestroy = undefined;
 
@@ -353,6 +390,25 @@ export class HSMStore {
       if (this._shouldIgnoreClosingError(err)) return fallback;
       throw err;
     }
+  }
+
+  /** Update the in-memory projection only after the transaction commits. */
+  private _write(
+    db: IDBDatabase,
+    write: (store: IDBObjectStore) => void,
+    update: (index: StateMetaIndex) => void,
+  ): Promise<void> {
+    const [store] = idb.transact(db, [STORES.states], 'readwrite');
+    return new Promise((resolve, reject) => {
+      write(store);
+      store.transaction.oncomplete = () => {
+        // Transactions on this store are ordered: writes preceding the first
+        // read are included in its cursor; later commits update its index.
+        if (!this._destroyed && this._stateMeta) update(this._stateMeta);
+        resolve();
+      };
+      store.transaction.onabort = () => reject(store.transaction.error ?? new Error('State write aborted'));
+    });
   }
 
   private _trackWrite(p: Promise<unknown>): void {
