@@ -112,7 +112,7 @@ export interface MergeManagerConfig {
   /**
    * Callback to bulk-load lightweight state metadata for cache initialization.
    * Called during initialize() to populate LCA metadata and state vector caches.
-   * Production: pass a function that uses getAllStateMeta from MergeHSMDatabase.
+   * Production: pass a function that reads this folder from the shared HSMStore metadata index.
    * Tests: can omit for default empty array.
    */
   loadAllStates?: () => Promise<PersistedStateMeta[]>;
