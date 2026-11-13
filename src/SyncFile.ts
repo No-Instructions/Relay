@@ -1080,6 +1080,10 @@ export class SyncFile
 		return true;
 	}
 
+	public get materializesOnTransfer(): boolean {
+		return true;
+	}
+
 	public get canPublishContent(): boolean {
 		return this.sharedFolder.canWriteContent;
 	}

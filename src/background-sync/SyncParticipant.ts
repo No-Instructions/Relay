@@ -49,18 +49,21 @@ export interface SyncOperationContext {
 	isCancelled(): boolean;
 }
 
+/** A transfer can create a file before a persistent participant exists. */
+export interface DownloadParticipant extends WorkTarget {
+	/** Reject ineligible work before it claims a queue slot or counts as progress. */
+	checkSyncWork?(intent: WorkIntent): void;
+	/** Resolve when the server's content has been applied, or reject on failure. */
+	transferFromServer(context: SyncOperationContext): Promise<Uint8Array | undefined>;
+}
+
 /**
  * A synced file type able to plan and perform its own work. The folder asks
  * every participant on each occasion and admits the concatenation; the
- * engine runs what was admitted by calling back into the participant. Neither
- * names a file type: the participant answers from its own machine surface —
- * cold when it can — plans nothing when it is current, and drives its
- * machine through the shared signal vocabulary while it works.
+ * engine runs what was admitted by calling back into the participant.
  */
-export interface SyncParticipant extends WorkTarget {
+export interface SyncParticipant extends DownloadParticipant {
 	planSyncWork(context: PlanContext): WorkRequest<SyncParticipant>[];
-	/** Reject ineligible work before it claims a queue slot or counts as progress. */
-	checkSyncWork?(intent: WorkIntent): void;
 	/**
 	 * Whether a session can be taken now. A file that cannot (one parked in
 	 * a state only its own resolution surface may move) has the request
@@ -77,14 +80,6 @@ export interface SyncParticipant extends WorkTarget {
 		intent: SessionIntent,
 		context: SyncOperationContext,
 	): Promise<void>;
-	/**
-	 * Bring the server's full state for this file down to the local copy.
-	 * Resolves the bytes applied, or undefined when the server held no
-	 * content; rejects on failure.
-	 */
-	transferFromServer(
-		context: SyncOperationContext,
-	): Promise<Uint8Array | undefined>;
 }
 
 export function isSyncParticipant(

@@ -28,9 +28,11 @@ import {
 	isRetryableSyncError,
 	ProviderTimeoutError,
 } from "./background-sync/errors";
-import type {
-	SyncOperationContext,
-	SyncParticipant,
+import {
+	isSyncParticipant,
+	type DownloadParticipant,
+	type SyncOperationContext,
+	type SyncParticipant,
 } from "./background-sync/SyncParticipant";
 import {
 	createWorkRequest,
@@ -39,8 +41,8 @@ import {
 	type SyncCompletionOutcome,
 	type WorkCompletion,
 	type WorkRequest,
+	type WorkPriority,
 	type WorkScope,
-	type WorkTarget,
 } from "./background-sync/WorkRequest";
 import {
 	WorkLane,
@@ -608,15 +610,21 @@ export class BackgroundSync extends HasLogging {
 	 * outcome tells the caller.
 	 */
 	admit(
-		request: WorkRequest<SyncParticipant>,
+		request: WorkRequest<DownloadParticipant>,
 		options: { deferFlush?: boolean } = {},
 	): Promise<WorkCompletion> {
+		const sessionTarget = request.scope === "session"
+			? (isSyncParticipant(request.target) ? request.target : null)
+			: undefined;
+		if (sessionTarget === null) {
+			return Promise.reject(new Error("Session work requires a sync participant"));
+		}
 		try {
 			request.target.checkSyncWork?.(request.intent);
 		} catch (error) {
 			return Promise.reject(errorFromUnknown(error));
 		}
-		if (request.scope === "session" && !request.target.acceptsSession()) {
+		if (sessionTarget && !sessionTarget.acceptsSession()) {
 			this.clearFailure(this.failureKey(laneFailureKind(request.scope), request.guid));
 			return Promise.resolve({ outcome: "completed" });
 		}
@@ -648,7 +656,7 @@ export class BackgroundSync extends HasLogging {
 	 * completions in request order.
 	 */
 	admitAll(
-		requests: readonly WorkRequest<SyncParticipant>[],
+		requests: readonly WorkRequest<DownloadParticipant>[],
 	): Promise<WorkCompletion>[] {
 		const completions: Promise<WorkCompletion>[] = [];
 		const touched = new Set<WorkScope>();
@@ -663,7 +671,7 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	private async admitAfterActive(
-		request: WorkRequest<SyncParticipant>,
+		request: WorkRequest<DownloadParticipant>,
 		settled: Promise<unknown>,
 	): Promise<WorkCompletion> {
 		// The stronger request is the follow-up operation. Let it run even if
@@ -681,15 +689,21 @@ export class BackgroundSync extends HasLogging {
 	 * the head. Rejects with the original error once retries are spent.
 	 */
 	admitForRetry(
-		request: WorkRequest<SyncParticipant>,
+		request: WorkRequest<DownloadParticipant>,
 		error: Error,
 	): Promise<WorkCompletion> {
+		const sessionTarget = request.scope === "session"
+			? (isSyncParticipant(request.target) ? request.target : null)
+			: undefined;
+		if (sessionTarget === null) {
+			return Promise.reject(new Error("Session work requires a sync participant"));
+		}
 		try {
 			request.target.checkSyncWork?.(request.intent);
 		} catch (error) {
 			return Promise.reject(errorFromUnknown(error));
 		}
-		if (request.scope === "session" && !request.target.acceptsSession()) {
+		if (sessionTarget && !sessionTarget.acceptsSession()) {
 			this.clearFailure(this.failureKey(laneFailureKind(request.scope), request.guid));
 			return Promise.resolve({ outcome: "completed" });
 		}
@@ -715,6 +729,11 @@ export class BackgroundSync extends HasLogging {
 		lane.sortQueue(reason);
 		this.queueStatusChanged.notifyListeners();
 		void this.drain(scope);
+	}
+
+	/** Flush work admitted with `deferFlush` after its caller finishes a batch. */
+	flushAdmissions(scope: WorkScope): void {
+		this.flush(scope, "batch");
 	}
 
 	// -------------------------------------------------------------------------
@@ -783,12 +802,15 @@ export class BackgroundSync extends HasLogging {
 	 * content (or the work was cancelled).
 	 */
 	async enqueueDownload(
-		target: SyncParticipant,
+		target: DownloadParticipant,
 		userVisible = true,
 		trigger = "download",
+		priority: WorkPriority = userVisible ? "high" : "normal",
+		deferQueueFlush = false,
 	): Promise<Uint8Array | undefined> {
 		const completion = await this.admit(
-			createWorkRequest(target, "download", trigger, { userVisible }),
+			createWorkRequest(target, "download", trigger, { userVisible, priority }),
+			{ deferFlush: deferQueueFlush },
 		);
 		return completion.bytes;
 	}
@@ -818,10 +840,9 @@ export class BackgroundSync extends HasLogging {
 			if (failure.reclaims >= MAX_FAILURE_RECLAIMS) continue;
 			const interval = FAILURE_RECLAIM_INTERVAL_MS * 2 ** failure.reclaims;
 			if (now - failure.recordedAt < interval) continue;
-			const target = failure.sharedFolder.files.get(failure.guid) as
-				| WorkTarget
-				| undefined;
-			if (!target || target !== failure.request.target || target.destroyed) {
+			const target = failure.request.target;
+			if (target.destroyed || (isSyncParticipant(target) &&
+				(failure.sharedFolder.files.get(failure.guid) as unknown) !== target)) {
 				continue;
 			}
 			if (
@@ -842,8 +863,8 @@ export class BackgroundSync extends HasLogging {
 			// A reclaimed session re-runs as a plain converge pass: the caller
 			// that wanted the stronger intent already saw its failure and owns
 			// any follow-up; transfers re-run as themselves.
-			const request: WorkRequest<SyncParticipant> = {
-				...(failure.request as WorkRequest<SyncParticipant>),
+			const request: WorkRequest<DownloadParticipant> = {
+				...(failure.request as WorkRequest<DownloadParticipant>),
 				intent: failure.request.scope === "transfer" ? "download" : "converge",
 				trigger: "reclaim",
 			};
@@ -1161,7 +1182,7 @@ export class BackgroundSync extends HasLogging {
 	private targetDeleted(item: QueueItem): boolean {
 		if (item.scope !== "transfer") return false;
 		if (item.target.destroyed) return true;
-		if (!item.sharedFolder.files.has(item.guid)) return true;
+		if (isSyncParticipant(item.target) && !item.sharedFolder.files.has(item.guid)) return true;
 		return !item.sharedFolder.syncStore.getCommittedMeta(item.target.path);
 	}
 
@@ -1171,12 +1192,12 @@ export class BackgroundSync extends HasLogging {
 	 * and the cancellation flag, and never asks what kind of file it is.
 	 */
 	private execute(item: QueueItem): Promise<WorkCompletion> {
-		const target = item.target as SyncParticipant;
+		const target = item.target as DownloadParticipant;
 		const lane = this.lanes[item.scope];
 		const contextFor = (token: ProviderOperationToken): SyncOperationContext => ({
 			timeProvider: this.timeProvider,
 			holdLease: (release) => this.registerHeldLease(token, release),
-			isCancelled: () => lane.isCancelled(item),
+			isCancelled: () => token.abandoned || this.destroyed || lane.isCancelled(item) || target.destroyed,
 		});
 		if (item.scope === "transfer") {
 			return this.withProviderDeadline(
@@ -1190,6 +1211,9 @@ export class BackgroundSync extends HasLogging {
 			}));
 		}
 		const intent = item.intent === "download" ? "converge" : item.intent;
+		if (!isSyncParticipant(target)) {
+			return Promise.reject(new Error("Session work requires a sync participant"));
+		}
 		return this.withProviderDeadline(
 			(token) => target.runSyncSession(intent, contextFor(token)),
 			"sync",
@@ -1364,23 +1388,19 @@ export class BackgroundSync extends HasLogging {
 		const activeSync = this.activeSync.filter(
 			(item) => item.sharedFolder === sharedFolder,
 		);
-		const queuedDownloads = this.pendingDownloads.filter(
-			(item) => item.sharedFolder === sharedFolder,
-		);
-		const queuedSyncs = this.pendingSyncs.filter(
-			(item) => item.sharedFolder === sharedFolder,
-		);
+		const queuedDownloads = this.lanes.transfer.queuedCountFor(sharedFolder);
+		const queuedSyncs = this.lanes.session.queuedCountFor(sharedFolder);
 		const folderResyncActive = this.folderResyncs.has(sharedFolder) ? 1 : 0;
 		const activeItem = this.activeItemForSnapshot(activeDownloads, activeSync);
 		const queuedReason = this.queuedReasonForSnapshot(
 			sharedFolder,
 			activeDownloads.length + activeSync.length,
-			queuedDownloads.length + queuedSyncs.length,
+			queuedDownloads + queuedSyncs,
 		);
 
 		return buildFolderSyncSnapshot({
 			group: this.syncGroups.get(sharedFolder) ?? null,
-			queued: queuedDownloads.length + queuedSyncs.length,
+			queued: queuedDownloads + queuedSyncs,
 			active: activeDownloads.length + activeSync.length + folderResyncActive,
 			isPaused: this.isPaused,
 			failureCount: this.getFailures(sharedFolder).length,
@@ -1804,9 +1824,9 @@ function sessionAwaited(intent: "converge" | "upload" | "backfill"): string {
 
 /** The request an admitted item carries, without the lane's bookkeeping. */
 function requestOf(item: QueueItem): WorkRequest {
-	const { guid, path, target, sharedFolder, scope, intent, trigger, userVisible } =
+	const { guid, path, target, sharedFolder, scope, intent, trigger, userVisible, priority } =
 		item;
-	return { guid, path, target, sharedFolder, scope, intent, trigger, userVisible };
+	return { guid, path, target, sharedFolder, scope, intent, trigger, userVisible, priority };
 }
 
 function laneFailureKind(scope: WorkScope): "sync" | "download" {

@@ -115,10 +115,14 @@ export class FolderDisk {
 	 * and a later tree sync retries it.
 	 */
 	async mayMaterialize(vpath: string, source?: TAbstractFile): Promise<boolean> {
+		const held = this.holds.get("materialize", vpath);
 		const conflict = await findMaterializeConflict(
 			this.vault,
 			this.target(vpath),
 			source,
+			// A confirmed alias remains one while insensitive existence is true
+			// and exact existence is false; do not relist its parent every sweep.
+			held?.reason !== "case-alias",
 		);
 		if (conflict) {
 			this.hold({ path: vpath, direction: "materialize", ...conflict });
@@ -152,6 +156,10 @@ export class FolderDisk {
 			} catch (error) {
 				if (this.vault.getAbstractFileByPath(prefix) instanceof TFolder) continue;
 				if (await this.vault.adapter.exists(prefix, true)) continue;
+				// Another creation can win while the vault's case-sensitive
+				// existence cache is still stale. Re-probe through the directory
+				// listing so the same exact spelling counts as the directory made.
+				if ((await probeDiskSpelling(this.vault.adapter, prefix)).kind === "exact") continue;
 				throw error;
 			}
 		}

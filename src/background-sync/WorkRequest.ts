@@ -14,6 +14,9 @@ import type { SharedFolder } from "../SharedFolder";
  */
 export type WorkScope = "session" | "transfer";
 
+/** Urgent work takes the next free slot, within the same concurrency limit. */
+export type WorkPriority = "normal" | "high";
+
 /**
  * What the request asks for. The intent fixes the scope (see `scopeForIntent`);
  * the scope is still carried on the request so admission, dedup, and pass
@@ -30,6 +33,16 @@ export interface WorkTarget {
 	readonly sharedFolder: SharedFolder;
 	/** Whether this target may publish local content to the server. */
 	readonly canPublishContent: boolean;
+	/** Temporary target used only until the folder registers the real file. */
+	readonly provisional?: boolean;
+	/** Whether this target's transfer can create its missing disk object. */
+	readonly materializesOnTransfer?: boolean;
+	/**
+	 * Whether this provisional target's active operation is already carrying
+	 * the candidate's transfer. A registered participant can then share the
+	 * active claim instead of scheduling the same transfer again.
+	 */
+	sharesActiveWorkWith?(candidate: WorkTarget): boolean;
 }
 
 /**
@@ -48,6 +61,7 @@ export interface WorkRequest<T extends WorkTarget = WorkTarget> {
 	readonly trigger: string;
 	/** Whether the user asked for this (folder-level progress follows it). */
 	readonly userVisible: boolean;
+	readonly priority?: WorkPriority;
 }
 
 export function scopeForIntent(intent: WorkIntent): WorkScope {
@@ -58,7 +72,7 @@ export function createWorkRequest<T extends WorkTarget>(
 	target: T,
 	intent: WorkIntent,
 	trigger: string,
-	options: { userVisible?: boolean } = {},
+	options: { userVisible?: boolean; priority?: WorkPriority } = {},
 ): WorkRequest<T> {
 	const sharedFolder = target.sharedFolder;
 	return {
@@ -70,6 +84,7 @@ export function createWorkRequest<T extends WorkTarget>(
 		intent,
 		trigger,
 		userVisible: options.userVisible ?? false,
+		priority: options.priority ?? "normal",
 	};
 }
 
@@ -98,6 +113,8 @@ export type RetryReason = "provider" | "s3";
 export interface QueueItem<T extends WorkTarget = WorkTarget>
 	extends WorkRequest<T> {
 	status: "pending" | "running" | "completed" | "failed";
+	/** A later urgent request can promote a queued claim. */
+	priority?: WorkPriority;
 	enqueuedAt: number;
 	retryAttempts?: number;
 	nextAttemptAt?: number;

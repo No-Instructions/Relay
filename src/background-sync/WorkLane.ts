@@ -10,6 +10,8 @@ import type {
 	WorkScope,
 } from "./WorkRequest";
 
+const MAX_HIGH_PRIORITY_BURST = 8;
+
 /** A lane's metric label; dashboards keep the historical operation names. */
 export type LaneOperation = "sync" | "download";
 export type LaneSortReason = "enqueue" | "retry" | "batch" | "group";
@@ -28,6 +30,11 @@ interface LaneClaim {
 	completion: Promise<WorkCompletion>;
 	resolve: (completion: WorkCompletion) => void;
 	reject: (error: Error) => void;
+}
+
+interface PendingEntry {
+	item: QueueItem;
+	token: number;
 }
 
 export type AdmissionDecision =
@@ -81,16 +88,26 @@ export interface WorkLaneDeps {
  * the work is. The engine owns execution and pass accounting; the lane owns
  * which guid holds which claim and which item starts next.
  *
- * Items are stored in reverse path order so the next item normally sits at
+ * Items are stored in reverse priority and path order so the next item sits at
  * the array tail: draining a ready queue pops without shifting or filtering
  * every remaining item.
  */
 export class WorkLane {
 	readonly operation: LaneOperation;
 	readonly active = new ObservableSet<QueueItem>();
-	private queue: QueueItem[] = [];
+	/** Path/priority order, with stale entries removed lazily from its tail. */
+	private queue: PendingEntry[] = [];
+	/** Normal work by age, oldest at the tail for the background turn. */
+	private normalByAge: PendingEntry[] = [];
+	private normalAgeDirty = true;
+	private pendingTokens = new Map<QueueItem, number>();
+	private pendingByFolder = new Map<QueueItem["sharedFolder"], number>();
+	private nextPendingToken = 0;
 	private claims = new Map<string, LaneClaim>();
 	private cancelled = new Set<string>();
+	private highPriorityStarts = 0;
+	private normalQueued = 0;
+	private priorityOrderDirty = false;
 
 	constructor(
 		readonly scope: WorkScope,
@@ -101,11 +118,17 @@ export class WorkLane {
 
 	/** Items waiting to start, in storage order. */
 	get pending(): readonly QueueItem[] {
-		return this.queue;
+		return this.queue
+			.filter((entry) => this.isPending(entry))
+			.map((entry) => entry.item);
 	}
 
 	get queuedCount(): number {
-		return this.queue.length;
+		return this.pendingTokens.size;
+	}
+
+	queuedCountFor(sharedFolder: QueueItem["sharedFolder"]): number {
+		return this.pendingByFolder.get(sharedFolder) ?? 0;
 	}
 
 	/** Whether the guid holds a claim in this lane (queued or running). */
@@ -120,8 +143,9 @@ export class WorkLane {
 	/**
 	 * Admit a request. Dedups against queued-or-active work for the same
 	 * guid: an equal-or-weaker request shares the held claim, a stronger
-	 * request upgrades queued work in place, and a stronger request against
-	 * active work is deferred to the caller (see `after-active`).
+	 * request or a registered target whose transfer can materialize its missing
+	 * file upgrades queued provisional work in place, and either replacement
+	 * against active work is deferred to the caller (see `after-active`).
 	 *
 	 * Admission never sorts or flushes — the caller decides when a batch is
 	 * complete (see `sortQueue` / the engine's drain).
@@ -129,29 +153,49 @@ export class WorkLane {
 	admit(request: WorkRequest): AdmissionDecision {
 		const held = this.claims.get(request.guid);
 		if (held) {
-			const stronger =
+			if (request.priority === "high" && held.item.priority !== "high") {
+				if (held.item.status === "pending") {
+					this.normalQueued--;
+					this.priorityOrderDirty = true;
+				}
+				held.item.priority = "high";
+				this.deps.onQueueChanged([held.item]);
+			}
+			const replacesProvisionalTarget =
+				held.item.target.provisional === true &&
+				request.target.provisional !== true &&
+				held.item.target !== request.target &&
+				request.target.materializesOnTransfer === true;
+			const replacesDestroyedProvisionalTarget =
+				held.item.target.provisional === true &&
+				request.target.provisional === true &&
+				held.item.target !== request.target &&
+				held.item.target.destroyed;
+			const sharesActiveProvisional =
+				held.item.status === "running" &&
+				replacesProvisionalTarget &&
+				held.item.target.sharesActiveWorkWith?.(request.target) === true;
+			const stronger = replacesProvisionalTarget || replacesDestroyedProvisionalTarget ||
 				intentStrength(request.intent) > intentStrength(held.item.intent);
-			if (!stronger) {
+			if (!stronger || sharesActiveProvisional) {
 				return { kind: "shared", item: held.item, completion: held.completion };
 			}
 			if (held.item.status === "pending") {
 				const replaced = held.item;
-				const index = this.queue.indexOf(replaced);
 				// The stronger request takes over the queued work's place in
 				// line AND its retry bookkeeping: a parked backoff window and
 				// the attempts already spent carry over, so an upgrade never
 				// jumps a backoff or refreshes the retry budget.
 				const upgraded: QueueItem = {
 					...this.queuedItem(request, held.item.enqueuedAt),
+					priority: held.item.priority === "high" ? "high" : request.priority,
 					retryAttempts: held.item.retryAttempts,
 					nextAttemptAt: held.item.nextAttemptAt,
 					retryReason: held.item.retryReason,
 				};
-				if (index >= 0) {
-					this.queue[index] = upgraded;
-				} else {
-					this.queue.push(upgraded);
-				}
+				this.removePending(replaced);
+				this.push(upgraded);
+				this.priorityOrderDirty = true;
 				held.item = upgraded;
 				this.deps.onQueueChanged([replaced, upgraded]);
 				return { kind: "upgraded", item: upgraded, completion: held.completion };
@@ -168,7 +212,7 @@ export class WorkLane {
 
 		const item = this.queuedItem(request, this.deps.now());
 		const claim = this.createClaim(item);
-		this.queue.push(item);
+		this.push(item);
 		this.deps.onQueueChanged([item]);
 		return { kind: "admitted", item, completion: claim.completion };
 	}
@@ -221,10 +265,29 @@ export class WorkLane {
 
 	/** Re-sort the queue after a batch of admissions. */
 	sortQueue(reason: LaneSortReason): void {
-		WorkLane.sortByPath(this.queue, this.operation, reason, true);
+		const items = [...this.pendingTokens.keys()];
+		WorkLane.sortByPriorityAndPath(items, this.operation, reason, true);
+		this.queue = items.map((item) => ({
+			item,
+			token: this.pendingTokens.get(item)!,
+		}));
+		this.normalByAge = [];
+		this.normalAgeDirty = true;
+		this.priorityOrderDirty = false;
 	}
 
-	static sortByPath<T extends { path: string }>(
+	private ensureNormalAgeIndex(): void {
+		if (!this.normalAgeDirty) return;
+		this.normalByAge = this.queue
+			.filter((entry) => this.isPending(entry) && entry.item.priority !== "high")
+			.sort((a, b) =>
+				b.item.enqueuedAt - a.item.enqueuedAt ||
+				compareFilePaths(b.item, a.item),
+			);
+		this.normalAgeDirty = false;
+	}
+
+	static sortByPriorityAndPath<T extends { path: string; priority?: string }>(
 		items: T[],
 		operation: LaneOperation,
 		reason: LaneSortReason,
@@ -232,7 +295,9 @@ export class WorkLane {
 	): T[] {
 		if (items.length < 2) return items;
 		const sortStart = performance.now();
-		items.sort(reverse ? (a, b) => compareFilePaths(b, a) : compareFilePaths);
+		const compare = (a: T, b: T) =>
+			Number(b.priority === "high") - Number(a.priority === "high") || compareFilePaths(a, b);
+		items.sort(reverse ? (a, b) => compare(b, a) : compare);
 		metrics.observeBgSyncSort(
 			operation,
 			reason,
@@ -250,35 +315,83 @@ export class WorkLane {
 	 * are discarded on the way past.
 	 */
 	takeNext(now: number): QueueItem | undefined {
-		for (let index = this.queue.length - 1; index >= 0; index--) {
-			const item = this.queue[index];
+		if (this.priorityOrderDirty) this.sortQueue("enqueue");
+		const backgroundTurn = this.highPriorityStarts >= MAX_HIGH_PRIORITY_BURST && this.normalQueued > 0;
+		// One turn for the oldest ready background item after an urgent burst.
+		// The age index avoids walking all urgent work to find it. If normal
+		// work is offline or backing off, urgency can continue from path order.
+		if (backgroundTurn) {
+			this.ensureNormalAgeIndex();
+			const background = this.takeReady(this.normalByAge, now, true);
+			if (background) {
+				this.highPriorityStarts = 0;
+				return background;
+			}
+		}
+		const item = this.takeReady(this.queue, now, false);
+		if (!item) return undefined;
+		this.highPriorityStarts = item.priority === "high" ? this.highPriorityStarts + 1 : 0;
+		return item;
+	}
+
+	private push(item: QueueItem): void {
+		const token = ++this.nextPendingToken;
+		this.pendingTokens.set(item, token);
+		this.pendingByFolder.set(
+			item.sharedFolder,
+			(this.pendingByFolder.get(item.sharedFolder) ?? 0) + 1,
+		);
+		if (item.priority !== "high") this.normalQueued++;
+		const entry = { item, token };
+		this.queue.push(entry);
+		this.normalAgeDirty = true;
+	}
+
+	private isPending(entry: PendingEntry): boolean {
+		return this.pendingTokens.get(entry.item) === entry.token;
+	}
+
+	private removePending(item: QueueItem): boolean {
+		if (!this.pendingTokens.delete(item)) return false;
+		const folderCount = (this.pendingByFolder.get(item.sharedFolder) ?? 1) - 1;
+		if (folderCount > 0) this.pendingByFolder.set(item.sharedFolder, folderCount);
+		else this.pendingByFolder.delete(item.sharedFolder);
+		if (item.priority !== "high") this.normalQueued--;
+		return true;
+	}
+
+	private takeReady(
+		entries: PendingEntry[],
+		now: number,
+		normalOnly: boolean,
+	): QueueItem | undefined {
+		for (let index = entries.length - 1; index >= 0; index--) {
+			const entry = entries[index];
+			const item = entry.item;
+			if (!this.isPending(entry) || (normalOnly && item.priority === "high")) {
+				if (index === entries.length - 1) entries.pop();
+				continue;
+			}
 			if (item.target.destroyed) {
-				this.removeAt(index);
+				this.removePending(item);
+				if (index === entries.length - 1) entries.pop();
 				this.discard(item);
 				continue;
 			}
-			if (
-				this.deps.isDrainable(item) &&
-				(item.nextAttemptAt === undefined || item.nextAttemptAt <= now)
-			) {
-				return this.removeAt(index);
-			}
+			if (!this.deps.isDrainable(item) ||
+				(item.nextAttemptAt !== undefined && item.nextAttemptAt > now)) continue;
+			this.removePending(item);
+			if (index === entries.length - 1) entries.pop();
+			return item;
 		}
 		return undefined;
-	}
-
-	private removeAt(index: number): QueueItem {
-		if (index === this.queue.length - 1) {
-			return this.queue.pop()!;
-		}
-		return this.queue.splice(index, 1)[0];
 	}
 
 	private discard(item: QueueItem): void {
 		const claim = this.claims.get(item.guid);
 		if (claim?.item === item) {
 			this.claims.delete(item.guid);
-			claim.reject(new Error("Target destroyed"));
+			claim.resolve({ outcome: "cancelled" });
 		}
 		this.cancelled.delete(item.guid);
 		this.deps.onDiscarded(item);
@@ -356,8 +469,8 @@ export class WorkLane {
 		item.nextAttemptAt = this.deps.now() + delayMs;
 		item.retryReason = reason;
 		metrics.recordBgSyncRetry(this.operation, reason, retries, delayMs / 1000);
-		if (!this.queue.includes(item)) {
-			this.queue.push(item);
+		if (!this.pendingTokens.has(item)) {
+			this.push(item);
 			this.sortQueue("retry");
 		}
 		this.deps.onQueueChanged([item]);
@@ -377,10 +490,9 @@ export class WorkLane {
 	 */
 	cancel(guid: string): { removed: QueueItem[]; activeRemains: boolean } {
 		const removed: QueueItem[] = [];
-		for (let index = this.queue.length - 1; index >= 0; index--) {
-			if (this.queue[index].guid === guid) {
-				removed.push(this.removeAt(index));
-			}
+		const claim = this.claims.get(guid);
+		if (claim && this.removePending(claim.item)) {
+			removed.push(claim.item);
 		}
 		const activeRemains = this.active.some((item) => item.guid === guid);
 		if (activeRemains) {
@@ -412,6 +524,13 @@ export class WorkLane {
 		this.claims.clear();
 		this.cancelled.clear();
 		this.queue = [];
+		this.normalByAge = [];
+		this.normalAgeDirty = true;
+		this.pendingTokens.clear();
+		this.pendingByFolder.clear();
+		this.normalQueued = 0;
+		this.priorityOrderDirty = false;
+		this.highPriorityStarts = 0;
 		this.active.destroy();
 	}
 }
