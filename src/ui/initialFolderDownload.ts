@@ -23,7 +23,7 @@ interface DownloadFolder {
 	};
 }
 
-/** Initial document fetches write files without joining the background queue. */
+/** Observe initial files reaching disk while background creation work runs. */
 export function observeInitialFolderDownload(
 	folder: DownloadFolder,
 	vault: Pick<Vault, "getFileByPath" | "on" | "offref">,

@@ -33,6 +33,22 @@ export type DiskSpelling =
 	| { kind: "exact" }
 	| { kind: "alias"; at: string };
 
+const nameOf = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+
+async function diskListsExactSpelling(
+	adapter: Pick<DataAdapter, "exists"> & Partial<Pick<DataAdapter, "list">>,
+	path: string,
+): Promise<boolean> {
+	if (!adapter.list) return false;
+	const slash = path.lastIndexOf("/");
+	const directory = slash < 0 ? "" : path.slice(0, slash);
+	const name = nameOf(path);
+	const listing = await adapter.list(directory);
+	return [...listing.files, ...listing.folders].some(
+		(entry) => nameOf(entry) === name,
+	);
+}
+
 /**
  * Resolve a vault path against the disk one component at a time, outermost
  * first. Obsidian's case-sensitive existence check compares only the final
@@ -41,16 +57,23 @@ export type DiskSpelling =
  * case-sensitive disk every component that exists is exact.
  */
 export async function probeDiskSpelling(
-	adapter: Pick<DataAdapter, "exists">,
+	adapter: Pick<DataAdapter, "exists"> & Partial<Pick<DataAdapter, "list">>,
 	path: string,
+	// A previously confirmed alias can be rechecked with the two cheap exists
+	// probes until it changes; only the first ambiguous probe needs a listing.
+	verifyExactWithListing = true,
 ): Promise<DiskSpelling> {
 	const parts = path.split("/");
 	for (let depth = 1; depth <= parts.length; depth++) {
 		const prefix = parts.slice(0, depth).join("/");
 		if (await adapter.exists(prefix, true)) continue;
-		return (await adapter.exists(prefix))
-			? { kind: "alias", at: prefix }
-			: { kind: "absent" };
+		if (!(await adapter.exists(prefix))) return { kind: "absent" };
+		// A directory created by a sibling operation can reach disk before the
+		// adapter's case-sensitive existence cache catches up. The directory
+		// listing is the authoritative spelling: an exact entry is the same
+		// path, while a differently-cased entry remains an alias.
+		if (verifyExactWithListing && await diskListsExactSpelling(adapter, prefix)) continue;
+		return { kind: "alias", at: prefix };
 	}
 	return { kind: "exact" };
 }
@@ -92,8 +115,13 @@ export async function findMaterializeConflict(
 	vault: Pick<Vault, "adapter" | "getAbstractFileByPath">,
 	target: string,
 	source?: TAbstractFile,
+	verifyExactWithListing = true,
 ): Promise<MaterializeConflict | null> {
-	const spelling = await probeDiskSpelling(vault.adapter, target);
+	const spelling = await probeDiskSpelling(
+		vault.adapter,
+		target,
+		verifyExactWithListing,
+	);
 	const indexed = vault.getAbstractFileByPath(target);
 	if (spelling.kind === "alias") {
 		// The source must still be the object at its own path: a handle whose
@@ -111,8 +139,6 @@ export async function findMaterializeConflict(
 	}
 	return null;
 }
-
-const nameOf = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 
 /**
  * Whether two spellings that fold together (foldPathCase) reach one disk

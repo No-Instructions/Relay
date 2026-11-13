@@ -86,8 +86,10 @@ import {
 	type PlanContext,
 	type PlanOccasion,
 	type SyncParticipant,
+	type DownloadParticipant,
+	type SyncOperationContext,
 } from "./background-sync/SyncParticipant";
-import type { WorkRequest } from "./background-sync/WorkRequest";
+import type { WorkPriority, WorkRequest } from "./background-sync/WorkRequest";
 import { readNoteText } from "./diskText";
 import {
 	HSMStore,
@@ -145,6 +147,8 @@ interface Create extends Operation {
 	op: "create";
 	path: string;
 	promise: Promise<IFile | undefined>;
+	/** The transfer-lane claim; reconciliation does not wait for it. */
+	settled: Promise<IFile | undefined>;
 }
 
 interface Rename extends Operation {
@@ -180,6 +184,33 @@ interface Noop extends Operation {
 }
 
 type OperationType = Create | Rename | Delete | Update | Upgrade | Noop;
+
+interface RemoteCreateBatch {
+	admitted: boolean;
+	flushed: boolean;
+	/** Priority captured for this reconciliation's one admission batch. */
+	priority?: WorkPriority;
+}
+
+interface RemoteCreateHandle {
+	/** Already-resolved reconciliation boundary; lane settlement is detached. */
+	admitted: Promise<IFile | undefined>;
+	/** Resolves when the transfer-lane claim settles. */
+	settled: Promise<IFile | undefined>;
+	/** Whether this call added, promoted, or replaced lane work. */
+	changed: boolean;
+}
+
+interface RemoteCreateState {
+	path: string;
+	priority: WorkPriority;
+	/** Freeing-path signals observed when this lane claim was admitted. */
+	retryGeneration: number;
+	target: DownloadParticipant;
+	handle: RemoteCreateHandle;
+	/** The claim settled without putting the committed path on disk. */
+	deferred: boolean;
+}
 
 type PendingPublicationDecision = "noop" | "delete" | "rebind" | "publish";
 
@@ -286,6 +317,11 @@ export class SharedFolder extends HasProvider {
 	private persistenceSynced: boolean = false;
 	private syncFileTreePromise: SharedPromise<void> | null = null;
 	private syncRequestedDuringSync: boolean = false;
+	private initialDownloadRequested = false;
+	/** One live or signal-deferred creation per remote identity. */
+	private _remoteCreateStates?: Map<string, RemoteCreateState>;
+	/** Advances even when a freeing-path signal arrives before its hold. */
+	private materializationRetryGeneration = 0;
 	private authoritative: boolean;
 	private pendingUpload: LocalStorage<string>;
 	private unsubscribes: Unsubscriber[] = [];
@@ -349,8 +385,13 @@ export class SharedFolder extends HasProvider {
 		{ guid: string; hsm: MergeHSM; unsubscribe: () => void }
 	> = new Map();
 	private _pendingDownloads: Set<string> = new Set();
-	private _pendingDownloadPromises: Map<string, Promise<Document | undefined>> =
-		new Map();
+	private _pendingDownloadPromises: Map<
+		string,
+		{
+			promise: Promise<Document | undefined>;
+			context?: SyncOperationContext;
+		}
+	> = new Map();
 	/**
 	 * Empty-download attempts per GUID the server has registered but returned
 	 * no content for. After MAX_EMPTY_SERVER_ATTEMPTS the guid is terminal:
@@ -793,6 +834,9 @@ export class SharedFolder extends HasProvider {
 	private handleRemoteMembershipDelta(delta: FolderMapDelta, origin: unknown): void {
 		if (origin === this || origin === this._persistence) return;
 		for (const removal of delta.deletes) {
+			if (removal.oldValue?.id) {
+				this.clearDeferredRemoteCreate(removal.oldValue.id, removal.path);
+			}
 			const move = removal.oldValue?.id
 				? this.serverOps.moveFor(removal.oldValue.id)
 				: undefined;
@@ -823,9 +867,11 @@ export class SharedFolder extends HasProvider {
 		}
 		for (const entry of delta.adds) {
 			this.serverOps.clearDelete(entry.path);
+			this.clearDeferredRemoteCreate(entry.guid, entry.path);
 		}
 		for (const entry of delta.updates) {
 			this.serverOps.clearDelete(entry.path);
+			this.clearDeferredRemoteCreate(entry.guid, entry.path);
 		}
 		for (const move of delta.moves) {
 			this.serverOps.clearDelete(move.to);
@@ -848,6 +894,40 @@ export class SharedFolder extends HasProvider {
 				this.serverOps.discardMove(move.guid);
 				this.bootSnapshot?.discard(move.from);
 			}
+		}
+		// A provider's initial/reconnect replay belongs to the bulk sweep.
+		// Later additions enter the lane without waiting for the sweep's removal
+		// phase. Paired moves stay in reconciliation.
+		if (this.synced && this.ready && delta.adds.length > 0) {
+			const additions = delta.adds.map((entry) => ({ ...entry }));
+			queueMicrotask(() => {
+				void this.admitLiveAdditions(additions).catch((error) => {
+					if (!isDestroyedError(error)) this.warn("remote creation admission failed", error);
+				});
+			});
+		}
+	}
+
+	private async admitLiveAdditions(additions: FolderMapDelta["adds"]): Promise<void> {
+		if (this.destroyed) return;
+		await this.mergeManager.initialize();
+		if (this.destroyed) return;
+		const batch: RemoteCreateBatch = { admitted: false, flushed: false };
+		try {
+			for (const { path, guid } of additions) {
+				const meta = this.syncStore.getCommittedMeta(path);
+				if (!meta || meta.id !== guid || this.existsSync(path) ||
+					this.files.has(guid) || this.serverOps.moveFor(guid) ||
+					!this.ownsVirtualPath(path) || !this._assertNamespacing(path)) continue;
+				if (meta.type !== SyncType.Folder &&
+					!this.syncStore.typeRegistry.getEnabledFileSyncTypes().includes(meta.type)) continue;
+				const { settled } = this.enqueueRemoteCreate(path, meta, "high", batch);
+				void settled.catch((error) => {
+					if (!isDestroyedError(error)) this.warn(`remote creation failed for ${path}`, error);
+				});
+			}
+		} finally {
+			this.flushRemoteCreateBatch(batch);
 		}
 	}
 
@@ -1113,6 +1193,7 @@ export class SharedFolder extends HasProvider {
 	/** Fresh server evidence for the guid — allow downloads again. */
 	clearServerEmpty(guid: string): void {
 		this._emptyOnServer.delete(guid);
+		this.clearDeferredRemoteCreate(guid);
 	}
 
 	private retryDeferredDownloadForGuid(guid: string): void {
@@ -1697,6 +1778,7 @@ export class SharedFolder extends HasProvider {
 
 	async resync(): Promise<void> {
 		if (!this.connected || this.localOnly) return;
+		this.clearDeferredRemoteCreates();
 		const finishResync = this.backgroundSync.beginFolderResync(this);
 		try {
 			await this.netSync();
@@ -2507,7 +2589,14 @@ export class SharedFolder extends HasProvider {
 
 	/** A local delete or rename can free the disk slot a held remote change waits on. */
 	private retryHeldMaterializations(): void {
+		this.materializationRetryGeneration =
+			(this.materializationRetryGeneration ?? 0) + 1;
 		if (!this.casePathHolds().holding("materialize")) return;
+		for (const [guid, state] of this.remoteCreateStates()) {
+			if (state.deferred && this.casePathHolds().get("materialize", state.path)) {
+				this._remoteCreateStates?.delete(guid);
+			}
+		}
 		void this.syncFileTree().catch((error) => {
 			if (!isDestroyedError(error)) {
 				this.warn("syncFileTree retry of held remote changes failed", error);
@@ -2590,14 +2679,251 @@ export class SharedFolder extends HasProvider {
 		return this.fileManager.trashFile(file);
 	}
 
+	/** Mark the next reconciliation's creation batch as user-requested. */
+	requestInitialDownload(): void {
+		this.initialDownloadRequested = true;
+	}
+
+	/** Queue the whole creation, including the first disk spelling check. */
+	private enqueueRemoteCreate(
+		vpath: string,
+		meta: Meta,
+		priority?: WorkPriority,
+		batch?: RemoteCreateBatch,
+	): RemoteCreateHandle {
+		const isCurrent = () => !this.destroyed && this.ownsVirtualPath(vpath) &&
+			this.syncStore.getCommittedMeta(vpath)?.id === meta.id;
+		const requestPriority = priority ?? batch?.priority ??
+			(this.initialDownloadRequested ? "high" : "normal");
+		const states = this.remoteCreateStates();
+		const existing = states.get(meta.id);
+		if (existing && existing.path === vpath && !existing.target.destroyed) {
+			if (existing.deferred) {
+				return { ...existing.handle, changed: false };
+			}
+			if (requestPriority === "high" && existing.priority !== "high") {
+				existing.priority = "high";
+				void this.backgroundSync.enqueueDownload(
+					existing.target,
+					false,
+					"remote-create",
+					"high",
+					batch !== undefined,
+				).catch(() => {});
+				if (batch) batch.admitted = true;
+				return { ...existing.handle, changed: true };
+			}
+			return { ...existing.handle, changed: false };
+		}
+		let activeDelegate: DownloadParticipant | undefined;
+		let policyPrechecked = false;
+		const retryGeneration = this.materializationRetryGeneration ?? 0;
+		const target: DownloadParticipant = {
+			guid: meta.id,
+			path: vpath,
+			sharedFolder: this,
+			canPublishContent: false,
+			provisional: true,
+			createsDocument: meta.type === SyncType.Document,
+			get destroyed() { return !isCurrent(); },
+			checkSyncWork: (intent) => {
+				if (policyPrechecked) {
+					policyPrechecked = false;
+					return;
+				}
+				this.checkRemoteCreateWork(vpath, meta, intent);
+			},
+			transferMadeProgress: () =>
+				activeDelegate !== undefined || this.existsSync(vpath),
+			sharesActiveWorkWith: (candidate) => activeDelegate === candidate,
+			transferFromServer: async (context) => {
+				if (context.isCancelled()) return undefined;
+				if (this.existsSync(vpath)) return undefined;
+				const registered = this.files.get(meta.id);
+				// A registered note with no disk file still needs the full creation
+				// path: it performs the materialization checks, completes initial
+				// enrollment, and writes the file. Other participants transfer the
+				// bytes themselves, so the provisional operation can delegate.
+				if (
+					registered &&
+					registered.path === vpath &&
+					isSyncParticipant(registered) &&
+					!isDocument(registered)
+				) {
+					activeDelegate = registered;
+					return registered.transferFromServer(context);
+				}
+				const current = this.syncStore.getCommittedMeta(vpath);
+				if (!current || current.id !== meta.id) return undefined;
+				const creationLog: string[] = [];
+				try {
+					await this._handleServerCreate(
+						vpath,
+						current,
+						creationLog,
+						false,
+						context,
+						(delegate) => { activeDelegate = delegate; },
+					);
+				} finally {
+					if (creationLog.length > 0) {
+						this.log("remote create:\n" + creationLog.join("\n"));
+					}
+				}
+				return undefined;
+			},
+		};
+		try {
+			this.checkRemoteCreateWork(vpath, meta, "download");
+			policyPrechecked = true;
+		} catch (error) {
+			const rejected = Promise.reject(
+				error instanceof Error ? error : new Error(String(error)),
+			);
+			rejected.catch(() => {});
+			return {
+				admitted: Promise.resolve(undefined),
+				settled: rejected,
+				changed: false,
+			};
+		}
+		const completion = this.backgroundSync.enqueueDownload(
+			target,
+			false,
+			"remote-create",
+			requestPriority,
+			batch !== undefined,
+		);
+		if (batch) batch.admitted = true;
+		const state = {} as RemoteCreateState;
+		const handle: RemoteCreateHandle = {
+			admitted: Promise.resolve(undefined),
+			settled: completion.then(
+				() => {
+					const file = this.files.get(meta.id);
+					if (states.get(meta.id) === state) {
+						const missing = isCurrent() && !this.existsSync(vpath);
+						const missedHoldRetry = missing && activeDelegate === undefined &&
+							this.casePathHolds().get("materialize", vpath) !== undefined &&
+							(this.materializationRetryGeneration ?? 0) !== state.retryGeneration;
+						if (missedHoldRetry) {
+							states.delete(meta.id);
+							void this.syncFileTree().catch((error) => {
+								if (!isDestroyedError(error)) {
+									this.warn("syncFileTree retry of late held remote change failed", error);
+								}
+							});
+						} else if (missing && activeDelegate === undefined) {
+							state.deferred = true;
+						} else {
+							states.delete(meta.id);
+						}
+					}
+					return file;
+				},
+				(error) => {
+					if (states.get(meta.id) === state) states.delete(meta.id);
+					throw error;
+				},
+			),
+			changed: true,
+		};
+		Object.assign(state, {
+			path: vpath,
+			priority: requestPriority,
+			retryGeneration,
+			target,
+			handle,
+			deferred: false,
+		});
+		states.set(meta.id, state);
+		return handle;
+	}
+
+	private remoteCreateStates(): Map<string, RemoteCreateState> {
+		return (this._remoteCreateStates ??= new Map<string, RemoteCreateState>());
+	}
+
+	private clearDeferredRemoteCreate(guid: string, path?: string): void {
+		const state = this._remoteCreateStates?.get(guid);
+		if (!state?.deferred || (path !== undefined && state.path !== path)) return;
+		this._remoteCreateStates?.delete(guid);
+	}
+
+	private clearDeferredRemoteCreates(): void {
+		for (const [guid, state] of this._remoteCreateStates ?? []) {
+			if (state.deferred) this._remoteCreateStates?.delete(guid);
+		}
+	}
+
+	private async retryRemoteCreate(guid: string): Promise<void> {
+		this.clearDeferredRemoteCreate(guid);
+		await this.syncFileTree();
+		let state = this._remoteCreateStates?.get(guid);
+		// A retry requested during reconciliation joins that pass while also
+		// scheduling a follow-up. Join the follow-up too before releasing a
+		// one-shot size override.
+		if (!state) {
+			await this.syncFileTree();
+			state = this._remoteCreateStates?.get(guid);
+		}
+		if (state) await state.handle.settled;
+	}
+
+	private checkRemoteCreateWork(
+		vpath: string,
+		meta: Meta,
+		intent: WorkRequest["intent"],
+	): void {
+		const registered = this.files.get(meta.id);
+		if (
+			registered?.path === vpath &&
+			isSyncParticipant(registered) &&
+			registered.checkSyncWork
+		) {
+			registered.checkSyncWork(intent);
+			return;
+		}
+		const manager = this.attachmentTransfers;
+		if (!manager || !isFileMetas(meta)) return;
+		manager.check(
+			{
+				key: `${this.guid}:${meta.id}`,
+				path: this.getPath(vpath),
+				retry: () => this.retryRemoteCreate(meta.id),
+			},
+			meta.size ?? 0,
+		);
+	}
+
+	private flushRemoteCreateBatch(batch: RemoteCreateBatch): void {
+		if (!batch.admitted || batch.flushed) return;
+		batch.flushed = true;
+		this.backgroundSync.flushAdmissions("transfer");
+	}
+
+	private observeRemoteCreateSettlements(creates: readonly Create[]): void {
+		if (creates.length === 0) return;
+		void Promise.allSettled(creates.map((op) => op.settled))
+			.then(() => {
+				if (this.destroyed) return;
+				this.fset.update();
+			})
+			.catch((error) => {
+				if (!this.destroyed) this.warn("creation settlement follow-up failed", error);
+			});
+	}
+
 	async _handleServerCreate(
 		vpath: string,
 		meta: Meta,
 		diffLog?: string[],
 		restoreDeleted = false,
+		context?: SyncOperationContext,
+		onDelegate?: (target: DownloadParticipant) => void,
 	): Promise<IFile | undefined> {
-		if (!this.ownsVirtualPath(vpath)) return undefined;
-		if (!(await this.mayMaterialize(vpath))) return undefined;
+		if (!this.ownsVirtualPath(vpath) || context?.isCancelled()) return undefined;
+		if (!(await this.mayMaterialize(vpath)) || context?.isCancelled()) return undefined;
 		const live = restoreDeleted ? this.files.get(meta.id) : undefined;
 		if (isDocument(live)) {
 			// Restore the missing disk object from server content without
@@ -2621,9 +2947,11 @@ export class SharedFolder extends HasProvider {
 			await this.mkdir(dir);
 			diffLog?.push(`creating directory ${dir}`);
 		}
+		if (context?.isCancelled()) return undefined;
 		if (meta.type === SyncType.Document) {
 			diffLog?.push(`creating local .md file for remotely added doc ${vpath}`);
-			const doc = await this.downloadDoc(vpath);
+			if (context?.isCancelled()) return undefined;
+			const doc = await (context ? this.downloadDoc(vpath, context) : this.downloadDoc(vpath));
 			if (!doc) {
 				diffLog?.push(
 					`deferred local .md file for remotely added doc ${vpath} (server has guid but no content yet)`,
@@ -2635,7 +2963,8 @@ export class SharedFolder extends HasProvider {
 			diffLog?.push(
 				`created local .canvas file for remotely added canvas ${vpath}`,
 			);
-			const canvas = await this.downloadCanvas(vpath, false);
+			if (context?.isCancelled()) return undefined;
+			const canvas = await this.downloadCanvas(vpath, false, context, onDelegate);
 			return canvas;
 		}
 		if (meta.type === SyncType.Folder) {
@@ -2647,7 +2976,10 @@ export class SharedFolder extends HasProvider {
 		}
 		if (this.syncStore.canSync(vpath)) {
 			diffLog?.push(`created local file for remotely added file ${vpath}`);
-			return this.downloadSyncFile(vpath);
+			if (context?.isCancelled()) return undefined;
+			return context
+				? this.downloadSyncFile(vpath, context, onDelegate)
+				: this.downloadSyncFile(vpath);
 		}
 		throw new Error(
 			`${vpath}: Unexpected file type ${meta.type} ${meta.mimetype}`,
@@ -2975,6 +3307,7 @@ export class SharedFolder extends HasProvider {
 		path: string,
 		remoteIds: Set<string>,
 		diffLog: string[],
+		createBatch?: RemoteCreateBatch,
 	): OperationType {
 		const file = this.files.get(guid);
 		const meta = this.syncStore.getMeta(path);
@@ -3084,8 +3417,16 @@ export class SharedFolder extends HasProvider {
 
 		// write will trigger `create` which will read the file from disk by default.
 		// so we need to pre-empt that by loading the file into docs.
-		const promise = this._handleServerCreate(path, meta, diffLog);
-		return { op: "create", path, promise };
+		const { admitted, settled, changed } = this.enqueueRemoteCreate(
+			path,
+			meta,
+			undefined,
+			createBatch,
+		);
+		if (!changed) {
+			return { op: "noop", path, promise: Promise.resolve() };
+		}
+		return { op: "create", path, promise: admitted, settled };
 	}
 
 	/**
@@ -3749,15 +4090,18 @@ export class SharedFolder extends HasProvider {
 	syncByType(
 		syncStore: SyncStore,
 		diffLog: string[],
-		ops: Operation[],
+		ops: OperationType[],
 		types: SyncType[],
+		createBatch?: RemoteCreateBatch,
 	) {
 		const remoteIds = syncStore.remoteIds;
 		syncStore.forEachWithPending((meta, path) => {
 			if (!this._assertNamespacing(path)) return;
 			if (!this.ownsVirtualPath(path)) return;
 			if (meta && types.contains(meta.type)) {
-				ops.push(this.applyRemoteState(meta.id, path, remoteIds, diffLog));
+				ops.push(createBatch
+					? this.applyRemoteState(meta.id, path, remoteIds, diffLog, createBatch)
+					: this.applyRemoteState(meta.id, path, remoteIds, diffLog));
 			} else if (!meta && types.contains(SyncType.Document)) {
 				ops.push(this.applyPendingUpload(path));
 			}
@@ -4064,6 +4408,11 @@ export class SharedFolder extends HasProvider {
 		}
 
 		const promiseFn = async (): Promise<void> => {
+			const createBatch: RemoteCreateBatch = {
+				admitted: false,
+				flushed: false,
+				priority: this.initialDownloadRequested ? "high" : "normal",
+			};
 			try {
 				if (!this.mergeManager || this.destroyed) return;
 				await this.mergeManager.initialize();
@@ -4080,14 +4429,23 @@ export class SharedFolder extends HasProvider {
 					this.addLocalDocs(newlyEnabled);
 				}
 
-				const ops: Operation[] = [];
+				const ops: OperationType[] = [];
 				const diffLog: string[] = [];
 
 				void this.folderDoc.transact(async () => {
 					// Sync folder operations first because renames/moves also affect files
 					this.syncStore.migrateUp();
-					this.syncByType(this.syncStore, diffLog, ops, [SyncType.Folder]);
+					this.syncByType(
+						this.syncStore,
+						diffLog,
+						ops,
+						[SyncType.Folder],
+						createBatch,
+					);
 				}, this);
+				const folderCreates = ops.filter((op): op is Create => op.op === "create");
+				this.observeRemoteCreateSettlements(folderCreates);
+				const folderOpCount = ops.length;
 				// A directory operation that fails is reported with the file
 				// operations below; it must not stop them.
 				await Promise.allSettled(ops.map((op) => op.promise));
@@ -4098,16 +4456,25 @@ export class SharedFolder extends HasProvider {
 						diffLog,
 						ops,
 						this.syncStore.typeRegistry.getEnabledFileSyncTypes(),
+						createBatch,
 					);
 					this.syncStore.commit();
 				}, this);
+				const fileCreates = ops.slice(folderOpCount)
+					.filter((op): op is Create => op.op === "create");
+				this.observeRemoteCreateSettlements(fileCreates);
+				this.flushRemoteCreateBatch(createBatch);
+				// User urgency belongs to this admission batch. The lane items keep
+				// their captured high priority through backoff, while later sweeps
+				// (and a restarted folder) return to normal priority.
+				if (createBatch.admitted) this.initialDownloadRequested = false;
 
-				const creates = ops.filter((op) => op.op === "create");
-				const renames = ops.filter((op) => op.op === "rename");
+				const creates = ops.filter((op): op is Create => op.op === "create");
+				const renames = ops.filter((op): op is Rename => op.op === "rename");
 
-				// Let these settle before checking for deletions. One that
-				// fails stays outstanding for the next tree sync and must not
-				// hold back the removals this one would carry out.
+				// Creation promises cover admission only; transfer settlement is
+				// deliberately detached so removals and renames cannot wait behind
+				// the global transfer lane. Renames still settle before deletion.
 				const pathOps = [...creates, ...renames];
 				const settled = await Promise.allSettled(
 					pathOps.map((op) =>
@@ -4183,6 +4550,7 @@ export class SharedFolder extends HasProvider {
 				if (deletes.length > 0) this.retryHeldMaterializations();
 				this.sweepStalePendingUploads();
 			} finally {
+				this.flushRemoteCreateBatch(createBatch);
 				// Reset the promise after completion (success or failure)
 				this.syncFileTreePromise = null;
 			}
@@ -4791,6 +5159,8 @@ export class SharedFolder extends HasProvider {
 	async downloadCanvas(
 		vpath: string,
 		userVisible = true,
+		context?: SyncOperationContext,
+		onDelegate?: (target: DownloadParticipant) => void,
 	): Promise<Canvas | undefined> {
 		if (!Canvas.checkExtension(vpath)) {
 			throw new Error("unexpected extension");
@@ -4803,17 +5173,24 @@ export class SharedFolder extends HasProvider {
 			throw new Error(`called download on item that is not in ids ${vpath}`);
 		}
 		// A file not on disk yet is created only where no other spelling holds
-		// its slot. A held download is retried by the next tree sync.
+		// its slot. Freeing-path signals and explicit resync re-admit a queued
+		// creation that records this hold.
 		if (!this.existsSync(vpath) && !(await this.mayMaterialize(vpath))) {
 			return undefined;
 		}
+		if (context?.isCancelled()) return undefined;
 		const canvas = this.getOrCreateCanvas(guid, vpath);
 		void canvas.markOrigin("remote");
 
-		void this.backgroundSync.enqueueDownload(canvas, userVisible);
-
 		this.files.set(guid, canvas);
 		this.fset.add(canvas);
+		if (context) {
+			if (context.isCancelled()) return undefined;
+			onDelegate?.(canvas);
+			await canvas.transferFromServer(context);
+		} else {
+			void this.backgroundSync.enqueueDownload(canvas, userVisible);
+		}
 
 		return canvas;
 	}
@@ -4982,22 +5359,27 @@ export class SharedFolder extends HasProvider {
 		return doc;
 	}
 
-	async downloadDoc(vpath: string): Promise<Document | undefined> {
+	async downloadDoc(vpath: string, context?: SyncOperationContext): Promise<Document | undefined> {
 		const pending = this._pendingDownloadPromises.get(vpath);
-		if (pending) return pending;
+		if (pending && !(context && pending.context?.isCancelled())) {
+			return pending.promise;
+		}
 
-		const promise = this.downloadDocOnce(vpath);
-		this._pendingDownloadPromises.set(vpath, promise);
+		const promise = this.downloadDocOnce(vpath, context);
+		const attempt = { promise, context };
+		this._pendingDownloadPromises.set(vpath, attempt);
 		this._pendingDownloads.add(vpath);
 		try {
 			return await promise;
 		} finally {
-			this._pendingDownloadPromises.delete(vpath);
-			this._pendingDownloads.delete(vpath);
+			if (this._pendingDownloadPromises.get(vpath) === attempt) {
+				this._pendingDownloadPromises.delete(vpath);
+				this._pendingDownloads.delete(vpath);
+			}
 		}
 	}
 
-	private async downloadDocOnce(vpath: string): Promise<Document | undefined> {
+	private async downloadDocOnce(vpath: string, context?: SyncOperationContext): Promise<Document | undefined> {
 		if (!Document.checkExtension(vpath)) {
 			throw new Error("unexpected extension");
 		}
@@ -5022,15 +5404,17 @@ export class SharedFolder extends HasProvider {
 
 		// A remap already owns this path: stand aside before paying for the
 		// fetch, not after.
-		if (!this.downloadMayProceed(undefined, vpath, "before fetching")) {
+		if (context?.isCancelled() || !this.downloadMayProceed(undefined, vpath, "before fetching")) {
 			return undefined;
 		}
 		// A file not on disk yet is created only where no other spelling holds
-		// its slot. A held download is retried by the next tree sync.
+		// its slot. Freeing-path signals and explicit resync re-admit a queued
+		// creation that records this hold.
 		if (!this.existsSync(vpath) && !(await this.mayMaterialize(vpath))) {
 			return undefined;
 		}
 
+		if (context?.isCancelled()) return undefined;
 		const updateBytes = await this.backgroundSync.downloadByGuid(this, guid, vpath);
 
 		if (!updateBytes) {
@@ -5039,7 +5423,7 @@ export class SharedFolder extends HasProvider {
 			return undefined;
 		}
 
-		if (!this.downloadMayProceed(undefined, vpath, "after fetching")) {
+		if (context?.isCancelled() || !this.downloadMayProceed(undefined, vpath, "after fetching")) {
 			return undefined;
 		}
 
@@ -5055,7 +5439,7 @@ export class SharedFolder extends HasProvider {
 		// those gaps. So the question is asked again immediately before each
 		// step that cannot be taken back, from live state rather than from
 		// something sampled earlier.
-		if (!this.downloadMayProceed(doc, vpath, "before enrolling")) {
+		if (context?.isCancelled() || !this.downloadMayProceed(doc, vpath, "before enrolling")) {
 			return undefined;
 		}
 		await doc.hsm?.initializeFromRemote(updateBytes);
@@ -5063,7 +5447,7 @@ export class SharedFolder extends HasProvider {
 		doc.hsm?.setRemoteDoc(remoteDoc);
 		await doc.hsm?.awaitIdle();
 
-		if (!this.downloadMayProceed(doc, vpath, "before completing enrollment")) {
+		if (context?.isCancelled() || !this.downloadMayProceed(doc, vpath, "before completing enrollment")) {
 			return undefined;
 		}
 		await doc.hsm?.completeInitialEnrollmentFromRemote(contents);
@@ -5072,7 +5456,7 @@ export class SharedFolder extends HasProvider {
 			throw new Error("file no longer wanted");
 		}
 
-		if (!this.downloadMayProceed(doc, vpath, "before writing")) {
+		if (context?.isCancelled() || !this.downloadMayProceed(doc, vpath, "before writing")) {
 			return undefined;
 		}
 
@@ -5403,7 +5787,18 @@ export class SharedFolder extends HasProvider {
 		return file;
 	}
 
-	downloadSyncFile(vpath: string) {
+	downloadSyncFile(vpath: string): SyncFile;
+	downloadSyncFile(vpath: string, context: SyncOperationContext): Promise<SyncFile | undefined>;
+	downloadSyncFile(
+		vpath: string,
+		context: SyncOperationContext,
+		onDelegate: ((target: DownloadParticipant) => void) | undefined,
+	): Promise<SyncFile | undefined>;
+	downloadSyncFile(
+		vpath: string,
+		context?: SyncOperationContext,
+		onDelegate?: (target: DownloadParticipant) => void,
+	): SyncFile | Promise<SyncFile | undefined> {
 		if (!this.syncStore.canSync(vpath)) {
 			throw new Error("unexpected extension");
 		}
@@ -5415,17 +5810,23 @@ export class SharedFolder extends HasProvider {
 			throw new Error(`called download on item that is not in ids ${vpath}`);
 		}
 		const meta = this.syncStore.getMeta(vpath);
+		if (context?.isCancelled()) return Promise.resolve(undefined);
 		if (!meta || !meta.hash) {
-			return this.uploadSyncFile(vpath);
+			const file = this.uploadSyncFile(vpath);
+			return context ? Promise.resolve(file) : file;
 		}
 		const file = this.getOrCreateSyncFile(guid, vpath, meta.hash);
 
+		this.files.set(guid, file);
+		this.fset.add(file);
+		if (context) {
+			if (context.isCancelled()) return Promise.resolve(file);
+			onDelegate?.(file);
+			return file.transferFromServer(context).then(() => file);
+		}
 		this.backgroundSync.enqueueDownload(file, false).catch((error) => {
 			this.warn(`initial download failed for ${vpath}`, error);
 		});
-
-		this.files.set(guid, file);
-		this.fset.add(file);
 
 		return file;
 	}
@@ -5810,6 +6211,7 @@ export class SharedFolder extends HasProvider {
 		this.folderMachine.close();
 		this.pendingCreates.forEach((timer) => this.timeProvider.clearTimeout(timer));
 		this.pendingCreates.clear();
+		this._remoteCreateStates?.clear();
 		if (this._readerRestoreNoticeTimer !== null) {
 			this.timeProvider.clearTimeout(this._readerRestoreNoticeTimer);
 			this._readerRestoreNoticeTimer = null;
@@ -6293,6 +6695,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 	/** Download a remote folder — server is authoritative. */
 	clone(path: string, guid: string, relayId?: string): SharedFolder {
 		const folder = this._new(path, guid, relayId, false);
+		folder.requestInitialDownload();
 		this.notifyListeners();
 		return folder;
 	}
