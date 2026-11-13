@@ -815,10 +815,13 @@ export class HSMEditorPluginValue implements PluginValue {
       const folder = file
         ? connectionManager?.sharedFolders.lookup(file.path)
         : null;
-      if (!update.docChanged || (file && !folder)) {
+      if (file && !folder) {
         this.clearPendingEdits();
         return;
       }
+      // Selection and configuration updates do not invalidate typing captured
+      // before the editor's file identity becomes available.
+      if (!update.docChanged) return;
     }
 
     // An embed's editor is replaced when Obsidian re-renders the node. The

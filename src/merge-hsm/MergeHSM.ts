@@ -78,7 +78,7 @@ import type {
 } from "./types";
 import type { TimeProvider } from "../TimeProvider";
 import { DefaultTimeProvider } from "../TimeProvider";
-import { curryLog, describeError, recordHSMEntry } from "../debug";
+import { curryLog, describeError, isHSMRecordingActive, recordHSMEntry } from "../debug";
 import { flags } from "../flagManager";
 import { InvariantChecker, type InvariantViolation } from "./invariants";
 import { generateHash } from "../hashing";
@@ -5610,6 +5610,26 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	// ===========================================================================
 
 	private handleEvent(event: MergeEvent): void {
+		const eventType = (event as { type: string }).type;
+		if (isHSMRecordingActive() && [
+			"CM6_CHANGE", "ACQUIRE_LOCK", "OBSIDIAN_SET_VIEW_DATA",
+			"OBSIDIAN_LOAD_FILE_INTERNAL", "OBSIDIAN_FILE_OPENED",
+			"done.invoke.three-way-merge",
+		].includes(eventType)) {
+			const incoming = payload(event);
+			this.recordActiveMergeProbe("incoming-event", {
+				eventType,
+				userEvent: incoming.userEvent,
+				viewId: incoming.viewId,
+				beforeText: incoming.beforeText,
+				docText: incoming.docText,
+				changes: incoming.changes,
+				viewData: typeof incoming.data === "string" ? incoming.data : undefined,
+				clear: incoming.clear,
+				diskReload: incoming.diskReload,
+				result: eventType === "done.invoke.three-way-merge" ? dataOf(event) : undefined,
+			});
+		}
 		if ((event as { type: string }).type === "done.invoke.three-way-merge" &&
 			this._statePath === "active.merging.threeWay" &&
 			this.activeMergeEditorText !== null && this.localDoc) {
@@ -5622,8 +5642,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				// edit that the open editor has not seen. Rebase input from the
 				// buffer it was typed against onto the reconciled stored contents.
 				const stored = performThreeWayMerge(data.baseText, localText, data.diskText);
+				this.recordActiveMergeProbe("stored-merge-result", { result: stored });
 				if (stored.success) {
 					const result = performThreeWayMerge(editorBase, stored.merged!, editorText);
+					this.recordActiveMergeProbe("editor-rebase-result", { result, editorBase, editorText });
 					event = Object.assign({}, event, { data: {
 						...data, ...result, baseText: editorBase,
 						localText: stored.merged, diskText: editorText, editorText,
@@ -5641,6 +5663,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 					}
 				}
 			}
+		}
+		if (eventType === "done.invoke.three-way-merge") {
+			this.recordActiveMergeProbe("effective-merge-result", { result: dataOf(event) });
 		}
 		// Handle Obsidian file lifecycle events (diagnostic, all states)
 		if (event.type === 'OBSIDIAN_FILE_OPENED') {
@@ -5686,6 +5711,32 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 		}
 
 		processEvent(this, event, MACHINE, this._interpreterConfig);
+	}
+
+	/** Capture opening reconciliation inputs, including events without a state transition. */
+	private recordActiveMergeProbe(stage: string, detail: Record<string, unknown>): void {
+		if (!isHSMRecordingActive()) return;
+		recordHSMEntry({
+			ns: "mergeHSM",
+			ts: new Date(this.timeProvider.now()).toISOString(),
+			guid: this._guid,
+			path: this.path,
+			from: this._statePath,
+			to: this._statePath,
+			effects: [],
+			event: {
+				type: "ACTIVE_MERGE_PROBE",
+				stage,
+				...detail,
+				readMode: this.isReadMode(),
+				hasFork: this.hasFork(),
+				lcaText: this._lca?.contents ?? null,
+				localText: this.localDoc?.getText("contents").toString() ?? null,
+				remoteText: this.remoteDoc?.getText("contents").toString() ?? null,
+				activeEditorBase: this.activeMergeEditorBaseText,
+				activeEditorText: this.activeMergeEditorText,
+			},
+		});
 	}
 
 
