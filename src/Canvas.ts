@@ -876,6 +876,10 @@ export class Canvas
 		return true;
 	}
 
+	public get materializesOnTransfer(): boolean {
+		return true;
+	}
+
 	public get canPublishContent(): boolean {
 		return writeAccessUnder(this.sharedFolder, this.clientToken);
 	}
