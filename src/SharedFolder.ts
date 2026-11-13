@@ -599,20 +599,11 @@ export class SharedFolder extends HasProvider {
 			},
 			loadAllStates: async () => {
 				try {
-					const all = await this._hsmStore.getAllStateMeta();
-					// The HSM store is app-wide. Scope cold-start to this
-					// folder: records stamped with our folder guid, plus
-					// records predating folder scoping whose doc guid the
-					// folder's committed membership actually holds.
-					const committed = new Set(
-						this.syncStore.getCommittedSubdocGuids(),
-					);
-					// Canvas records pass through: initializeCaches routes them
-					// to the managed-file caches, never the document caches.
-					return all.filter(
-						(meta) =>
-							meta.folder === this.guid ||
-							(meta.folder === undefined && committed.has(meta.guid)),
+					// The vault-wide metadata index scopes stamped records by folder;
+					// unstamped records require our committed membership after replay.
+					return await this._hsmStore.getFolderStateMeta(
+						this.guid,
+						() => this.syncStore.getCommittedSubdocGuids(),
 					);
 				} catch {
 					return [];
@@ -3683,9 +3674,8 @@ export class SharedFolder extends HasProvider {
 	 */
 	public async reclaimOwnedRecords(): Promise<void> {
 		try {
-			const stateMetas = await this._hsmStore.getAllStateMeta();
+			const stateMetas = await this._hsmStore.getFolderStateMeta(this.guid);
 			for (const stateMeta of stateMetas) {
-				if (stateMeta.folder !== this.guid) continue;
 				await this._hsmStore.deleteState(stateMeta.guid).catch(() => {});
 			}
 		} catch (e) {
@@ -6036,9 +6026,8 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 			void this._hsmStore.deleteState(child).catch(() => {});
 		}
 		try {
-			const stateMetas = await this._hsmStore.getAllStateMeta();
+			const stateMetas = await this._hsmStore.getFolderStateMeta(guid);
 			for (const stateMeta of stateMetas) {
-				if (stateMeta.folder !== guid) continue;
 				void this._hsmStore.deleteState(stateMeta.guid).catch(() => {});
 			}
 		} catch {
