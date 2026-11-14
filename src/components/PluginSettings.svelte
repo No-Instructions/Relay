@@ -20,6 +20,8 @@
 		wrapHistoryBack,
 	} from "../ui/settingsHistoryBack";
 
+	import { popSettingsHistory, resolveSettingsTarget } from "../ui/settingsTarget";
+
 	import { ownerDoc, ownerWin } from "./ownerWindow";
 	interface RelayEventDetail {
 		relay: Relay;
@@ -57,6 +59,7 @@
 	const relayManager = plugin.relayManager;
 	const relayRoles = relayManager.relayRoles;
 	const relays = relayManager.relays;
+	const remoteFolders = relayManager.remoteFolders;
 	const subscriptions = relayManager.subscriptions;
 	const providers = relayManager.providers;
 	const sharedFolders = plugin.sharedFolders;
@@ -125,7 +128,7 @@
 				}
 				if (sharedFolder?.remote) {
 					remoteFolder = sharedFolder.remote;
-					currentRelay = sharedFolder.remote.relay;
+					currentRelay = relays.get(sharedFolder.remote.relayId);
 					currentComponent = ManageRemoteFolder;
 				} else {
 					currentComponent = ManageSharedFolder;
@@ -239,45 +242,27 @@
 			return;
 		}
 
-		let view = history.pop();
-		if (view) {
-			while (view) {
-				if (!view.currentRelay && !view.sharedFolder && !view.remoteFolder) {
-					currentRelay = view.currentRelay;
-					sharedFolder = view.sharedFolder;
-					remoteFolder = view.remoteFolder;
-					currentComponent = view.component;
-					if (view.component === MobileRemoteFolders) break;
-				} else if (view.sharedFolder && sharedFolders.has(view.sharedFolder)) {
-					currentRelay = view.currentRelay;
-					sharedFolder = view.sharedFolder;
-					remoteFolder = view.remoteFolder;
-					currentComponent = view.component;
-					break;
-				} else if (view.remoteFolder) {
-					currentRelay = view.currentRelay;
-					sharedFolder = view.sharedFolder;
-					remoteFolder = view.remoteFolder;
-					currentComponent = view.component;
-					break;
-				} else if (
-					view.currentRelay &&
-					relayManager.relays.get(view.currentRelay.id)
-				) {
-					currentRelay = view.currentRelay;
-					sharedFolder = view.sharedFolder;
-					remoteFolder = view.remoteFolder;
-					currentComponent = view.component;
-					break;
-				}
-				view = history.pop();
-			}
-		} else {
-			currentRelay = undefined;
-			sharedFolder = undefined;
-			remoteFolder = undefined;
-			currentComponent = Relays;
+		// Entries whose records are gone, or that would show the page already
+		// on screen, are dropped so that one press always moves somewhere.
+		const restored = popSettingsHistory(
+			history,
+			{ currentRelay, sharedFolder, remoteFolder },
+			relays, remoteFolders, sharedFolders,
+		);
+		if (restored) {
+			showView({ ...restored.target, component: restored.view.component });
+			return;
 		}
+		showView({ component: Relays });
+	}
+
+	function showView(view: View) {
+		currentRelay = view.currentRelay;
+		sharedFolder = view.sharedFolder;
+		remoteFolder = view.remoteFolder;
+		currentComponent = remoteFolder ? ManageRemoteFolder
+			: sharedFolder ? ManageSharedFolder
+			: currentRelay ? ManageRelay : view.component;
 	}
 
 	function handleClose(event: CloseEvent) {
@@ -290,18 +275,18 @@
 		currentComponent = ManageRelay;
 	}
 
+	// Records can disappear before their deferred observers run. Resolve from
+	// the maps before mounting a folder page or restoring a history entry.
 	$: {
-		if (currentRelay && !$relays.has(currentRelay.id)) {
-			currentRelay = undefined;
-			currentComponent = Relays;
-		}
-	}
-
-	$: {
-		if (sharedFolder && !sharedFolders.has(sharedFolder)) {
-			sharedFolder = undefined;
-			remoteFolder = undefined;
-			currentComponent = Relays;
+		const target = resolveSettingsTarget(
+			{ currentRelay, sharedFolder, remoteFolder },
+			$relays, $remoteFolders, $sharedFolders,
+		);
+		if (!target) {
+			goBack();
+		} else if (target.currentRelay !== currentRelay ||
+			target.sharedFolder !== sharedFolder || target.remoteFolder !== remoteFolder) {
+			showView({ ...target, component: currentComponent });
 		}
 	}
 
@@ -328,17 +313,21 @@
 	{/if}
 	<div class="vertical-tab-content">
 		{#if remoteFolder}
-			<ManageRemoteFolder
-				{plugin}
-				{remoteFolder}
-				{sharedFolders}
-				{relayRoles}
-				folderRoles={relayManager.folderRoles}
-				on:goBack={handleGoBack}
-				on:close={handleClose}
-				on:manageRelay={handleManageRelayEvent}
-				on:manageSharedFolder={handleManageSharedFolderEvent}
-			></ManageRemoteFolder>
+			<!-- The page binds its stores to the folder it mounted with, so a
+			     page for a different remote folder is a fresh mount. -->
+			{#key remoteFolder.id}
+				<ManageRemoteFolder
+					{plugin}
+					{remoteFolder}
+					{sharedFolders}
+					{relayRoles}
+					folderRoles={relayManager.folderRoles}
+					on:goBack={handleGoBack}
+					on:close={handleClose}
+					on:manageRelay={handleManageRelayEvent}
+					on:manageSharedFolder={handleManageSharedFolderEvent}
+				></ManageRemoteFolder>
+			{/key}
 		{:else if sharedFolder}
 			<ManageSharedFolder
 				{plugin}

@@ -37,9 +37,8 @@
 
 	plugin.relayManager.refreshRemoteFolder(remoteFolder);
 
-	let relayStore = derived([relayRoles], ([$relayRoles]) => {
-		return $relayRoles.find((role) => role.relayId === $remoteFolder.relayId)
-			?.relay;
+	let relayStore = derived([plugin.relayManager.relays, remoteFolder], ([$relays, $remoteFolder]) => {
+		return $relays.get($remoteFolder.relayId);
 	});
 
 	let folderStore = derived($sharedFolders, ($sharedFolders) => {
@@ -129,13 +128,14 @@
 	let syncSettings: SyncSettingsManager | undefined =
 		$folderStore?.syncSettingsManager;
 
+	// Attachments sync to the local folder's own relay, which need not be the
+	// relay of the remote folder shown here.
 	let noStorage = derived(
-		[folderStore, relayRoles],
-		([$folderStore, $relayRoles]) => {
-			return (
-				$relayRoles.find((role) => role.relay === $folderStore?.remote?.relay)
-					?.relay?.storageQuota?.quota === 0
-			);
+		[folderStore, plugin.relayManager.relays],
+		([$folderStore, $relays]) => {
+			const remote = $folderStore?.remote;
+			const relay = remote && $relays.get(remote.relayId);
+			return relay?.storageQuota?.quota === 0;
 		},
 	);
 
@@ -417,27 +417,29 @@
 	}
 </script>
 
-<Breadcrumbs
-	items={[
-		{
-			type: "home",
-			onClick: () => dispatch("goBack", { clear: true }),
-		},
-		{
-			type: "relay",
-			relay: $remoteFolder.relay,
-			onClick: () => handleManageRelay($remoteFolder.relay),
-		},
-		{
-			type: "remoteFolder",
-			remoteFolder: {
-				...$remoteFolder,
-				name: displayName,
-				private: isPrivate,
+{#if $relayStore}
+	<Breadcrumbs
+		items={[
+			{
+				type: "home",
+				onClick: () => dispatch("goBack", { clear: true }),
 			},
-		},
-	]}
-/>
+			{
+				type: "relay",
+				relay: $relayStore,
+				onClick: () => $relayStore && handleManageRelay($relayStore),
+			},
+			{
+				type: "remoteFolder",
+				remoteFolder: {
+					...$remoteFolder,
+					name: displayName,
+					private: isPrivate,
+				},
+			},
+		]}
+	/>
+{/if}
 
 {#if $canManageUsers && !$canReadFolder}
 	<div
@@ -642,7 +644,7 @@
 	<SettingGroup>
 		{#if $relayStore}
 			{#if $canMakeFolderPrivate}
-				{#if !remoteFolder?.private && remoteFolder?.relay.version > 0}
+				{#if !remoteFolder.private && $relayStore.version > 0}
 					<SettingItem
 						name="Make private"
 						description="Convert this folder to a private folder and manage access"
