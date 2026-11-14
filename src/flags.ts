@@ -59,15 +59,15 @@ export const FeatureFlagSchema: {
 	[K in keyof FeatureFlags]: FeatureFlagSchemaEntry;
 } = {
 	enableStreamingDownloads: {
-		default: false, category: "labs", title: "Stream attachment downloads",
+		default: true, category: "labs", title: "Stream attachment downloads",
 		description: "Download and verify attachments in bounded chunks.",
 	},
 	enableStreamingUploads: {
-		default: false, category: "labs", title: "Stream desktop attachment uploads",
+		default: true, category: "labs", title: "Stream desktop attachment uploads",
 		description: "Read and upload desktop attachments without loading the whole file into memory.",
 	},
 	enableAttachmentSizeLimit: {
-		default: false, category: "labs", title: "Limit attachments on this device",
+		default: true, category: "labs", title: "Limit attachments on this device",
 		description: "Skip attachments above this device's size limit when planning sync.",
 	},
 	enableDocumentStatus: {
