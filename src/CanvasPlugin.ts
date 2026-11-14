@@ -5,6 +5,7 @@ import { Canvas } from "src/Canvas";
 import {
 	areCanvasDataEqual,
 	mergeCanvasThreeWay,
+	mergeCanvasText,
 	mergeCanvasViewData,
 	foreignViewItems,
 	viewDataBelongsToFile,
@@ -30,6 +31,10 @@ import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 import type { EditorViewRef } from "./merge-hsm/types";
 import { HSMEditorPlugin } from "./merge-hsm/integration/HSMEditorPlugin";
 import { isDocument, type Document } from "./Document";
+import { bindLiveNode } from "./y-codemirror.next/LiveNodePlugin";
+import { applyTextChanges, diffTextChanges } from "./textChanges";
+import { syncDispatchAnnotations } from "./merge-hsm/integration/annotations";
+import { flags } from "./flagManager";
 
 /**
  * The embedded editor surface the canvas plugin reads. Markdown embeds
@@ -44,6 +49,8 @@ interface EmbedEditorView {
 	text?: unknown;
 	data?: unknown;
 	lastSavedData?: unknown;
+	showEditor?: (...args: unknown[]) => unknown;
+	destroyEditor?: (...args: unknown[]) => unknown;
 }
 
 /**
@@ -73,6 +80,7 @@ export class CanvasPlugin extends HasLogging {
 	private nodeEmbeds = new Map<CanvasNode, EmbedEditorView>();
 	/** Per view node, the unpatch for its render hook. */
 	private nodeHooks = new Map<CanvasNode, () => void>();
+	private cardBindings = new Map<CanvasNode, { child: EmbedEditorView; release: () => void }>();
 	/**
 	 * True once the view's rendered data is known to belong to view.file.
 	 * Obsidian reuses canvas views across file switches: between the file
@@ -295,6 +303,10 @@ export class CanvasPlugin extends HasLogging {
 			// Each step is guarded: one failing release must not leave the
 			// observers, patches, and reconciler installed on a plugin the
 			// manager considers gone.
+			for (const { release } of this.cardBindings.values()) {
+				try { release(); } catch (e) { this.error("Error releasing canvas card:", e); }
+			}
+			this.cardBindings.clear();
 			for (const release of [...this.embedReleases.values()]) {
 				try {
 					release();
@@ -356,7 +368,7 @@ export class CanvasPlugin extends HasLogging {
 			};
 			ytext.observe(_textObserver);
 			this.unsubscribes.push(() => {
-				this.relayCanvas.textNode(node).unobserve(_textObserver);
+				ytext.unobserve(_textObserver);
 				this.observedTextNodes.delete(nodeId);
 			});
 		}
@@ -446,6 +458,17 @@ export class CanvasPlugin extends HasLogging {
 	private adoptEmbed(node: CanvasNode): void {
 		if (!this.viewDataOwned || !this.relayCanvas) return;
 		const child = (node as RenderedCanvasNode).child;
+		const card = this.cardBindings.get(node);
+		if (card && card.child !== child) {
+			card.release();
+			this.cardBindings.delete(node);
+		}
+		if (child && !child.file && node.getData().type === "text") {
+			if (!this.cardBindings.has(node)) {
+				this.cardBindings.set(node, { child, release: this.connectCardEditor(node, child) });
+			}
+			return;
+		}
 		// A node whose child Obsidian has dropped keeps its previous
 		// wiring until it renders a new child or is removed; the embed
 		// editor it held is gone either way.
@@ -469,6 +492,89 @@ export class CanvasPlugin extends HasLogging {
 		if (release) {
 			release();
 		}
+	}
+
+	/** Own the text card's lazy editor, including one already open at attachment. */
+	private connectCardEditor(node: CanvasNode, child: EmbedEditorView): () => void {
+		let editor: EditorView | undefined;
+		let releaseBinding: (() => void) | undefined;
+		let ready = false;
+		let released = false;
+		let pendingEditor: EditorView | undefined;
+		let pendingBase = "";
+		const release = () => {
+			releaseBinding?.();
+			releaseBinding = undefined;
+			editor = undefined;
+			pendingEditor = undefined;
+			pendingBase = "";
+		};
+		const bind = () => {
+			const cm = child.editor?.cm;
+			if (released || cm === editor) return;
+			if (cm !== pendingEditor) {
+				release();
+				pendingEditor = cm;
+				pendingBase = node.text;
+			}
+			if (!ready || !cm || !this.viewDataOwned || this.view.file !== this.relayCanvas.tfile) return;
+			const ytext = this.relayCanvas.localDoc.getText(node.id);
+			const base = pendingBase;
+			const edited = cm.state.doc.toString();
+			const shared = ytext.toString();
+			let merged = shared;
+			if (this.relayCanvas.canEditContent) {
+				// node.text is the native saved buffer; the editor can hold typing
+				// not yet delivered by the native save. Merge it with peer changes
+				// before either side starts interpreting positional deltas.
+				merged = this.relayCanvas.ynodes.has(node.id)
+					? mergeCanvasText(base, shared, edited)
+					: edited;
+			} else if (edited !== base) {
+				this.relayCanvas.rejectReaderEdit();
+			}
+			if (merged !== shared) {
+				ytext.doc!.transact(() => applyTextChanges(ytext, diffTextChanges(shared, merged)), this);
+			}
+			if (edited !== merged) {
+				cm.dispatch({
+					changes: diffTextChanges(edited, merged),
+					annotations: syncDispatchAnnotations(cm, flags().enableSingleUserHistory),
+				});
+			}
+			node.text = merged;
+			editor = cm;
+			releaseBinding = bindLiveNode(cm, { ytext, canvas: this.relayCanvas });
+			if (merged !== base || merged !== shared) this.requestSaveAfterAdoption();
+		};
+		const hooks: Record<string, unknown> = {};
+		if (child.showEditor) {
+			hooks.showEditor = (old: (...args: unknown[]) => unknown) =>
+				function (this: EmbedEditorView, ...args: unknown[]) {
+					const result = old.apply(this, args);
+					bind();
+					return result;
+				};
+		}
+		if (child.destroyEditor) {
+			hooks.destroyEditor = (old: (...args: unknown[]) => unknown) =>
+				function (this: EmbedEditorView, ...args: unknown[]) {
+					release();
+					return old.apply(this, args);
+				};
+		}
+		const unpatch = getPatcher().patch(child, hooks);
+		bind();
+		// Attachment precedes persistence/provider readiness. Capture an existing
+		// editor's native baseline first; peer updates can change node.text while
+		// loading, but must not redefine the base of its pending typing.
+		void this.relayCanvas.whenReady().then(() => {
+			ready = true;
+			bind();
+		}).catch(error => {
+			if (!released) this.error("Unable to bind canvas card editor:", error);
+		});
+		return () => { released = true; unpatch(); release(); };
 	}
 
 	/**
@@ -501,6 +607,8 @@ export class CanvasPlugin extends HasLogging {
 	}
 
 	private unhookNode(node: CanvasNode): void {
+		this.cardBindings.get(node)?.release();
+		this.cardBindings.delete(node);
 		const unpatch = this.nodeHooks.get(node);
 		if (unpatch) {
 			unpatch();

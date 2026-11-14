@@ -45,7 +45,6 @@ import { isCanvas, type Canvas } from "./Canvas";
 import { CanvasPlugin } from "./CanvasPlugin";
 import { CanvasPresencePlugin } from "./canvas-presence";
 import { ANONYMOUS_PROFILE_NAME } from "./User";
-import { LiveNode } from "./y-codemirror.next/LiveNodePlugin";
 import { flags } from "./flagManager";
 import { accessModeCompartment, configureAccessMode } from "./readOnlyEditorState";
 import { finishMarkdownModeChanges, requestedMarkdownMode, setMarkdownViewMode } from "./markdownViewMode";
@@ -2156,7 +2155,6 @@ export class LiveViewManager {
 		if (this.extensions.length > 0) return; // already registered
 		this.extensions.push([
 			HSMEditorPlugin,
-			LiveNode,
 			yRemoteSelectionsTheme,
 			yRemoteSelections,
 			attributionFilterField,
