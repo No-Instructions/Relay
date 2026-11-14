@@ -218,7 +218,7 @@ export const FeatureFlagSchema: {
 		requiresReload: false,
 	},
 	enableCanvasPresence: {
-		default: false,
+		default: true,
 		category: "labs",
 		title: "Canvas presence",
 		description:
