@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Satellite, Layers, Unplug } from "lucide-svelte";
+	import { Satellite, Layers } from "lucide-svelte";
 	import type { ConnectionStatus } from "src/HasProvider";
 	import type { RemoteSharedFolder } from "src/Relay";
 	export let status: ConnectionStatus = "disconnected";
@@ -8,15 +8,13 @@
 	export let progress = 0;
 	export let showProgress = false;
 	export let localOnly: boolean = false;
-	export let enableDraftMode: boolean = false;
 	export let syncStatus: "pending" | "running" | "completed" | "failed" =
 		"pending";
 
-	$: effectiveLocalOnly = enableDraftMode && localOnly;
-	$: satelliteClass = effectiveLocalOnly
+	$: satelliteClass = localOnly
 		? "system3-paused"
 		: `system3-${status}`;
-	$: satelliteLabel = effectiveLocalOnly
+	$: satelliteLabel = localOnly
 			? `${remote?.relay.name || "Relay Server"} (paused)`
 			: `${remote?.relay.name || "Relay Server"} (${status})`;
 </script>

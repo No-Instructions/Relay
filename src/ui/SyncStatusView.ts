@@ -9,7 +9,7 @@ import {
 import SyncStatusModalContent from "../components/SyncStatusModalContent.svelte";
 import Pill from "../components/Pill.svelte";
 import { mountComponent, type MountedComponent } from "./svelteHost.svelte";
-import { FeatureFlagManager, flags } from "../flagManager";
+import { FeatureFlagManager } from "../flagManager";
 import { flag } from "../flags";
 import type { FolderSyncVisibleState } from "../BackgroundSyncProgress";
 import type { RelayDebugAPI } from "../RelayDebugAPI";
@@ -308,7 +308,6 @@ export class SyncStatusView extends ItemView {
 				relayId: folder.relayId,
 				remote: folder.remote,
 				localOnly: folder.localOnly,
-				enableDraftMode: flags().enableDraftMode,
 				progress: 0,
 				showProgress: false,
 				syncStatus: "pending",
@@ -322,7 +321,6 @@ export class SyncStatusView extends ItemView {
 					relayId: folder.relayId,
 					remote: folder.remote,
 					localOnly: folder.localOnly,
-					enableDraftMode: flags().enableDraftMode,
 				});
 			}),
 		);
