@@ -322,20 +322,6 @@ export class RelayCanvasView implements S3View {
 		}
 	}
 
-	toggleConnection() {
-		this.shouldConnect = !this.shouldConnect;
-		if (this.shouldConnect) {
-			void this.canvas.connect().then((connected) => {
-				if (!connected) {
-					// If we couldn't connect, ensure their next press tries again.
-					this.shouldConnect = false;
-				}
-			});
-		} else {
-			this.canvas.disconnect();
-		}
-	}
-
 	toggleLocalOnly() {
 		const wasDraft = this.canvas.isDraft;
 		this.canvas.setLocalOnly(!wasDraft);
@@ -390,9 +376,7 @@ export class RelayCanvasView implements S3View {
 						view: this,
 						state: this.canvas.state,
 						remote: this.canvas.sharedFolder.remote,
-						tracking: this.tracking,
 						draftMode: this.canvas.isDraft,
-						enableDraftMode: flags().enableDraftMode || this.canvas.isDraft,
 						folderConnected: this.canvas.sharedFolder.connected,
 						pendingOutbound: this.canvas.pendingOutbound,
 						pendingInbound: this.canvas.pendingInbound,
@@ -405,9 +389,7 @@ export class RelayCanvasView implements S3View {
 							view: this,
 							state: state,
 							remote: this.canvas.sharedFolder.remote,
-							tracking: this.tracking,
 							draftMode: this.canvas.isDraft,
-							enableDraftMode: flags().enableDraftMode || this.canvas.isDraft,
 							folderConnected: this.canvas.sharedFolder.connected,
 							pendingOutbound: this.canvas.pendingOutbound,
 							pendingInbound: this.canvas.pendingInbound,
@@ -419,9 +401,7 @@ export class RelayCanvasView implements S3View {
 				view: this,
 				state: this.canvas.state,
 				remote: this.canvas.sharedFolder.remote,
-				tracking: this.tracking,
 				draftMode: this.canvas.isDraft,
-				enableDraftMode: flags().enableDraftMode || this.canvas.isDraft,
 				folderConnected: this.canvas.sharedFolder.connected,
 				pendingOutbound: this.canvas.pendingOutbound,
 				pendingInbound: this.canvas.pendingInbound,
@@ -643,20 +623,6 @@ export class LiveView<ViewType extends TextFileView>
 		this.canConnect = canConnect;
 		if (!connectionManager.networkStatus.online) {
 			this.offlineBanner();
-		}
-	}
-
-	toggleConnection() {
-		this.shouldConnect = !this.shouldConnect;
-		if (this.shouldConnect) {
-			void this.document.connect().then((connected) => {
-				if (!connected) {
-					// If we couldn't connect, ensure their next press tries again.
-					this.shouldConnect = false;
-				}
-			});
-		} else {
-			this.document.disconnect();
 		}
 	}
 
@@ -899,10 +865,8 @@ export class LiveView<ViewType extends TextFileView>
 						view: this,
 						state: this.document.state,
 						remote: this.document.sharedFolder.remote,
-						tracking: this.live,
 						readerMode: this.readerMode,
 						draftMode: this.document.isDraft,
-						enableDraftMode: flags().enableDraftMode || this.document.isDraft,
 						folderConnected: this.document.sharedFolder.connected,
 						pendingOutbound: this.document.hsm?.pendingOutbound ?? 0,
 						pendingInbound: this.document.hsm?.pendingInbound ?? 0,
@@ -915,10 +879,8 @@ export class LiveView<ViewType extends TextFileView>
 							view: this,
 							state: state,
 							remote: this.document.sharedFolder.remote,
-							tracking: this.live,
 							readerMode: this.readerMode,
 							draftMode: this.document.isDraft,
-							enableDraftMode: flags().enableDraftMode || this.document.isDraft,
 							folderConnected: this.document.sharedFolder.connected,
 							pendingOutbound: this.document.hsm?.pendingOutbound ?? 0,
 							pendingInbound: this.document.hsm?.pendingInbound ?? 0,
@@ -926,17 +888,14 @@ export class LiveView<ViewType extends TextFileView>
 					},
 				);
 			}
-			// Subscribe to HSM state changes to update tracking icon and conflict banner
+			// Update draft controls and access-mode banners when HSM state changes.
 			const hsm = this.document.hsm;
 			if (hsm && !this._hsmStateUnsubscribe) {
 				this._hsmStateUnsubscribe = hsm.stateChanges.subscribe((state) => {
 					if (!this.document.sharedFolder) return;
-					const currentFlags = flags();
 					this._viewActions?.set({
-						tracking: this.live,
 						readerMode: this.readerMode,
 						draftMode: this.document.isDraft,
-						enableDraftMode: currentFlags.enableDraftMode || this.document.isDraft,
 						folderConnected: this.document.sharedFolder.connected,
 						pendingOutbound: this.document.hsm?.pendingOutbound ?? 0,
 						pendingInbound: this.document.hsm?.pendingInbound ?? 0,
@@ -950,10 +909,8 @@ export class LiveView<ViewType extends TextFileView>
 				view: this,
 				state: this.document.state,
 				remote: this.document.sharedFolder.remote,
-				tracking: this.live,
 				readerMode: this.readerMode,
 				draftMode: this.document.isDraft,
-				enableDraftMode: flags().enableDraftMode || this.document.isDraft,
 				folderConnected: this.document.sharedFolder.connected,
 				pendingOutbound: this.document.hsm?.pendingOutbound ?? 0,
 				pendingInbound: this.document.hsm?.pendingInbound ?? 0,

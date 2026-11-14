@@ -13,7 +13,7 @@ import Pill from "src/components/Pill.svelte";
 import TextPill from "src/components/TextPill.svelte";
 import UploadPill from "src/components/UploadPill.svelte";
 import { mountComponent, type MountedComponent } from "src/ui/svelteHost.svelte";
-import { flags, withAnyOf, withFlag } from "src/flagManager";
+import { withAnyOf, withFlag } from "src/flagManager";
 import { flag } from "src/flags";
 import type { BackgroundSync, QueueItem } from "src/BackgroundSync";
 import type { Unsubscriber } from "src/observable/Observable";
@@ -207,7 +207,6 @@ class PillDecoration {
 				relayId: this.sharedFolder.relayId,
 				remote: this.sharedFolder.remote,
 				localOnly: this.sharedFolder.localOnly,
-				enableDraftMode: flags().enableDraftMode,
 				progress: 0,
 				showProgress: false,
 				syncStatus: "pending",
@@ -223,7 +222,6 @@ class PillDecoration {
 					relayId: this.sharedFolder.relayId,
 					remote: this.sharedFolder.remote,
 					localOnly: this.sharedFolder.localOnly,
-					enableDraftMode: flags().enableDraftMode,
 				});
 			}),
 		);

@@ -14,7 +14,6 @@ export interface FeatureFlags {
 	enableDeviceManagement: boolean;
 	enableHSMRecording: boolean;
 	enableHSMResourceContracts: boolean;
-	enableDraftMode: boolean;
 	enableResourceMeter: boolean;
 	enableFolderIdbMigration: boolean;
 	enableMetadataHealthNotice: boolean;
@@ -159,13 +158,6 @@ export const FeatureFlagSchema: {
 		title: "Merge state resource contracts",
 		description:
 			"Assert MergeHSM resource expectations declared on the machine states.",
-	},
-	enableDraftMode: {
-		default: true,
-		category: "labs",
-		title: "Draft mode",
-		description:
-			"Use the editor action as a publish pause/resume control so local edits can stay unpublished.",
 	},
 	enableFolderIdbMigration: {
 		default: false,
