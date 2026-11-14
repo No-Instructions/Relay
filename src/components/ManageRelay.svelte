@@ -357,7 +357,9 @@
 	}
 
 	function handleDestroy() {
-		plugin.relayManager.destroyRelay(relay);
+		plugin.relayManager.destroyRelay(relay).catch((error) => {
+			handleServerError(error, "Failed to delete relay");
+		});
 		dispatch("goBack", {});
 	}
 

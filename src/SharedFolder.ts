@@ -518,30 +518,7 @@ export class SharedFolder extends HasProvider {
 		);
 
 		this.unsubscribes.push(
-			this.relayManager.storageQuotas.subscribe(async (storageQuotas) => {
-				const quota = storageQuotas.find((quota) => {
-					return quota.id === this._remote?.relay.storageQuotaId;
-				});
-				if (quota === undefined) {
-					return;
-				}
-				if (this.storageQuota !== quota.quota) {
-					if (
-						this.storageQuota !== undefined &&
-						quota.quota !== undefined &&
-						quota.quota > this.storageQuota
-					) {
-						this.debug(
-							"storage quota increase",
-							this.storageQuota,
-							quota.quota,
-						);
-						await this.netSync();
-					}
-					this.debug("storage quota update", this.storageQuota, quota.quota);
-					this.storageQuota = quota.quota;
-				}
-			}),
+			this.relayManager.storageQuotas.subscribe(() => this.updateStorageQuota()),
 		);
 
 		this.proxy = createProtectionProxy(
@@ -2094,6 +2071,30 @@ export class SharedFolder extends HasProvider {
 				file.notifyAccessModeChanged();
 			}
 		});
+	}
+
+	private async updateStorageQuota(): Promise<void> {
+		const relay = this._remote && this.relayManager.relays.get(this._remote.relayId);
+		const quota = this.relayManager.storageQuotas.get(relay?.storageQuotaId ?? "");
+		if (quota === undefined) {
+			return;
+		}
+		if (this.storageQuota !== quota.quota) {
+			if (
+				this.storageQuota !== undefined &&
+				quota.quota !== undefined &&
+				quota.quota > this.storageQuota
+			) {
+				this.debug(
+					"storage quota increase",
+					this.storageQuota,
+					quota.quota,
+				);
+				await this.netSync();
+			}
+			this.debug("storage quota update", this.storageQuota, quota.quota);
+			this.storageQuota = quota.quota;
+		}
 	}
 
 	private subscribeToRemoteRelay(remote: RemoteSharedFolder): void {
