@@ -3,203 +3,65 @@
 // [The MIT License](./LICENSE) © Kevin Jahns
 
 import { applyTextChanges, type TextChange } from "../textChanges";
-import type { ChangeSpec } from "@codemirror/state";
-import { EditorView, ViewUpdate, ViewPlugin } from "@codemirror/view";
-import type { PluginValue } from "@codemirror/view";
-import { getLiveViews } from "../editorContext";
-import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
-import { curryLog } from "src/debug";
-import type { CanvasNodeData } from "src/CanvasView";
+import { Compartment, StateEffect, type ChangeSpec } from "@codemirror/state";
+import { EditorView, ViewUpdate, ViewPlugin, type PluginValue } from "@codemirror/view";
+import type { Text as YText, YTextEvent, Transaction } from "yjs";
 import { flags } from "src/flagManager";
+import { syncDispatchAnnotations, ySyncAnnotation } from "../merge-hsm/integration/annotations";
 
-// Import from shared location
-import {
-	syncDispatchAnnotations,
-	ySyncAnnotation,
-} from "../merge-hsm/integration/annotations";
-
-type RelayCanvasViewBridge = {
+interface CardBinding {
+	ytext: YText;
 	canvas: {
-		path: string;
-		canEditContent?: boolean;
-		rejectReaderEdit?(): void;
-		textNode(node: CanvasNodeData): YText | undefined;
+		readonly canEditContent: boolean;
+		rejectReaderEdit(): void;
 	};
-};
-
-type LiveViewManagerBridge = {
-	findCanvas(editor: EditorView): RelayCanvasViewBridge | undefined;
-};
-
-function getConnectionManager(editor: EditorView): LiveViewManagerBridge | null {
-	return getLiveViews(editor);
 }
 
+/** An editor and its shared text, aligned by the canvas owner before installation. */
 export class LiveNodePluginValue implements PluginValue {
-	editor: EditorView;
-	view?: RelayCanvasViewBridge;
-	connectionManager?: LiveViewManagerBridge;
-	initialSet = false;
-	private destroyed = false;
-	_observer?: (event: YTextEvent, tr: Transaction) => void;
-	observer?: (event: YTextEvent, tr: Transaction) => void;
-	_ytext?: YText;
-	keyFrameCounter = 0;
-	debug: (...args: unknown[]) => void = (...args: unknown[]) => {};
-	log: (...args: unknown[]) => void = (...args: unknown[]) => {};
-	warn: (...args: unknown[]) => void = (...args: unknown[]) => {};
-	embed = false;
-	node?: CanvasNodeData;
+	destroyed = false;
 
-	private getNode() {
-		const state = (
-			this.editor.state as unknown as {
-				values: { node?: CanvasNodeData }[];
+	constructor(private editor: EditorView, private binding: CardBinding) {
+		binding.ytext.observe(this.observer);
+	}
+
+	private observer = (event: YTextEvent, tr: Transaction): void => {
+		if (this.destroyed || tr.origin === this) return;
+		// Native saves may adopt a buffer the editor already holds.
+		if (this.editor.state.doc.toString() === event.target.toString()) return;
+		const changes: ChangeSpec[] = [];
+		let pos = 0;
+		for (const delta of event.delta) {
+			if (delta.insert != null) {
+				changes.push({ from: pos, insert: delta.insert as string });
+			} else if (delta.delete != null) {
+				changes.push({ from: pos, to: pos + delta.delete, insert: "" });
+				pos += delta.delete;
+			} else if (delta.retain != null) {
+				pos += delta.retain;
 			}
-		).values.find((state: { node?: CanvasNodeData }) => {
-			if (state && state.node) return state.node;
+		}
+		this.editor.dispatch({
+			changes,
+			annotations: syncDispatchAnnotations(this.editor, flags().enableSingleUserHistory),
 		});
-		if (!state) return;
-		this.node = state.node;
-		return this.node;
-	}
-
-	private getYText(): YText | undefined {
-		this.view = this.connectionManager?.findCanvas(this.editor);
-
-		const state = (
-			this.editor.state as unknown as {
-				values: { node?: CanvasNodeData }[];
-			}
-		).values.find((state: { node?: CanvasNodeData }) => {
-			if (state && state.node) return state.node;
-		});
-		if (!state) {
-			if (this.observer) this._ytext?.unobserve(this.observer);
-			return;
-		}
-		if ((state.node as CanvasNodeData).id !== this.node?.id && this.observer) {
-			this._ytext?.unobserve(this.observer);
-		}
-		this.node = state.node;
-		return this.view?.canvas.textNode(state.node as CanvasNodeData);
-	}
-
-	constructor(editor: EditorView) {
-		this.editor = editor;
-		this.connectionManager = getConnectionManager(this.editor) ?? undefined;
-		this.view = this.connectionManager?.findCanvas(this.editor);
-		this.node = this.getNode();
-		this._ytext = this.getYText();
-		if (!this._ytext) {
-			return;
-		}
-		if (!this.view) {
-			return;
-		}
-		this.log = curryLog(
-			`[LiveNodePluginValue][${this.view.canvas.path}#${this.node?.id}]`,
-			"log",
-		);
-		this.warn = curryLog(
-			`[LiveNodePluginValue][${this.view.canvas.path}#${this.node?.id}]`,
-			"warn",
-		);
-		this.debug = curryLog(
-			`[LiveNodePluginValue][${this.view.canvas.path}#${this.node?.id}]`,
-			"debug",
-		);
-		this.debug("created");
-
-		this._observer = (event, tr) => {
-			void (async () => {
-			this._ytext = this.getYText();
-
-			if (this.destroyed) {
-				this.debug("Recived yjs event but editor was destroyed");
-				return;
-			}
-
-			// Called when a yjs event is received. Results in updates to codemirror.
-			if (tr.origin !== this) {
-				const delta = event.delta;
-				const changes: ChangeSpec[] = [];
-				let pos = 0;
-				for (let i = 0; i < delta.length; i++) {
-					const d = delta[i];
-					if (d.insert != null) {
-						changes.push({
-							from: pos,
-							to: pos,
-							insert: d.insert as string,
-						});
-					} else if (d.delete != null) {
-						changes.push({
-							from: pos,
-							to: pos + d.delete,
-							insert: "",
-						});
-						pos += d.delete;
-					} else if (d.retain != null) {
-						pos += d.retain;
-					}
-				}
-				if (this.view?.canvas) {
-					editor.dispatch({
-						changes,
-						annotations: syncDispatchAnnotations(
-							this.editor,
-							flags().enableSingleUserHistory,
-						),
-					});
-				}
-			}
-			})();
-		};
-
-		this.observer = (event, tr) => {
-			try {
-				this._observer?.(event, tr);
-			} catch (e) {
-				if (e instanceof RangeError) {
-					console.warn("range errors!");
-				}
-			}
-		};
-		this._ytext.observe(this.observer);
-	}
+	};
 
 	update(update: ViewUpdate): void {
-		// When updates were made to the local editor. Forwarded to the ydoc.
 		if (
-			!update.docChanged ||
+			this.destroyed || !update.docChanged ||
 			(update.transactions.length > 0 &&
 				update.transactions[0].annotation(ySyncAnnotation) === this.editor)
-		) {
-			return;
-		}
-		const ytext = this.getYText();
-		if (!ytext) {
-			return;
-		}
-		if (this.view?.canvas.canEditContent === false) {
-			this.view.canvas.rejectReaderEdit?.();
-			// Restore after this update, since CM6 forbids dispatching inside one.
+		) return;
+		const { ytext, canvas } = this.binding;
+		if (!canvas.canEditContent) {
+			canvas.rejectReaderEdit();
+			// CM6 forbids dispatching inside its update; restore after it completes.
 			queueMicrotask(() => {
-				if (this.destroyed || this.getYText() !== ytext) return;
+				if (this.destroyed) return;
 				this.editor.dispatch({
-					changes: {
-						from: 0,
-						to: this.editor.state.doc.length,
-						insert:
-							ytext.toString() ||
-							ytext.doc?.getMap<CanvasNodeData>("nodes").get(this.node?.id ?? "")?.text ||
-							"",
-					},
-					annotations: syncDispatchAnnotations(
-						this.editor,
-						flags().enableSingleUserHistory,
-					),
+					changes: { from: 0, to: this.editor.state.doc.length, insert: ytext.toString() },
+					annotations: syncDispatchAnnotations(this.editor, flags().enableSingleUserHistory),
 				});
 			});
 			return;
@@ -208,24 +70,27 @@ export class LiveNodePluginValue implements PluginValue {
 		update.changes.iterChanges((from, to, _fromB, _toB, insert) => {
 			changes.push({ from, to, insert: insert.sliceString(0, insert.length, "\n") });
 		});
-		ytext.doc?.transact(() => {
-			applyTextChanges(ytext, changes);
-		}, this);
+		ytext.doc?.transact(() => applyTextChanges(ytext, changes), this);
 	}
 
-	destroy() {
+	destroy(): void {
+		if (this.destroyed) return;
 		this.destroyed = true;
-		if (this.observer) {
-			this._ytext?.unobserve(this.observer);
-		}
-		this.observer = undefined;
-		this._observer = undefined;
-		this.connectionManager = null as unknown as typeof this.connectionManager;
-		this.view = undefined;
-		this._ytext = undefined;
-		this.node = undefined;
-		this.editor = null as unknown as typeof this.editor;
+		this.binding.ytext.unobserve(this.observer);
 	}
 }
 
-export const LiveNode = ViewPlugin.fromClass(LiveNodePluginValue);
+/** Install on this editor only; native editor destruction also releases the observer. */
+export function bindLiveNode(editor: EditorView, binding: CardBinding): () => void {
+	const compartment = new Compartment();
+	let value: LiveNodePluginValue | undefined;
+	const extension = ViewPlugin.define(view => (value = new LiveNodePluginValue(view, binding)));
+	editor.dispatch({ effects: StateEffect.appendConfig.of(compartment.of(extension)) });
+	return () => {
+		// Obsidian may already have destroyed the editor when a node is released.
+		if (value && !value.destroyed) {
+			editor.dispatch({ effects: compartment.reconfigure([]) });
+		}
+		value = undefined;
+	};
+}
