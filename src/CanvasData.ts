@@ -91,7 +91,7 @@ function fieldsEqual(a: unknown, b: unknown): boolean {
  * export, carrying the peers' edits. The result is plain text; Canvas.applyData
  * snaps its replacement ranges before applying them to Y.Text.
  */
-function mergeText(base: string, ours: string, theirs: string): string {
+export function mergeCanvasText(base: string, ours: string, theirs: string): string {
 	if (ours === theirs || base === theirs) return ours;
 	if (base === ours) return theirs;
 	const dmp = new diff_match_patch();
@@ -139,7 +139,7 @@ function mergeItem<T extends CanvasItem>(
 			typeof o === "string" &&
 			typeof t === "string"
 		) {
-			out[key] = mergeText(typeof b === "string" ? b : "", o, t);
+			out[key] = mergeCanvasText(typeof b === "string" ? b : "", o, t);
 			continue;
 		}
 		const oursChanged = !fieldsEqual(b, o);
