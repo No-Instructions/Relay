@@ -12,6 +12,13 @@ type Relays = Pick<RelayManager["relays"], "get">;
 type RemoteFolders = Pick<RelayManager["remoteFolders"], "get">;
 type Locals = Pick<SharedFolders, "find">;
 
+/** The live records settings pages resolve against. */
+export interface SettingsRecords {
+	relays: Relays;
+	remoteFolders: RemoteFolders;
+	sharedFolders: Locals;
+}
+
 /**
  * Resolve saved navigation against live records.
  *
@@ -72,26 +79,4 @@ export function sameSettingsTarget(a: SettingsTarget, b: SettingsTarget): boolea
 		a.sharedFolder === b.sharedFolder &&
 		a.remoteFolder === b.remoteFolder
 	);
-}
-
-/**
- * Pop saved views until one resolves to a page other than the current one.
- * Views whose records are gone, and views that resolve to the page already on
- * screen, are dropped. Returns undefined once the history is exhausted.
- */
-export function popSettingsHistory<View extends SettingsTarget>(
-	history: View[],
-	current: SettingsTarget,
-	relays: Relays,
-	remoteFolders: RemoteFolders,
-	sharedFolders: Locals,
-): { view: View; target: SettingsTarget } | undefined {
-	let view: View | undefined;
-	while ((view = history.pop())) {
-		const target = resolveSettingsTarget(view, relays, remoteFolders, sharedFolders);
-		if (target && !sameSettingsTarget(target, current)) {
-			return { view, target };
-		}
-	}
-	return undefined;
 }
