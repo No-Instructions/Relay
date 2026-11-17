@@ -1,4 +1,5 @@
 import { apiVersion, Platform, type RequestUrlParam, type RequestUrlResponse } from "obsidian";
+import { watchRequestDeadlines, type RequestDeadlines } from "./NodeRequestDeadlines";
 import { flags } from "./flagManager";
 
 declare const GIT_TAG: string;
@@ -7,12 +8,10 @@ export function useNativeNetworking(): boolean {
 	return Platform.isDesktopApp && flags().enableNativeNetworking;
 }
 
-interface NodeRequestOptions {
+interface NodeRequestOptions extends RequestDeadlines {
 	signal?: AbortSignal;
 	redirect?: RequestRedirect;
 	maxResponseBytes?: number;
-	connectTimeoutMs?: number;
-	idleTimeoutMs?: number;
 }
 
 function abortError(signal: AbortSignal): Error {
@@ -77,8 +76,7 @@ async function requestOnce(target: URL, params: RequestUrlParam, options: NodeRe
 		const finish = (error?: Error, result?: RequestUrlResponse) => {
 			if (settled) return;
 			settled = true;
-			window.clearTimeout(connectTimer);
-			window.clearInterval(idleTimer);
+			clearDeadlines();
 			options.signal?.removeEventListener("abort", abort);
 			response?.destroy();
 			request.destroy();
@@ -126,24 +124,7 @@ async function requestOnce(target: URL, params: RequestUrlParam, options: NodeRe
 			incoming.on("end", complete);
 		});
 		request.on("error", error => finish(error));
-		// The connection deadline covers DNS/TCP/TLS. The inactivity deadline resets
-		// as bytes flow and does not cap the total duration of a large transfer.
-		const connectTimer = window.setTimeout(timeout, options.connectTimeoutMs ?? 30_000);
-		request.on("socket", socket => {
-			if (!socket.connecting) window.clearTimeout(connectTimer);
-			else socket.once(target.protocol === "https:" ? "secureConnect" : "connect", () => window.clearTimeout(connectTimer));
-		});
-		// Node's socket timeout can be postponed while a blocked write is still
-		// queued. Observe byte counters so a stalled upload also releases its slot.
-		const idleTimeoutMs = options.idleTimeoutMs ?? 120_000;
-		let lastBytes = 0;
-		let lastProgress = performance.now();
-		const idleTimer = window.setInterval(() => {
-			const socket = request.socket;
-			const bytes = (socket?.bytesRead ?? 0) + (socket?.bytesWritten ?? 0);
-			if (bytes !== lastBytes) { lastBytes = bytes; lastProgress = performance.now(); }
-			else if (performance.now() - lastProgress >= idleTimeoutMs) timeout();
-		}, Math.max(1, Math.min(1000, idleTimeoutMs / 4)));
+		const clearDeadlines = watchRequestDeadlines(request, target, timeout, options);
 		options.signal?.addEventListener("abort", abort, { once: true });
 		if (options.signal?.aborted) abort();
 		else request.end(body);

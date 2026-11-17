@@ -1,7 +1,7 @@
 import { isRetryableHttpError } from "./HttpError";
 import { generateHash } from "./hashing";
 import { flags } from "./flagManager";
-import { checkAttachmentAbort, snapshotAttachment, streamAttachmentPut, desktopAttachmentIO, type AttachmentVersion } from "./AttachmentIO";
+import { ATTACHMENT_CHUNK_BYTES, AttachmentUploadTimeoutError, checkAttachmentAbort, snapshotAttachment, streamAttachmentPut, desktopAttachmentIO, type AttachmentVersion } from "./AttachmentIO";
 import { downloadAttachment, probeAttachmentSize } from "./AttachmentDownload";
 import type { LiveTokenStore } from "./LiveTokenStore";
 import { S3RN } from "./S3RN";
@@ -123,6 +123,8 @@ export class ContentAddressedStore extends HasLogging {
 			try {
 				return await request();
 			} catch (error) {
+				// Release the shared transfer slot after a deadline. The background queue can retry.
+				if (error instanceof AttachmentUploadTimeoutError) throw error;
 				const classified =
 					s3NetworkFailureFromUnknown(error, operation) ?? error;
 				const delayCapMs = this.transferRetryDelaysMs[attempt];
@@ -179,7 +181,13 @@ export class ContentAddressedStore extends HasLogging {
 					if (!response.ok) throw await this.s3ResponseError(response, "upload attachment url");
 					const { uploadUrl } = await response.json() as { uploadUrl: string };
 					row.phase = "uploading"; row.bytes = 0; manager.notifyListeners();
-					const status = await streamAttachmentPut(syncFile.vault, uploadUrl, snapshot, version.size, syncFile.mimetype, signal, bytes => { row.bytes = bytes; manager.notifyListeners(); });
+					let reportedBytes = 0;
+					const status = await streamAttachmentPut(syncFile.vault, uploadUrl, snapshot, version.size, syncFile.mimetype, signal, bytes => {
+						if (bytes !== version.size && bytes - reportedBytes < ATTACHMENT_CHUNK_BYTES) return;
+						reportedBytes = bytes;
+						row.bytes = bytes;
+						manager.notifyListeners();
+					});
 					if (status < 200 || status >= 300) throw s3ApiErrorFromResponse(status, "", "upload attachment");
 				});
 				return version;
