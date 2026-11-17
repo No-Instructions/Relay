@@ -317,6 +317,16 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.localAhead', actions: ['storeDiskMetadata', 'queueDiskToLocalDoc'], reenter: true },
 			],
 			CM6_CHANGE: { target: 'idle.localAhead', actions: ['accumulateCM6Change'] },
+			// A fork parked under read access deferred its disk changes.
+			// Re-classify so a writer ingests them. A reconcile in flight may
+			// be past its ingestion point, so it restarts with the ingestion
+			// queued; a hibernated note queues it for the reconcile its wake
+			// starts.
+			PROMOTE_TO_WRITE: [
+				{ target: 'idle.loading', guard: 'canReclassifyForWrite' },
+				{ target: 'idle.localAhead', guard: 'writeModeAwake', actions: ['queueDiskToLocalDoc'], reenter: true },
+				{ target: 'idle.localAhead', guard: 'isWriteMode', actions: ['queueDiskToLocalDoc'] },
+			],
 			SERVER_AHEAD: POCKET_SERVER_AHEAD('idle.localAhead'),
 			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,
@@ -349,6 +359,9 @@ export const MACHINE: MachineDefinition = {
 			DISK_CHANGED: { target: 'idle.reading', actions: ['storeDiskMetadataOnly', 'saveReaderDocument'] },
 			SAVE_COMPLETE: { target: 'idle.reading', actions: ['updateDiskFromSave'] },
 			SERVER_AHEAD: { target: 'idle.reading', actions: ['actOnServerAhead'] },
+			// Every other handler is an internal self-transition, so the
+			// isWriteMode `always` is re-checked only on promotion.
+			PROMOTE_TO_WRITE: { target: 'idle.loading', guard: 'isWriteMode' },
 			...IDLE_LIFECYCLE,
 		},
 	},
@@ -390,6 +403,11 @@ export const MACHINE: MachineDefinition = {
 			REMOTE_UPDATE: { target: 'idle.remoteAhead', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.remoteAhead', actions: ['accumulateCM6Change'] },
 			SERVER_AHEAD: { target: 'idle.remoteAhead', actions: ['actOnServerAhead'] },
+			// Under read access a disk edit is routed here to be repaired from
+			// remote. On promotion the note re-classifies so a writer merges
+			// the edit instead: a merge in flight is cancelled, and a
+			// hibernated note's localDoc is rebuilt by idle.loading's entry.
+			PROMOTE_TO_WRITE: { target: 'idle.loading', guard: 'isWriteMode' },
 			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,
 		},

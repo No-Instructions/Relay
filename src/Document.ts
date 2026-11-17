@@ -114,6 +114,8 @@ export class Document
 	// The access mode the current remoteDoc was created for. A remoteDoc
 	// used under write access holds local ops, so it is replaced on demotion.
 	private _remoteDocAccessMode: ActiveAccessMode | null = null;
+	// The access mode of the last notification; null before the first.
+	private _notifiedAccessMode: ActiveAccessMode | null = null;
 	private _idleProviderIntegrationRefs = 0;
 	private _forkReconcileIdleLease = false;
 	private _activeProviderIntegration = false;
@@ -1935,11 +1937,15 @@ export class Document
 	/**
 	 * Called when write access changes. Entering read access replaces
 	 * remoteDoc first, since one used under write access holds local ops.
-	 * An active machine is then sent the matching event; an idle machine
-	 * asks getAccessMode when it needs the answer.
+	 * An active machine is then sent the matching event. An idle machine
+	 * asks getAccessMode when it needs the answer, and is sent the promotion
+	 * when access becomes write, so a note resting under read access
+	 * re-classifies as a writer.
 	 */
 	public notifyAccessModeChanged(): void {
 		const accessMode = this.activeAccessMode;
+		const previous = this._notifiedAccessMode;
+		this._notifiedAccessMode = accessMode;
 		for (const subscriber of [...(this.accessModeSubscribers ?? [])]) subscriber();
 		if (accessMode === "read" && this._remoteDocAccessMode !== "read") {
 			this.replaceRemoteDocForReadAccess();
@@ -1948,7 +1954,11 @@ export class Document
 			this._remoteDocAccessMode = accessMode;
 		}
 		const hsm = this._hsm;
-		if (!hsm || !hsm.isActive()) {
+		if (!hsm) return;
+		if (!hsm.isActive()) {
+			if (accessMode === "write" && previous !== "write") {
+				hsm.send({ type: "PROMOTE_TO_WRITE" });
+			}
 			return;
 		}
 		if (accessMode === "read") {
