@@ -433,6 +433,13 @@ export class SyncFile
 	private lastServerEdit: ServerEditMarker | null = null;
 	private lastUserEdit: UserEditMarker | null = null;
 	private sizeLimitError?: string;
+	/**
+	 * The hash store's row for this path: durable evidence of which content
+	 * the file on disk held at a given mtime, surviving restarts where the
+	 * in-memory server-edit marker does not. Undefined until read.
+	 */
+	private storedRecord?: { hash: string; modifiedAt: number } | null;
+	private storedRecordLoad?: Promise<void>;
 	private pendingUploadVersion?: {
 		mtime: number;
 		size: number;
@@ -467,6 +474,9 @@ export class SyncFile
 			this.hashStore,
 			() => this.guid,
 		);
+		// Size decisions on a sweep read no content, so the record that can
+		// show the file already holds the listed content is fetched up front.
+		void this.loadStoredRecord();
 
 		this.log("created");
 	}
@@ -616,6 +626,7 @@ export class SyncFile
 			try {
 				const uploaded = await this.sharedFolder.cas.writeFile(this);
 				await this.sharedFolder.markUploaded(this, "completed", uploaded);
+				if (hash) this.rememberContent(hash, hashStat.mtime);
 				this.uploadError = undefined;
 				this.notifyListeners();
 				this.debug("push complete", {
@@ -746,6 +757,7 @@ export class SyncFile
 			}
 			if (hash === this.meta.hash) {
 				this.clearCurrentUserEdit();
+				this.rememberContent(hash, this.stat.mtime);
 				this.debug("sync decision", {
 					path: this.path,
 					guid: this.guid,
@@ -889,6 +901,7 @@ export class SyncFile
 					await replacement.commit();
 				} catch (error) { this.lastServerEdit = previous; throw error; }
 				await this.hashStore.saveHash(destination, meta.hash, mtime, this.guid);
+				this.rememberContent(meta.hash, mtime);
 				this.uploadError = undefined;
 				this.notifyListeners();
 			} finally {
@@ -915,6 +928,7 @@ export class SyncFile
 				statMtime: this.stat.mtime,
 			});
 			if (hash === this.meta.hash) {
+				this.rememberContent(hash, this.stat.mtime);
 				this.debug("pull skipped -- hash already local", {
 					path: this.path,
 					guid: this.guid,
@@ -949,6 +963,7 @@ export class SyncFile
 				.catch((error) => {
 					this.warn("Failed to save pulled hash:", error);
 				});
+			this.rememberContent(this.meta.hash, edit.mtime);
 			if (this.uploadError) {
 				this.uploadError = undefined;
 				this.notifyListeners();
@@ -1002,7 +1017,9 @@ export class SyncFile
 		if (context.occasion.kind !== "sweep") return [];
 		if (this.sharedFolder.shouldDeferPendingPublication(this.path)) return [];
 		try {
-			this.checkSyncWork("converge");
+			// An undecided size check defers the pass: the record it waits on
+			// either shows nothing needs transferring or reports the limit.
+			if (!this.checkSyncWork("converge")) return [];
 		} catch (error) {
 			if (error instanceof AttachmentLimitError) return [];
 			throw error;
@@ -1012,30 +1029,76 @@ export class SyncFile
 
 	private remoteSize?: { hash: string; size: number };
 
-	/** Decide from listing metadata without reading or hashing file contents. */
-	checkSyncWork(intent: WorkIntent): void {
-		if (!this.sharedFolder.attachmentTransfers) return;
+	/**
+	 * Decide from listing metadata without reading or hashing file contents.
+	 * False when the decision waits on the stored hash record; the record's
+	 * arrival re-runs the check.
+	 */
+	checkSyncWork(intent: WorkIntent): boolean {
+		if (!this.sharedFolder.attachmentTransfers) return true;
 		this._refreshMeta();
 		const local = this.vault.getAbstractFileByPath(this.sharedFolder.getPath(this.path));
-		this.checkSizeLimits(intent, local instanceof TFile ? local.stat : undefined);
+		return this.checkSizeLimits(intent, local instanceof TFile ? local.stat : undefined);
 	}
 
-	private checkSizeLimits(intent: WorkIntent, local?: FileStats, uploadRequired = false): void {
+	private loadStoredRecord(): Promise<void> {
+		this.storedRecordLoad ??= Promise.resolve()
+			.then(() => this.hashStore.getHash(this.caf.path))
+			.then(
+				(row) => { this.storedRecord = row ? { hash: row.hash, modifiedAt: row.modifiedAt } : null; },
+				() => { this.storedRecord = null; },
+			);
+		return this.storedRecordLoad;
+	}
+
+	/** The file on disk at `mtime` is known to hold `hash`. */
+	private rememberContent(hash: string, mtime: number): void {
+		this.storedRecord = { hash, modifiedAt: mtime };
+	}
+
+	/**
+	 * Whether the file on disk already holds the listed content, judged
+	 * without reading it: this session's own server write at the file's
+	 * current stat, or the stored hash record at the file's current mtime.
+	 * Undefined while that record has not been read yet.
+	 */
+	private contentMatchesListing(local: FileStats | undefined): boolean | undefined {
+		const meta = this.meta;
+		if (!local || !meta) return false;
+		if (this.isCleanLastServerEdit(meta, local)) return true;
+		const record = this.storedRecord;
+		if (record === undefined) return undefined;
+		return !!record && record.modifiedAt === local.mtime && record.hash === meta.hash;
+	}
+
+	private checkSizeLimits(intent: WorkIntent, local?: FileStats, uploadRequired = false): boolean {
 		const manager = this.sharedFolder.attachmentTransfers;
-		if (!manager) return;
+		if (!manager) return true;
+		const task = this.attachmentTask();
 		const localSize = local?.size ?? 0;
 		const remoteSize = intent === "upload" ? 0 : this.meta?.size ??
 			(this.meta?.hash === this.remoteSize?.hash ? this.remoteSize?.size : undefined) ?? 0;
+		// Limits apply to what would move. A file that already holds the
+		// listed content moves nothing, so no limit stands in its way; a
+		// forced upload moves the local file whatever the listing says.
+		const matches = this.contentMatchesListing(local);
+		const transfer = uploadRequired ? localSize : Math.max(localSize, remoteSize);
+		if (matches === undefined && !uploadRequired && manager.exceedsDeviceLimit(task.key, transfer)) {
+			void this.loadStoredRecord().then(() => this.recheckSizeLimits(intent));
+			return false;
+		}
+		const size = matches && !uploadRequired ? 0 : transfer;
 		const pending = this.pendingUploadVersion;
 		const knownEdit = local && pending && this.matchesEditStat(pending, local) &&
 			pending.remoteHash === this.meta?.hash && pending.remoteSynctime === this.meta?.synctime;
 		// Session intents still reconcile content. A later local mtime can be
 		// our own download, so only a local-only file or confirmed upload uses
 		// the server cap. Device limits always precede content reads.
-		const needsUpload = intent !== "download" && local && (uploadRequired || !this.meta || knownEdit);
+		const needsUpload = intent !== "download" && local &&
+			(uploadRequired || (!matches && (!this.meta || knownEdit)));
 		const serverMaxBytes = needsUpload ? this.sharedFolder.remote?.relay.storageQuota?.maxFileSize : undefined;
 		try {
-			manager.check(this.attachmentTask(), Math.max(localSize, remoteSize), serverMaxBytes, localSize);
+			manager.check(task, size, serverMaxBytes, localSize);
 		} catch (error) {
 			if (error instanceof AttachmentLimitError) {
 				this.sizeLimitError = error.message;
@@ -1053,10 +1116,22 @@ export class SyncFile
 			}
 			this.sizeLimitError = undefined;
 		}
+		return true;
+	}
+
+	/** Re-run a deferred size decision once the stored hash record is known. */
+	private recheckSizeLimits(intent: WorkIntent): void {
+		if (this.destroyed || !this.sharedFolder.attachmentTransfers) return;
+		try {
+			this.checkSyncWork(intent);
+		} catch (error) {
+			if (!(error instanceof AttachmentLimitError)) this.warn("size check failed", error);
+		}
 	}
 
 	/** Resolve missing listing sizes before this sync attempt touches content. */
 	private async prepareSyncWork(intent: WorkIntent, uploadRequired = false): Promise<void> {
+		await this.loadStoredRecord();
 		this.checkSyncWork(intent);
 		const manager = this.sharedFolder.attachmentTransfers;
 		if (!manager) return;
@@ -1067,7 +1142,8 @@ export class SyncFile
 		this._refreshMeta();
 		this.checkSizeLimits(intent, local ?? undefined, uploadRequired);
 		const meta = this.meta;
-		if (deviceLimit && intent !== "upload" && meta && meta.size === undefined && this.remoteSize?.hash !== meta.hash) {
+		if (deviceLimit && intent !== "upload" && meta && meta.size === undefined &&
+			this.remoteSize?.hash !== meta.hash && this.contentMatchesListing(local ?? undefined) !== true) {
 			const size = await this.sharedFolder.cas.fileSize(this, meta.hash);
 			this._refreshMeta();
 			if (this.meta?.hash !== meta.hash) throw new Error("Attachment changed while checking its size");

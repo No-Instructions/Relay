@@ -43,6 +43,10 @@ export class AttachmentTransfers extends Observable<AttachmentTransfers> {
 	hasSizeOverride(key: string, size: number): boolean {
 		return size <= (this.sizeOverrides.get(key) ?? -1);
 	}
+	/** Whether transferring `size` bytes for `key` would be refused by this device's limit. */
+	exceedsDeviceLimit(key: string, size: number): boolean {
+		return flags().enableAttachmentSizeLimit && this.maxBytes > 0 && size > this.maxBytes && !this.hasSizeOverride(key, size);
+	}
 	/** Approve only the reviewed size, for this one sync attempt. */
 	async overrideAndRetry(key: string): Promise<void> {
 		const row = this.rows.get(key);
@@ -61,7 +65,7 @@ export class AttachmentTransfers extends Observable<AttachmentTransfers> {
 	check(task: AttachmentTask, size: number, serverMaxBytes?: number, uploadSize = size): void {
 		if (!Number.isSafeInteger(size) || size < 0) throw new Error("Invalid attachment size");
 		const serverBlocked = serverMaxBytes !== undefined && Number.isSafeInteger(serverMaxBytes) && serverMaxBytes >= 0 && uploadSize > serverMaxBytes;
-		const deviceBlocked = flags().enableAttachmentSizeLimit && this.maxBytes > 0 && size > this.maxBytes && !this.hasSizeOverride(task.key, size);
+		const deviceBlocked = this.exceedsDeviceLimit(task.key, size);
 		if (serverBlocked || deviceBlocked) {
 			const error = new AttachmentLimitError(serverBlocked ? "server" : "device");
 			const row = this.rows.get(task.key);
