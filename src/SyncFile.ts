@@ -888,24 +888,38 @@ export class SyncFile
 				});
 				row.phase = "verifying";
 				manager.notifyListeners();
-				const replacement = await this.sharedFolder.disk.prepareReplacement(this, partial, before);
+				const replacement = await this.sharedFolder.disk.prepareReplacement(this, partial, before, signal);
 				this._refreshMeta();
 				checkAttachmentAbort(signal);
 				if (this.destroyed || destination !== this.caf.path || this.meta?.hash !== meta.hash) {
 					throw new Error("Attachment changed during download; local file was preserved");
 				}
-				const { mtime, size } = replacement;
 				const previous = this.lastServerEdit;
-				this.lastServerEdit = { mtime, size, hash: meta.hash };
 				try {
-					await replacement.commit();
+					await replacement.commit(() => {
+						this._refreshMeta();
+						checkAttachmentAbort(signal);
+						if (this.destroyed || destination !== this.caf.path || this.meta?.hash !== meta.hash) {
+							throw new Error("Attachment changed during download; local file was preserved");
+						}
+						this.lastServerEdit = {
+							mtime: replacement.mtime,
+							size: replacement.size,
+							hash: meta.hash,
+						};
+					});
 				} catch (error) { this.lastServerEdit = previous; throw error; }
+				const { mtime } = replacement;
 				await this.hashStore.saveHash(destination, meta.hash, mtime, this.guid);
 				this.rememberContent(meta.hash, mtime);
 				this.uploadError = undefined;
 				this.notifyListeners();
 			} finally {
-				if (await manager.vault.adapter.exists(partial)) await manager.vault.adapter.remove(partial);
+				try {
+					if (await manager.vault.adapter.exists(partial)) await manager.vault.adapter.remove(partial);
+				} catch (error) {
+					this.warn("Failed to remove partial attachment:", error);
+				}
 			}
 		});
 	}
