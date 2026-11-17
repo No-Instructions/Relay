@@ -4,6 +4,11 @@ import { flags } from "./flagManager";
 import { LocalStorage } from "./LocalStorage";
 import { AttachmentCancelledError, checkAttachmentAbort } from "./AttachmentIO";
 
+const TRANSFER_ID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+const PARTIAL_FILE = new RegExp(`\\.relay-${TRANSFER_ID}\\.(download|upload)$`);
+const TARGET_MARKER = new RegExp(`\\.relay-${TRANSFER_ID}\\.download\\.target$`);
+const DESTINATION_TEMPORARY = new RegExp(`^\\.relay-${TRANSFER_ID}\\.download$`);
+
 export interface AttachmentTask {
 	key: string;
 	path: string;
@@ -112,10 +117,47 @@ export class AttachmentTransfers extends Observable<AttachmentTransfers> {
 	}
 	async initialize(): Promise<void> {
 		const adapter = this.vault.adapter;
-		if (!(await adapter.exists(this.directory))) await adapter.mkdir(this.directory);
-		const contents = await adapter.list(this.directory);
+		let contents;
+		try {
+			if (!(await adapter.exists(this.directory))) await adapter.mkdir(this.directory);
+			contents = await adapter.list(this.directory);
+		} catch (error) {
+			console.warn("Attachment transfer cleanup could not inspect its staging directory", error);
+			return;
+		}
 		for (const path of contents.files) {
-			if (/\.relay-[a-f0-9-]+\.(download|upload)$/.test(path)) await adapter.remove(path);
+			if (!TARGET_MARKER.test(path)) continue;
+			try {
+				const temporary = await adapter.read(path);
+				const parts = temporary.split("/");
+				const name = parts.at(-1) ?? "";
+				const valid =
+					!temporary.startsWith("/") &&
+					!temporary.includes("\\") &&
+					!parts.includes("..") &&
+					DESTINATION_TEMPORARY.test(name);
+				if (!valid) {
+					await adapter.remove(path);
+					continue;
+				}
+				if (await adapter.exists(temporary)) {
+					await adapter.remove(temporary);
+					await adapter.remove(path);
+					continue;
+				}
+				const parent = parts.slice(0, -1).join("/");
+				if (!parent || await adapter.exists(parent)) await adapter.remove(path);
+			} catch (error) {
+				console.warn(`Attachment transfer cleanup deferred ${path}`, error);
+			}
+		}
+		for (const path of contents.files) {
+			if (!PARTIAL_FILE.test(path)) continue;
+			try {
+				await adapter.remove(path);
+			} catch (error) {
+				console.warn(`Attachment transfer cleanup deferred ${path}`, error);
+			}
 		}
 	}
 	partialPath(task: AttachmentTask, extension = "download"): string {
