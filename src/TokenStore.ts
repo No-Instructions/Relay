@@ -124,6 +124,11 @@ export class TokenStore<TokenType extends HasToken> {
 	) => void;
 	// Documents whose next refresh carries the reconcile signal.
 	private reconcileRequests = new Set<string>();
+	// Documents with a reconcile refresh on the network. A release during
+	// one keeps its callback for that delivery: the token it held predates
+	// the access change, and nothing else would replace it.
+	private reconcilesInFlight = new Set<string>();
+	private releasedDuringReconcile = new Map<string, (token: TokenType) => void>();
 
 	constructor(
 		config: TokenStoreConfig<TokenInfo<TokenType>, TokenType>,
@@ -204,6 +209,7 @@ export class TokenStore<TokenType extends HasToken> {
 		if (!this.reconcileRequests.delete(documentId)) {
 			return undefined;
 		}
+		this.reconcilesInFlight.add(documentId);
 		return {
 			reconcile: true,
 			heldToken: this.tokenMap.get(documentId)?.token ?? undefined,
@@ -330,6 +336,10 @@ export class TokenStore<TokenType extends HasToken> {
 		if (this.destroyed) {
 			return false;
 		}
+		const callback = this.callbacks.get(documentId);
+		if (callback && this.reconcilesInFlight.has(documentId)) {
+			this.releasedDuringReconcile.set(documentId, callback);
+		}
 		const wasRegistered = this.callbacks.delete(documentId);
 		return this.removeFromRefreshQueue(documentId) || wasRegistered;
 	}
@@ -378,6 +388,11 @@ export class TokenStore<TokenType extends HasToken> {
 		this._log(text);
 	}
 
+	private settleReconcile(documentId: string): void {
+		this.reconcilesInFlight.delete(documentId);
+		this.releasedDuringReconcile.delete(documentId);
+	}
+
 	private onTokenRefreshed(documentId: string, token: TokenType) {
 		if (this.destroyed) {
 			return;
@@ -388,7 +403,10 @@ export class TokenStore<TokenType extends HasToken> {
 			// A release can land while this refresh was in flight; the map
 			// entry still updates (it is inert without a callback and the
 			// expiry sweep collects it), but there is no one to notify.
-			const callback = this.callbacks.get(documentId);
+			const callback =
+				this.callbacks.get(documentId) ??
+				this.releasedDuringReconcile.get(documentId);
+			this.settleReconcile(documentId);
 			this.log(`new expiry time is ${expiryTime}`);
 			this.tokenMap.set(documentId, {
 				...existing,
@@ -407,6 +425,7 @@ export class TokenStore<TokenType extends HasToken> {
 		if (this.destroyed) {
 			return;
 		}
+		this.settleReconcile(documentId);
 		const existing = this.tokenMap.get(documentId)!;
 		const attempts = (existing?.attempts ?? 0) + 1;
 		if (attempts <= 3) {
@@ -534,6 +553,7 @@ export class TokenStore<TokenType extends HasToken> {
 			return Promise.reject(this.getDestroyedError());
 		}
 		this.callbacks.set(documentId, callback);
+		this.releasedDuringReconcile.delete(documentId);
 		const held = this.tokenMap.get(documentId)?.token;
 		if (held && needsReconcile?.(held)) {
 			if (!this._activePromises.has(documentId)) {
@@ -721,6 +741,8 @@ export class TokenStore<TokenType extends HasToken> {
 		this.refresh = null as unknown as typeof this.refresh;
 		this.callbacks.clear();
 		this.callbacks = null as unknown as typeof this.callbacks;
+		this.reconcilesInFlight.clear();
+		this.releasedDuringReconcile.clear();
 		this._activePromises.clear();
 		this._activePromises = null as unknown as typeof this._activePromises;
 		this.tokenMap = null as unknown as typeof this.tokenMap;
