@@ -314,6 +314,14 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.localAhead', actions: ['storeDiskMetadata', 'queueDiskToLocalDoc'], reenter: true },
 			],
 			CM6_CHANGE: { target: 'idle.localAhead', actions: ['accumulateCM6Change'] },
+			// A fork parked under read access deferred its disk changes.
+			// Re-classify so a writer ingests them; when the note is
+			// hibernated or mid-reconcile, queue the ingestion for the next
+			// reconcile instead.
+			PROMOTE_TO_WRITE: [
+				{ target: 'idle.loading', guard: 'canReclassifyForWrite' },
+				{ target: 'idle.localAhead', guard: 'isWriteMode', actions: ['queueDiskToLocalDoc'] },
+			],
 			SERVER_AHEAD: POCKET_SERVER_AHEAD('idle.localAhead'),
 			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,
@@ -346,6 +354,9 @@ export const MACHINE: MachineDefinition = {
 			DISK_CHANGED: { target: 'idle.reading', actions: ['storeDiskMetadataOnly', 'saveReaderDocument'] },
 			SAVE_COMPLETE: { target: 'idle.reading', actions: ['updateDiskFromSave'] },
 			SERVER_AHEAD: { target: 'idle.reading', actions: ['actOnServerAhead'] },
+			// Every other handler is an internal self-transition, so the
+			// isWriteMode `always` is re-checked only on promotion.
+			PROMOTE_TO_WRITE: { target: 'idle.loading', guard: 'isWriteMode' },
 			...IDLE_LIFECYCLE,
 		},
 	},
@@ -387,6 +398,10 @@ export const MACHINE: MachineDefinition = {
 			REMOTE_UPDATE: { target: 'idle.remoteAhead', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.remoteAhead', actions: ['accumulateCM6Change'] },
 			SERVER_AHEAD: { target: 'idle.remoteAhead', actions: ['actOnServerAhead'] },
+			// Under read access a disk edit is routed here to be repaired from
+			// remote. A parked note re-classifies on promotion so a writer
+			// merges the edit instead; a merge in flight finishes as read.
+			PROMOTE_TO_WRITE: { target: 'idle.loading', guard: 'canReclassifyForWrite' },
 			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,
 		},

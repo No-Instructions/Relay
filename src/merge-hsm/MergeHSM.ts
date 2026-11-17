@@ -3094,6 +3094,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 			providerSyncedRemoteAhead: () => this.providerSyncedRemoteAhead(),
 			providerSyncNeedsForkReconcileRestart: () =>
 				!this._providerSynced || this._activeInvoke?.id !== "fork-reconcile",
+			canReclassifyForWrite: () =>
+				this.resolveAccessMode() === "write" &&
+				this.localDoc !== null &&
+				this._activeInvoke === null,
 			remoteOrLocalAhead: () =>
 				this.hasRemoteChangedSinceLCA() || this._statePath === "idle.localAhead",
 

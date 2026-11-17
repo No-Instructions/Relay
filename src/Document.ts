@@ -1932,8 +1932,9 @@ export class Document
 	/**
 	 * Called when write access changes. Entering read access replaces
 	 * remoteDoc first, since one used under write access holds local ops.
-	 * An active machine is then sent the matching event; an idle machine
-	 * asks getAccessMode when it needs the answer.
+	 * An active machine is then sent the matching event. An idle machine
+	 * asks getAccessMode when it needs the answer, and is sent the promotion
+	 * so a note resting under read access re-classifies as a writer.
 	 */
 	public notifyAccessModeChanged(): void {
 		const accessMode = this.activeAccessMode;
@@ -1945,7 +1946,9 @@ export class Document
 			this._remoteDocAccessMode = accessMode;
 		}
 		const hsm = this._hsm;
-		if (!hsm || !hsm.isActive()) {
+		if (!hsm) return;
+		if (!hsm.isActive()) {
+			if (accessMode === "write") hsm.send({ type: "PROMOTE_TO_WRITE" });
 			return;
 		}
 		if (accessMode === "read") {
