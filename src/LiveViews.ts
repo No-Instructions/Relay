@@ -976,9 +976,17 @@ export class LiveView<ViewType extends TextFileView>
 				return function (this: MarkdownView, state: unknown, result: Parameters<MarkdownView["setState"]>[1]) {
 					const live = owner();
 					const previousMode = live._previousMarkdownMode;
-					if (previousMode !== undefined && state && typeof state === "object" &&
-						"file" in state && typeof state.file === "string" &&
-						state.file !== live.document.sharedFolder.getPath(live.document.path)) {
+					const navigation = state && typeof state === "object" && "file" in state &&
+						typeof state.file === "string" ? { ...state, file: state.file } : undefined;
+					// A destroyed document has no folder while the manager has yet
+					// to release its view. The file the view still shows stands in
+					// for the note's path then: a request for another file is a
+					// leave and hands the mode back, and the view is never
+					// re-attached, so nothing returns to it.
+					const ownPath = navigation === undefined ? undefined :
+						live.document.sharedFolder?.getPath(live.document.path) ?? this.file?.path;
+					if (previousMode !== undefined && navigation !== undefined && ownPath !== undefined &&
+						navigation.file !== ownPath) {
 						// Restore before the next file is shown. Waiting for the
 						// manager's asynchronous release would overwrite a mode
 						// the user selected on that next file in the meantime.
@@ -989,11 +997,32 @@ export class LiveView<ViewType extends TextFileView>
 							// Release this file's editor restriction before native
 							// navigation reuses the editor for the next file.
 							live.clearReadOnlyPresentation();
-							return old.call(this, { ...state, mode: previousMode }, result);
+							return old.call(this, { ...navigation, mode: previousMode }, result);
+						});
+					}
+					if (live._leavingMarkdownFile && navigation !== undefined && ownPath !== undefined &&
+						navigation.file === ownPath && this.file?.path !== ownPath) {
+						// The editor left for another file and native navigation
+						// brings it back before the manager released this view,
+						// which it will re-attach rather than replace. The leaving
+						// state ends only once the navigation has landed on this
+						// note: a request that is dropped or superseded in flight
+						// leaves the view as it was. A new reading session then
+						// starts the way a fresh view's does: the note reopens in
+						// the mode the navigation asks for, that mode is captured,
+						// reading view is requested again, and a preserved-edits
+						// notice returns with the label it replaces.
+						return old.call(this, state, result).then(() => {
+							if (live._released || this.file?.path !== ownPath) return;
+							live._leavingMarkdownFile = false;
+							live._lastEditableReading = null;
+							live.applyEditableState(true);
+							const statePath = live.document.hsm?.statePath;
+							if (statePath) live.reconcileAccessModeBanners(statePath);
 						});
 					}
 					if (!live._leavingMarkdownFile && live.readOnly && state && typeof state === "object" &&
-						(!("file" in state) || state.file === live.document.sharedFolder.getPath(live.document.path)) &&
+						(!("file" in state) || (ownPath !== undefined && navigation?.file === ownPath)) &&
 						"mode" in state && state.mode === "source") {
 						return old.call(this, { ...state, mode: "preview" }, result);
 					}
