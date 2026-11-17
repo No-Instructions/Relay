@@ -122,8 +122,8 @@ export class TokenStore<TokenType extends HasToken> {
 		onError: (err: Error) => void,
 		context?: RefreshContext<TokenType>,
 	) => void;
-	// Documents whose next refresh carries the reconcile signal.
-	private reconcileRequests = new Set<string>();
+	// Retain the held token independently of cache expiry until reconciliation.
+	private reconcileRequests = new Map<string, TokenInfo<TokenType> | undefined>();
 	// Documents with a reconcile refresh on the network. A release during
 	// one keeps its callback for that delivery: the token it held predates
 	// the access change, and nothing else would replace it.
@@ -202,17 +202,26 @@ export class TokenStore<TokenType extends HasToken> {
 		return promise as Promise<TokenType>;
 	}
 
-	/** Take the pending reconcile signal, attaching the held token. */
+	private requestReconcile(documentId: string) {
+		const cached = this.tokenMap.get(documentId);
+		this.reconcileRequests.set(
+			documentId,
+			cached?.token ? cached : this.reconcileRequests.get(documentId),
+		);
+	}
+
+	/** Consume the pending reconcile signal and its retained token. */
 	private consumeReconcileContext(
 		documentId: string,
 	): RefreshContext<TokenType> | undefined {
+		const held = this.reconcileRequests.get(documentId);
 		if (!this.reconcileRequests.delete(documentId)) {
 			return undefined;
 		}
 		this.reconcilesInFlight.add(documentId);
 		return {
 			reconcile: true,
-			heldToken: this.tokenMap.get(documentId)?.token ?? undefined,
+			heldToken: held?.token ?? undefined,
 		};
 	}
 
@@ -374,12 +383,12 @@ export class TokenStore<TokenType extends HasToken> {
 			if (cached) {
 				this.log(`expiring the cached token of released ${documentId}`);
 				this.tokenMap.set(documentId, { ...cached, expiryTime: 0 });
-				this.reconcileRequests.add(documentId);
+				this.requestReconcile(documentId);
 			}
 			return false;
 		}
 		this.log(`force refresh of ${documentId}`);
-		this.reconcileRequests.add(documentId);
+		this.requestReconcile(documentId);
 		this.addToRefreshQueue(documentId);
 		return true;
 	}
@@ -557,7 +566,7 @@ export class TokenStore<TokenType extends HasToken> {
 		const held = this.tokenMap.get(documentId)?.token;
 		if (held && needsReconcile?.(held)) {
 			if (!this._activePromises.has(documentId)) {
-				this.reconcileRequests.add(documentId);
+				this.requestReconcile(documentId);
 			}
 			return this.getTokenFromNetwork(documentId, friendlyName);
 		}
@@ -708,11 +717,20 @@ export class TokenStore<TokenType extends HasToken> {
 				if (filter(value)) {
 					this.tokenMap.delete(key);
 					this.refreshQueue.delete(key);
+					this.reconcileRequests.delete(key);
+				}
+			});
+			// Expiry may have removed the cache entry while its reconcile waits.
+			this.reconcileRequests.forEach((held, key) => {
+				if (held && filter(held)) {
+					this.reconcileRequests.delete(key);
+					this.refreshQueue.delete(key);
 				}
 			});
 		} else {
 			this.tokenMap.clear();
 			this.refreshQueue.clear();
+			this.reconcileRequests.clear();
 		}
 	}
 
@@ -736,6 +754,7 @@ export class TokenStore<TokenType extends HasToken> {
 
 		this.tokenMap.clear();
 		this.refreshQueue.clear();
+		this.reconcileRequests.clear();
 		this.timeProvider.destroy();
 		this.timeProvider = null as unknown as typeof this.timeProvider;
 		this.refresh = null as unknown as typeof this.refresh;
