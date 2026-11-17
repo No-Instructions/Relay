@@ -622,8 +622,11 @@ export class PolicyManager implements IPolicyManager {
 			return false;
 		}
 
-		// Public folders inherit the relay grant; private folders also require a folder grant.
-		return !folder.private || this.hasFolderRole(userId, folderId, ["Owner", "Member"]);
+		// Public folders inherit the relay grant; private folders also require
+		// a folder grant, or the creator's stand-in for the one on its way.
+		if (!folder.private) return true;
+		const standsIn = this.standsInForCreatorGrant(userId, folderId);
+		return standsIn || this.hasFolderRole(userId, folderId, ["Owner", "Member"]);
 	}
 
 	private hasFolderManagementAccess(userId: string, folderId: string): boolean {
@@ -759,18 +762,26 @@ export class PolicyManager implements IPolicyManager {
 		return folder.private && this.ownsPrivateFolder(request.principal, folderId);
 	}
 
+	private ownsPrivateFolder(userId: string, folderId: string): boolean {
+		const standsIn = this.standsInForCreatorGrant(userId, folderId);
+		return standsIn || this.hasFolderRole(userId, folderId, ["Owner"]);
+	}
+
 	// A private folder's creator owns it from the moment it exists, but the
 	// server writes that grant on its own and it reaches the client over the
 	// realtime feed, not in the create response. While that first record is
-	// still on its way, the creator stands in for it. The pending marker is
-	// what makes this a window and not a standing right: a creator whose grant
-	// was later removed, or who starts a fresh session before roles hydrate,
-	// has no marker and is bound by the records alone.
-	private ownsPrivateFolder(userId: string, folderId: string): boolean {
-		// Asked first so that a check which sees the user's record also retires
-		// the marker, whichever way the check then answers.
+	// still on its way, the creator stands in for it with everything the
+	// Owner grant will carry: content, membership, uploads, and management.
+	// The pending marker is what makes this a window and not a standing
+	// right: a creator whose grant was later removed, or who starts a fresh
+	// session before roles hydrate, has no marker and is bound by the records
+	// alone.
+	//
+	// Callers ask this before they look the user's record up, so that a check
+	// which sees the record also retires the marker, whichever way the check
+	// then answers.
+	private standsInForCreatorGrant(userId: string, folderId: string): boolean {
 		const pending = this.relayManager.hasPendingCreatorGrant(folderId);
-		if (this.hasFolderRole(userId, folderId, ["Owner"])) return true;
 		return (
 			pending &&
 			this.getUserFolderRole(userId, folderId) === null &&
