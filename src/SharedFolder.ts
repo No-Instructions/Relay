@@ -426,6 +426,7 @@ export class SharedFolder extends HasProvider {
 	private startupConnectRequested = false;
 	/** UI consumers watching the current user's folder permissions flip. */
 	private readonly folderPermissionSubscribers = new Set<() => void>();
+	private localDocsScanPending = false;
 
 	constructor(
 		public appId: string,
@@ -2131,6 +2132,9 @@ export class SharedFolder extends HasProvider {
 	private announcePermissionChange(before: { write: boolean; manage: boolean }): void {
 		const after = this.answers;
 		if (before.write === after.write && before.manage === after.manage) return;
+		if (!before.manage && after.manage) {
+			this.localDocsScanPending = true;
+		}
 		this.refreshDocumentTokensForPermissionChange();
 		this.notifyFolderPermissionSubscribers();
 	}
@@ -4492,6 +4496,16 @@ export class SharedFolder extends HasProvider {
 					}
 				});
 
+				// Permission can change while remote creates and renames await
+				// disk. Claim Reader-created files through the normal scan before
+				// writer cleanup can consider them absent from membership.
+				if (
+					this.localDocsScanPending && this.canManageFiles &&
+					this.folderMachine.mayMint
+				) {
+					this.addLocalDocs();
+					this.localDocsScanPending = false;
+				}
 				const remotePaths = this.getDesiredRemotePaths();
 				const deletes = this.cleanupExtraLocalFiles(remotePaths, diffLog);
 				if (![...ops, ...deletes].every((op) => op.op === "noop")) {
