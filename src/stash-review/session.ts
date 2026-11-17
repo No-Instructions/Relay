@@ -20,7 +20,11 @@ export function prepareStashReview(document: Document): StashReviewSession | nul
 	const fork = hsm?.state.fork;
 	const current = hsm?.getReadModeText();
 	const local = hsm?.getLocalDoc();
-	if (!hsm || !local || !file || !fork || current == null) return null;
+	if (!hsm || !local || !file || !fork) return null;
+	if (current == null) {
+		new Notice("Your edits have been kept. Review them after this note finishes syncing.");
+		return null;
+	}
 	const stash = preservedForkText(local, fork);
 	if (stash === null) {
 		new Notice("The stashed edits could not be opened. They have been kept.");
