@@ -7,7 +7,7 @@ import {
 	type Vault,
 } from "obsidian";
 import { dirname } from "path-browserify";
-import { desktopAttachmentIO } from "./AttachmentIO";
+import { checkAttachmentAbort, desktopAttachmentIO } from "./AttachmentIO";
 import {
 	CasePathHolds,
 	DiskSlotTakenError,
@@ -42,7 +42,8 @@ export interface Replacement {
 	size: number;
 	/** The vault path the replacement lands at. */
 	path: string;
-	commit(): Promise<void>;
+	/** Put the replacement in place, calling `beforeWrite` just before it lands. */
+	commit(beforeWrite?: () => void): Promise<void>;
 }
 
 /**
@@ -312,6 +313,7 @@ export class FolderDisk {
 		file: DiskIdentity,
 		partial: string,
 		expected: FileStats | null,
+		signal?: AbortSignal,
 	): Promise<Replacement> {
 		const vpath = file.path;
 		const destination = this.target(vpath);
@@ -327,30 +329,131 @@ export class FolderDisk {
 		const contents = current && !io ? await adapter.readBinary(partial) : undefined;
 		const mtime = contents ? Date.now() : stat.mtime;
 		let committed = false;
-		return {
+		const replacement: Replacement = {
 			mtime,
 			size: stat.size,
 			path: destination,
-			commit: async () => {
+			commit: async (beforeWrite) => {
 				if (committed) throw new Error("Attachment replacement already committed");
 				committed = true;
-				if (!this.host.alive() || file.path !== vpath) {
-					throw new Error("Attachment moved before replacement");
-				}
-				const latest = await adapter.stat(destination);
-				if (latest?.mtime !== current?.mtime || latest?.size !== current?.size) {
-					throw new Error("Attachment changed before replacement; local file was preserved");
-				}
+				const active = () => {
+					if (signal) checkAttachmentAbort(signal);
+					if (!this.host.alive() || file.path !== vpath) {
+						throw new Error("Attachment moved before replacement");
+					}
+				};
+				const unchanged = async () => {
+					const latest = await adapter.stat(destination);
+					if (latest?.mtime !== current?.mtime || latest?.size !== current?.size) {
+						throw new Error("Attachment changed before replacement; local file was preserved");
+					}
+				};
+				active();
 				if (!this.vault.getAbstractFileByPath(destination)) {
 					await this.assertFree(vpath, destination);
 				}
+				await unchanged();
+				active();
+				beforeWrite?.();
 				if (contents) return adapter.writeBinary(destination, contents, { mtime });
-				if (current && io) {
-					return io.fs.promises.rename(io.fullPath(partial), io.fullPath(destination));
+				try {
+					if (current && io) {
+						return await io.fs.promises.rename(io.fullPath(partial), io.fullPath(destination));
+					}
+					return await adapter.rename(partial, destination);
+				} catch (error) {
+					// The staging directory can sit on another volume (a
+					// symlinked or mounted folder), where no rename reaches.
+					if ((error as { code?: string } | null)?.code !== "EXDEV") throw error;
+					if (!io) throw error;
+					await this.copyAcrossVolumes(
+						vpath,
+						partial,
+						destination,
+						replacement,
+						current,
+						unchanged,
+						active,
+						beforeWrite,
+						io,
+					);
 				}
-				return adapter.rename(partial, destination);
 			},
 		};
+		return replacement;
+	}
+
+	/**
+	 * Copy a staged download onto the destination volume, then rename the
+	 * completed temporary into place so the live path changes atomically.
+	 */
+	private async copyAcrossVolumes(
+		vpath: string,
+		partial: string,
+		destination: string,
+		replacement: Replacement,
+		current: FileStats | null,
+		unchanged: () => Promise<void>,
+		active: () => void,
+		beforeWrite: (() => void) | undefined,
+		io: NonNullable<Awaited<ReturnType<typeof desktopAttachmentIO>>>,
+	): Promise<void> {
+		const id = crypto.randomUUID();
+		const temporary = `${dirname(destination)}/.relay-${id}.download`;
+		const marker = `${partial}.target`;
+		const source = io.fullPath(partial);
+		const staged = io.fullPath(temporary);
+		// Startup enumerates the downloads directory, so this pointer lets it
+		// remove a sibling temporary left by an interrupted commit.
+		await this.vault.adapter.write(marker, temporary);
+		let landed = false;
+		try {
+			await io.fs.promises.copyFile(source, staged, io.fs.constants.COPYFILE_EXCL);
+			const time = new Date(replacement.mtime);
+			await io.fs.promises.utimes(staged, time, time);
+			const stat = await io.fs.promises.stat(staged);
+			replacement.mtime = Math.round(stat.mtimeMs);
+			replacement.size = stat.size;
+			if (!current && !this.vault.getAbstractFileByPath(destination)) {
+				await this.assertFree(vpath, destination);
+			}
+			await unchanged();
+			active();
+			beforeWrite?.();
+			if (current) {
+				await io.fs.promises.rename(staged, io.fullPath(destination));
+			} else {
+				await this.vault.adapter.rename(temporary, destination);
+			}
+			landed = true;
+		} finally {
+			if (!landed) {
+				const removed = await this.removeTemporary(io, staged);
+				if (removed) await this.removeMarker(marker);
+			}
+		}
+		await this.removeTemporary(io, source);
+		await this.removeMarker(marker);
+	}
+
+	private async removeTemporary(
+		io: NonNullable<Awaited<ReturnType<typeof desktopAttachmentIO>>>,
+		path: string,
+	): Promise<boolean> {
+		try {
+			await io.fs.promises.unlink(path);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	private async removeMarker(path: string): Promise<void> {
+		try {
+			await this.vault.adapter.remove(path);
+		} catch {
+			// Startup cleanup retries markers left by interrupted commits.
+		}
 	}
 }
 
