@@ -1,9 +1,14 @@
 import { Platform, type Vault } from "obsidian";
 import { sha256 } from "@noble/hashes/sha2";
 import { bytesToHex } from "@noble/hashes/utils";
+import { watchRequestDeadlines, type RequestDeadlines } from "./NodeRequestDeadlines";
 import { S3ApiError, s3NetworkFailureFromUnknown } from "./S3Error";
 
 export const ATTACHMENT_CHUNK_BYTES = 1024 * 1024;
+const ATTACHMENT_UPLOAD_WRITE_BYTES = 64 * 1024;
+// After the body enters the kernel, Node exposes no acknowledgement counter. A
+// separate bound lets a slow receiver drain that queue without hiding a stall forever.
+const ATTACHMENT_UPLOAD_RESPONSE_TIMEOUT_MS = 30 * 60_000;
 
 /** Incremental SHA-256 over chunks: digest once, then destroy. */
 export interface AttachmentHasher {
@@ -112,10 +117,14 @@ export async function snapshotAttachment(
 	}
 }
 
+export class AttachmentUploadTimeoutError extends S3ApiError {
+	constructor() { super({ code: "RequestTimeout", operation: "upload attachment" }); }
+}
+
 /** Ordinary presigned PUT with a known length, not AWS chunk-signing or multipart. */
 export async function streamAttachmentPut(
 	vault: Vault, url: string, snapshot: string, size: number, contentType: string,
-	signal: AbortSignal, progress: (bytes: number) => void,
+	signal: AbortSignal, progress: (bytes: number) => void, deadlines: RequestDeadlines = {},
 ): Promise<number> {
 	const io = await desktopAttachmentIO(vault);
 	if (!io) throw new Error("Desktop file streaming is unavailable");
@@ -123,11 +132,12 @@ export async function streamAttachmentPut(
 	const target = new URL(url);
 	if (target.protocol !== "http:" && target.protocol !== "https:") throw new Error("Unsupported upload URL");
 	return new Promise((resolve, reject) => {
-		const source = io.fs.createReadStream(io.fullPath(snapshot), { highWaterMark: ATTACHMENT_CHUNK_BYTES });
+		const source = io.fs.createReadStream(io.fullPath(snapshot), { highWaterMark: ATTACHMENT_UPLOAD_WRITE_BYTES });
 		let settled = false;
 		const finish = (error?: Error, status?: number) => {
 			if (settled) return;
 			settled = true;
+			clearDeadlines();
 			signal.removeEventListener("abort", abort);
 			source.destroy();
 			request.destroy();
@@ -139,6 +149,10 @@ export async function streamAttachmentPut(
 			response.on("error", error => finish(new S3ApiError({ code: "NetworkingError", operation: "upload attachment" }, error)));
 			response.resume();
 			response.on("end", () => finish(undefined, response.statusCode ?? 0));
+		});
+		const clearDeadlines = watchRequestDeadlines(request, target, () => finish(new AttachmentUploadTimeoutError()), {
+			finishedWriteTimeoutMs: ATTACHMENT_UPLOAD_RESPONSE_TIMEOUT_MS,
+			...deadlines,
 		});
 		const abort = () => finish(new AttachmentCancelledError());
 		signal.addEventListener("abort", abort, { once: true });
