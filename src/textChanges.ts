@@ -15,8 +15,12 @@ function isLowSurrogate(code: number): boolean {
 	return code >= 0xdc00 && code <= 0xdfff;
 }
 
+function isInsidePair(text: string, index: number): boolean {
+	return isHighSurrogate(text.charCodeAt(index - 1)) && isLowSurrogate(text.charCodeAt(index));
+}
+
 /**
- * Widen non-overlapping, pre-change UTF-16 ranges without changing their result.
+ * Align non-overlapping, pre-change UTF-16 ranges without changing their result.
  * Preserved code units join the replacement so pairs stay in one Yjs item, both
  * in the old text and in the inserted text. Touching ranges are combined before
  * application so two edits to the same pair cannot split each other's result.
@@ -28,11 +32,29 @@ export function snapTextChanges(
 	before: string,
 	changes: readonly TextChange[],
 ): TextChange[] {
-	const sorted = [...changes].sort((a, b) => a.from - b.from || a.to - b.to);
+	const sorted = changes
+		.filter(({ from, to, insert }) => from !== to || insert.length > 0)
+		.sort((a, b) => a.from - b.from || a.to - b.to);
 	const result: TextChange[] = [];
 	for (let i = 0; i < sorted.length; i++) {
 		let { from, to, insert } = sorted[i];
-		if (from === to && insert.length === 0) continue;
+		const previous = result[result.length - 1];
+		if (insert.length === 0) {
+			while (sorted[i + 1]?.from === to && sorted[i + 1].insert.length === 0) {
+				to = sorted[++i].to;
+			}
+			// Slide across a matching surrogate without crossing another edit.
+			// Keeping the surviving pair in Yjs makes concurrent deletions idempotent.
+			if (isInsidePair(before, from) && isInsidePair(before, to)) {
+				if (before[from] === before[to] && to < (sorted[i + 1]?.from ?? before.length)) {
+					from++;
+					to++;
+				} else if (before[from - 1] === before[to - 1] && from > (previous?.to ?? 0)) {
+					from--;
+					to--;
+				}
+			}
+		}
 
 		while (from > 0 && isHighSurrogate(before.charCodeAt(from - 1))) {
 			insert = before[--from] + insert;
@@ -57,7 +79,6 @@ export function snapTextChanges(
 			}
 		}
 
-		const previous = result[result.length - 1];
 		if (previous && previous.to === from) {
 			previous.to = to;
 			previous.insert += insert;
