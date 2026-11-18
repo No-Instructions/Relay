@@ -860,12 +860,10 @@ export class BackgroundSync extends HasLogging {
 			this.debug(
 				`[reclaim] re-admitting parked ${failure.kind} for ${failure.path} (reclaim ${failure.reclaims + 1}/${MAX_FAILURE_RECLAIMS})`,
 			);
-			// A reclaimed session re-runs as a plain converge pass: the caller
-			// that wanted the stronger intent already saw its failure and owns
-			// any follow-up; transfers re-run as themselves.
+			// Retry the failed operation. A plain converge pass can complete
+			// without uploading local content or recovering a missing baseline.
 			const request: WorkRequest<DownloadParticipant> = {
 				...(failure.request as WorkRequest<DownloadParticipant>),
-				intent: failure.request.scope === "transfer" ? "download" : "converge",
 				trigger: "reclaim",
 			};
 			this.admit(request).catch(() => {
