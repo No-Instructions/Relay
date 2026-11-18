@@ -1,6 +1,6 @@
 import type { Vault } from "obsidian";
 import { requestUrlWithMetrics } from "./customFetch";
-import { s3ApiErrorFromResponse } from "./S3Error";
+import { parseS3ErrorXml, s3ApiErrorFromResponse } from "./S3Error";
 import { ATTACHMENT_CHUNK_BYTES, attachmentHasher, attachmentDigest, checkAttachmentAbort } from "./AttachmentIO";
 
 /** Range responses are buffered by Obsidian; each awaited append releases one chunk. */
@@ -75,9 +75,14 @@ function contentRange(headers: Record<string, string>): string {
 	return Object.entries(headers).find(([key]) => key.toLowerCase() === "content-range")?.[1] ?? "";
 }
 
-function attachmentSizeFromProbe(probe: { status: number; headers: Record<string, string>; arrayBuffer: ArrayBuffer }): number {
-	const range = /^bytes 0-0\/(\d+)$/.exec(contentRange(probe.headers));
-	const empty = probe.status === 416 && contentRange(probe.headers) === "bytes */0";
+function attachmentSizeFromProbe(probe: { status: number; headers: Record<string, string>; arrayBuffer: ArrayBuffer; text?: string }): number {
+	const header = contentRange(probe.headers);
+	const range = /^bytes 0-0\/(\d+)$/.exec(header);
+	// S3 reports an empty object's size in its InvalidRange XML body and
+	// omits Content-Range. Other range failures cannot establish a size.
+	const error = probe.status === 416 && !header ? parseS3ErrorXml(probe.text ?? "") : null;
+	const empty = probe.status === 416 && (header === "bytes */0" ||
+		(error?.code === "InvalidRange" && error.actualObjectSize === 0));
 	if (!empty && (probe.status !== 206 || !range || probe.arrayBuffer.byteLength !== 1)) throw new Error("Attachment server did not return the requested byte range");
 	const size = empty ? 0 : Number(range![1]);
 	if (!Number.isSafeInteger(size) || size < 0) throw new Error("Invalid attachment size");
