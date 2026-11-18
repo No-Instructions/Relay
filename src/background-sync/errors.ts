@@ -1,4 +1,5 @@
-import { isRetryableHttpError } from "../HttpError";
+import { HttpError, isRetryableHttpError } from "../HttpError";
+import { isNetworkFailureMessage } from "../NetworkFailure";
 
 /**
  * A provider-bound failure the engine may re-drive: the connection was not
@@ -41,8 +42,23 @@ export function isRetryableProviderSyncError(
 	return error instanceof RetryableProviderSyncError;
 }
 
+/** A document or token request failed before a response was received. */
+class SyncTransportError extends Error {
+	constructor(readonly cause: Error) {
+		super(cause.message);
+		this.name = "SyncTransportError";
+	}
+}
+
+export function rethrowSyncTransportError(error: unknown): never {
+	if (error instanceof Error && !(error instanceof HttpError) && isNetworkFailureMessage(error.message)) {
+		throw new SyncTransportError(error);
+	}
+	throw error;
+}
+
 export function isRetryableSyncError(error: unknown): error is Error {
-	return isRetryableProviderSyncError(error) || isRetryableHttpError(error);
+	return isRetryableProviderSyncError(error) || isRetryableHttpError(error) || error instanceof SyncTransportError;
 }
 
 /** The last path segment, for user-facing messages. */
