@@ -131,7 +131,14 @@ export class Document
 		// The session that observed this head performs its own convergence;
 		// the machine only retains it as the freshest server head.
 		this._hsm?.noteServerHead({ snapshot });
+		this.clearRecoveredDownloadFailure();
 	};
+
+	private clearRecoveredDownloadFailure(): void {
+		const remote = this.remoteDocOrNull;
+		if (this.destroyed || !remote || isEmptyDoc(remote)) return;
+		this.sharedFolder.backgroundSync?.clearRecoveredDownloadFailure(this);
+	}
 
 	/**
 	 * Flag to track when we're in the middle of our own save operation.
@@ -574,6 +581,7 @@ export class Document
 			});
 			if (outcome === "synced") {
 				await this.maybeBootstrapMergeBase(context);
+				this.clearRecoveredDownloadFailure();
 				// A session reaching synced means the same thing to every
 				// machine; the send is idempotent for documents, whose
 				// provider integration already delivered it mid-session.
@@ -650,6 +658,12 @@ export class Document
 				throw new RetryableProviderSyncError(
 					`Local document is not ready for upload: ${fileName(this.path)}`,
 				);
+			}
+			// Publishing existing membership can reach upload before its disk
+			// file has enrolled. Only an uninitialized pair needs disk seeding;
+			// persistence also checks origin so existing history is preserved.
+			if (isEmptyDoc(localDoc) && isEmptyDoc(remoteDoc)) {
+				await hsm.initializeWithContent();
 			}
 
 			Y.applyUpdate(remoteDoc, Y.encodeStateAsUpdate(localDoc), hsm);

@@ -21,6 +21,7 @@ import {
 	type FolderSyncWorkItemInput,
 } from "./BackgroundSyncProgress";
 import { httpErrorFromResponse } from "./HttpError";
+import { isNetworkFailureMessage } from "./NetworkFailure";
 import { errorFromUnknown, formatUserFacingError } from "./UserFacingError";
 import { getRelayRequestHeaders, requestUrlWithMetrics } from "./customFetch";
 import {
@@ -860,12 +861,10 @@ export class BackgroundSync extends HasLogging {
 			this.debug(
 				`[reclaim] re-admitting parked ${failure.kind} for ${failure.path} (reclaim ${failure.reclaims + 1}/${MAX_FAILURE_RECLAIMS})`,
 			);
-			// A reclaimed session re-runs as a plain converge pass: the caller
-			// that wanted the stronger intent already saw its failure and owns
-			// any follow-up; transfers re-run as themselves.
+			// Retry the failed operation. A plain converge pass can complete
+			// without uploading local content or recovering a missing baseline.
 			const request: WorkRequest<DownloadParticipant> = {
 				...(failure.request as WorkRequest<DownloadParticipant>),
-				intent: failure.request.scope === "transfer" ? "download" : "converge",
 				trigger: "reclaim",
 			};
 			this.admit(request).catch(() => {
@@ -1479,6 +1478,15 @@ export class BackgroundSync extends HasLogging {
 
 	clearFailure(id: string): void {
 		this.deleteFailure(id, true);
+	}
+
+	/** A populated provider sync obtained the state an earlier network download could not. */
+	clearRecoveredDownloadFailure(target: DownloadParticipant): void {
+		const failure = this.failures.get(this.failureKey("download", target.guid));
+		if (failure?.retryable && failure.sharedFolder === target.sharedFolder &&
+			failure.request?.target === target && isNetworkFailureMessage(failure.message)) {
+			this.clearFailure(failure.id);
+		}
 	}
 
 	private deleteFailure(id: string, clearReclaimHistory: boolean): void {

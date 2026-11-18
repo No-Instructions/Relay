@@ -1,4 +1,5 @@
 import { HttpError } from "./HttpError";
+import { isNetworkFailureMessage } from "./NetworkFailure";
 import { parseProblemDetails, type ProblemDetails } from "./ProblemDetails";
 
 export interface S3ErrorDetails {
@@ -9,6 +10,7 @@ export interface S3ErrorDetails {
 	hostId?: string;
 	status?: number;
 	operation?: string;
+	actualObjectSize?: number;
 }
 
 const RETRYABLE_S3_CODES = new Set([
@@ -72,15 +74,12 @@ export function s3NetworkFailureFromUnknown(
 ): S3ApiError | null {
 	if (error instanceof HttpError) return null;
 	const text = errorText(error);
-	if (!text || !NETWORK_FAILURE_PATTERN.test(text)) return null;
+	if (!text || !isNetworkFailureMessage(text)) return null;
 	return new S3ApiError(
 		{ code: "NetworkingError", operation, message: text },
 		error,
 	);
 }
-
-const NETWORK_FAILURE_PATTERN =
-	/net::ERR_|Failed to fetch|fetch failed|\bLoad failed\b|NetworkError|network error|socket hang up|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ENOTFOUND|EPIPE|EAI_AGAIN/i;
 
 function jsonErrorMessage(body: string): string | undefined {
 	try {
@@ -125,6 +124,10 @@ export function parseS3ErrorXml(body: string): S3ErrorDetails | null {
 		requestId: xmlText(error, "RequestId"),
 		hostId: xmlText(error, "HostId"),
 	};
+	const size = xmlText(error, "ActualObjectSize");
+	if (size !== undefined && /^\d+$/.test(size) && Number.isSafeInteger(Number(size))) {
+		details.actualObjectSize = Number(size);
+	}
 	return details.code || details.message || details.requestId ? details : null;
 }
 

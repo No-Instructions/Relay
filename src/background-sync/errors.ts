@@ -1,4 +1,5 @@
-import { isRetryableHttpError } from "../HttpError";
+import { HttpError, isRetryableHttpError } from "../HttpError";
+import { isNetworkFailureMessage } from "../NetworkFailure";
 
 /**
  * A provider-bound failure the engine may re-drive: the connection was not
@@ -42,7 +43,9 @@ export function isRetryableProviderSyncError(
 }
 
 export function isRetryableSyncError(error: unknown): error is Error {
-	return isRetryableProviderSyncError(error) || isRetryableHttpError(error);
+	if (error instanceof HttpError) return isRetryableHttpError(error);
+	return isRetryableProviderSyncError(error) ||
+		(error instanceof Error && isNetworkFailureMessage(error.message));
 }
 
 /** The last path segment, for user-facing messages. */
