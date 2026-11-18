@@ -13,7 +13,7 @@ import { ObservableSet } from "./observable/ObservableSet";
 import { ObservableMap } from "./observable/ObservableMap";
 import type { SharedFolder, SharedFolders } from "./SharedFolder";
 import type { ClientToken } from "./client/types";
-import { isEmptyDoc } from "./merge-hsm/snapshots";
+import { isEmptyDoc, snapshotIsEmpty } from "./merge-hsm/snapshots";
 import {
 	buildFolderSyncSnapshot,
 	FolderSyncSnapshotSmoother,
@@ -24,6 +24,7 @@ import { httpErrorFromResponse } from "./HttpError";
 import { errorFromUnknown, formatUserFacingError } from "./UserFacingError";
 import { getRelayRequestHeaders, requestUrlWithMetrics } from "./customFetch";
 import {
+	rethrowSyncTransportError,
 	isRetryableProviderSyncError,
 	isRetryableSyncError,
 	ProviderTimeoutError,
@@ -1282,7 +1283,7 @@ export class BackgroundSync extends HasLogging {
 			headers: headers,
 			throw: false,
 			relayNetworkDomain: "relay",
-		});
+		}).catch(rethrowSyncTransportError);
 
 		if (response.status === 200) {
 			this.debug("[downloadItem]", getId(entity), response.status);
@@ -1341,7 +1342,7 @@ export class BackgroundSync extends HasLogging {
 			headers,
 			throw: false,
 			relayNetworkDomain: "relay",
-		});
+		}).catch(rethrowSyncTransportError);
 
 		if (response.status !== 200) {
 			this.error(
@@ -1477,6 +1478,15 @@ export class BackgroundSync extends HasLogging {
 
 	clearFailure(id: string): void {
 		this.deleteFailure(id, true);
+	}
+
+	/** A populated provider sync obtained the state an earlier network download could not. */
+	clearRecoveredDownloadFailure(target: DownloadParticipant, snapshot: Uint8Array): void {
+		const failure = this.failures.get(this.failureKey("download", target.guid));
+		if (failure?.retryable && failure.sharedFolder === target.sharedFolder &&
+			failure.request?.target === target && !snapshotIsEmpty({ snapshot })) {
+			this.clearFailure(failure.id);
+		}
 	}
 
 	private deleteFailure(id: string, clearReclaimHistory: boolean): void {

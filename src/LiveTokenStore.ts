@@ -15,6 +15,7 @@ import {
 	S3RemoteCanvas,
 } from "./S3RN";
 import { customFetch, getRelayRequestHeaders } from "./customFetch";
+import { rethrowSyncTransportError } from "./background-sync/errors";
 import { httpErrorFromResponse } from "./HttpError";
 
 function getJwtExpiryFromClientToken(clientToken: ClientToken): number {
@@ -111,7 +112,7 @@ export async function refresh(
 			headers: headers,
 			body: payload,
 			relayNetworkDomain: "api",
-		});
+		}).catch(rethrowSyncTransportError);
 
 		if (!response.ok) {
 			const body = await response.text();

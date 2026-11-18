@@ -131,6 +131,7 @@ export class Document
 		// The session that observed this head performs its own convergence;
 		// the machine only retains it as the freshest server head.
 		this._hsm?.noteServerHead({ snapshot });
+		if (!this.destroyed) this.sharedFolder.backgroundSync?.clearRecoveredDownloadFailure(this, snapshot);
 	};
 
 	/**
