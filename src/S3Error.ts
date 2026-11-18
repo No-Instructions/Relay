@@ -1,4 +1,5 @@
 import { HttpError } from "./HttpError";
+import { isNetworkFailureMessage } from "./NetworkFailure";
 import { parseProblemDetails, type ProblemDetails } from "./ProblemDetails";
 
 export interface S3ErrorDetails {
@@ -73,15 +74,12 @@ export function s3NetworkFailureFromUnknown(
 ): S3ApiError | null {
 	if (error instanceof HttpError) return null;
 	const text = errorText(error);
-	if (!text || !NETWORK_FAILURE_PATTERN.test(text)) return null;
+	if (!text || !isNetworkFailureMessage(text)) return null;
 	return new S3ApiError(
 		{ code: "NetworkingError", operation, message: text },
 		error,
 	);
 }
-
-const NETWORK_FAILURE_PATTERN =
-	/net::ERR_|Failed to fetch|fetch failed|\bLoad failed\b|NetworkError|network error|socket hang up|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ENOTFOUND|EPIPE|EAI_AGAIN/i;
 
 function jsonErrorMessage(body: string): string | undefined {
 	try {
