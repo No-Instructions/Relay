@@ -1002,6 +1002,7 @@ export class FolderNavigationDecorations {
 	 * each folder once over its lifetime.
 	 */
 	private subscribedFolders = new WeakSet<SharedFolder>();
+	private folderPaths = new Map<SharedFolder, string>();
 
 	/**
 	 * Separate dedup for the `fset.on` subscription, which is gated by
@@ -1021,6 +1022,7 @@ export class FolderNavigationDecorations {
 	private quickRefreshFrame: number | null = null;
 	private pendingQuickRefreshAll = false;
 	private pendingQuickRefreshFolders = new Set<SharedFolder>();
+	private pendingTreeRefreshPaths = new Set<string>();
 	private pendingQueueItemPaths = new Set<string>();
 	private activeSyncSnapshot = new Set<QueueItem>();
 	private activeDownloadSnapshot = new Set<QueueItem>();
@@ -1066,16 +1068,23 @@ export class FolderNavigationDecorations {
 		// via `folder.onDestroy(...)` — SharedFolder runs its own
 		// unsubscribe queue at the top of destroy(), so external
 		// subscriptions are released before any internal observable
-		// is torn down. No per-folder diff loop needed here.
+		// is torn down.
 		//
-		// Behavior contract (matches the pre-refactor structure):
-		//   - whenReady().then(refresh) fires on every notification
-		//   - fset.on has its own dedup gated by the feature flag so
-		//     a mid-session flag flip can attach it late
-		//   - the other folder-level refresh subs are dedup'd per folder
-		//     (the pre-refactor code leaked
-		//     them on every notification — that was the teardown bug)
+		// Registration changes repaint only the affected subtrees. Keep old
+		// paths so removal and rename can clear decorations without rescanning
+		// every other shared folder.
 		this.rootSub = this.sharedFolders.subscribe(() => {
+			const folderPaths = new Map<SharedFolder, string>();
+			this.sharedFolders.forEach((folder) => {
+				folderPaths.set(folder, folder.path);
+				if (this.folderPaths.get(folder) !== folder.path) {
+					this.refreshTreePath(folder.path);
+				}
+			});
+			for (const [folder, path] of this.folderPaths) {
+				if (folderPaths.get(folder) !== path) this.refreshTreePath(path);
+			}
+			this.folderPaths = folderPaths;
 			this.sharedFolders.forEach((folder) => {
 				withAnyOf([flag.enableDocumentStatus], () => {
 					if (!this.subscribedFolderFsets.has(folder)) {
@@ -1090,23 +1099,21 @@ export class FolderNavigationDecorations {
 					}
 				});
 
-				// Refresh once the folder finishes its own load so we
-				// paint decorations as soon as data is available. This
-				// intentionally runs on every notification — matches
-				// the pre-refactor behavior (the .then handler is
-				// attached to the same cached promise each time, so
-				// after resolution every repeat handler fires once).
+				if (this.subscribedFolders.has(folder)) return;
+				this.subscribedFolders.add(folder);
+
+				// Observe readiness once per registration. Established folders
+				// must not enqueue another repaint when a different folder is added.
 				folder.whenReady()
-					.then(() => this.refresh())
+					.then(() => {
+						if (!folder.destroyed) this.quickRefresh(folder);
+					})
 					.catch((error) => {
 						if (!isDestroyedError(error)) {
 							this.warn("folder ready failed", error);
 						}
-						this.refresh();
+						if (!folder.destroyed) this.quickRefresh(folder);
 					});
-
-				if (this.subscribedFolders.has(folder)) return;
-				this.subscribedFolders.add(folder);
 
 				folder.onDestroy(
 					folder.syncSettingsManager.subscribe(() =>
@@ -1134,7 +1141,6 @@ export class FolderNavigationDecorations {
 					),
 				);
 			});
-			this.refresh();
 		});
 
 		this.offLayoutChange = (() => {
@@ -1239,6 +1245,12 @@ export class FolderNavigationDecorations {
 		this.scheduleQuickRefresh();
 	}
 
+	private refreshTreePath(path: string): void {
+		if (!this.layoutReady || this.destroyed) return;
+		this.pendingTreeRefreshPaths.add(path);
+		this.scheduleQuickRefresh();
+	}
+
 	/** Repaint a newly created row even when folder membership stays unchanged. */
 	fileCreated(folder: SharedFolder): void {
 		this.quickRefresh(folder);
@@ -1249,6 +1261,8 @@ export class FolderNavigationDecorations {
 		const t0 = performance.now();
 		const refreshAll = this.pendingQuickRefreshAll;
 		const refreshFolders = new Set(this.pendingQuickRefreshFolders);
+		const refreshPaths = new Set(this.pendingTreeRefreshPaths);
+		this.pendingTreeRefreshPaths.clear();
 		const queueItemPaths = new Set(this.pendingQueueItemPaths);
 		this.pendingQuickRefreshAll = false;
 		this.pendingQuickRefreshFolders.clear();
@@ -1265,6 +1279,7 @@ export class FolderNavigationDecorations {
 		if (
 			!refreshAll &&
 			refreshFolders.size === 0 &&
+			refreshPaths.size === 0 &&
 			changedStatuses.size === 0 &&
 			queueItemPaths.size === 0
 		) {
@@ -1275,6 +1290,14 @@ export class FolderNavigationDecorations {
 		const folders = refreshAll
 			? this.sharedFolders.items()
 			: [...refreshFolders];
+		for (const folder of folders) {
+			if (!folder.destroyed) refreshPaths.add(folder.path);
+		}
+		// An ancestor walk already covers its nested registrations.
+		const paths = [...refreshPaths];
+		const roots = paths.filter((path) =>
+			!paths.some((other) => other !== path && path.startsWith(other + "/")),
+		);
 		for (const fileExplorer of fileExplorers) {
 			const walker =
 				this.treeState.get(fileExplorer) ||
@@ -1284,11 +1307,10 @@ export class FolderNavigationDecorations {
 					this.makeVisitors(),
 				);
 			this.treeState.set(fileExplorer, walker);
-			for (const folder of folders) {
-				if (folder.destroyed) continue;
-				const root = this.vault.getAbstractFileByPath(folder.path);
+			for (const path of roots) {
+				const root = this.vault.getAbstractFileByPath(path);
 				if (root instanceof TFolder) {
-					walker.walk(root);
+					walker.walk(root, this.sharedFolders.lookup(path) ?? undefined);
 				}
 			}
 			for (const [folder, guids] of changedStatuses) {
@@ -1306,6 +1328,7 @@ export class FolderNavigationDecorations {
 		const t0 = performance.now();
 		this.pendingQuickRefreshAll = false;
 		this.pendingQuickRefreshFolders.clear();
+		this.pendingTreeRefreshPaths.clear();
 		this.pendingSyncStatusGuids.clear();
 		this.pendingQueueItemPaths.clear();
 		const fileExplorers = this.getFileExplorers();
@@ -1330,6 +1353,7 @@ export class FolderNavigationDecorations {
 		this.destroyed = true;
 		this.pendingQuickRefreshAll = false;
 		this.pendingQuickRefreshFolders.clear();
+		this.pendingTreeRefreshPaths.clear();
 		this.pendingSyncStatusGuids.clear();
 		this.pendingQueueItemPaths.clear();
 		if (this.quickRefreshFrame !== null) {
@@ -1354,6 +1378,7 @@ export class FolderNavigationDecorations {
 
 		this.treeState.forEach((walker) => walker.destroy());
 		this.treeState.clear();
+		this.folderPaths.clear();
 		this.offLayoutChange();
 		this.offLayoutChange = null as unknown as typeof this.offLayoutChange;
 
