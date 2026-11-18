@@ -588,6 +588,10 @@ export const MACHINE: MachineDefinition = {
 
 	'idle.error': {
 		on: {
+			// A full-state fetch can establish a missing baseline even when a
+			// previous recovery declined. Re-run the ancestry checks against
+			// that evidence; ordinary updates still respect the retry class.
+			RECOVER_LCA: { ...RECOVER_LCA_HANDLER, actions: ['storeRecoverLCADisk', 'rearmRetryableError'] },
 			// idle.error retains data while refusing processing: it keeps applying
 			// remote updates and recording disk changes. When the stored error is
 			// retryable, that new information re-enters idle.loading (the
