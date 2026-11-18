@@ -2398,7 +2398,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 
 		this.send({ type: "RECOVER_LCA", disk });
 		await this.awaitAsync("recover-lca");
-		return this._lca !== null || this.getSyncStatus().status !== "pending";
+		return this._lca !== null || this.getSyncStatus().status === "conflict";
 	}
 
 	/**
@@ -3539,9 +3539,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 				this.hsmError(`${error.message} | ${this.describeResourceContext("storeSupersededError")}`);
 			},
 			rearmRetryableError: () => {
-				// New information reached a retryable idle.error: drop the stored error
-				// so re-entering idle.loading is clean and a fresh failure classifies
-				// from scratch.
+				// Drop the stored error before recovery so a fresh failure
+				// classifies from scratch.
 				this._error = undefined;
 				this._errorRetryable = false;
 			},
