@@ -392,6 +392,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	// YDocs
 	private localDoc: Y.Doc | null = null; // Alive in idle + active mode; null when unloaded/hibernated
 	private remoteDoc: Y.Doc | null; // Lazily provided, managed externally. Null when hibernated.
+	private _contentInitialization: Promise<boolean> | null = null;
 	// Merge metadata normally arrives before local persistence is attached, but
 	// active-entry races allow it to arrive afterward. Hold all deleted content
 	// until that metadata tells the GC filter which baseline must remain
@@ -2521,6 +2522,21 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost, SyncMachine {
 	 * @returns true if initialization happened, false if already initialized
 	 */
 	async initializeWithContent(): Promise<boolean> {
+		if (this._contentInitialization) {
+			return this._contentInitialization;
+		}
+		const initialization = this.initializeWithContentOnce();
+		this._contentInitialization = initialization;
+		try {
+			return await initialization;
+		} finally {
+			if (this._contentInitialization === initialization) {
+				this._contentInitialization = null;
+			}
+		}
+	}
+
+	private async initializeWithContentOnce(): Promise<boolean> {
 		await this.ensurePersistence();
 
 		// Cache diskLoader result so we don't read disk twice

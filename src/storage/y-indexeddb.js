@@ -1004,6 +1004,14 @@ export class IndexeddbPersistence extends Observable {
     // Not initialized - load content lazily
     const { content } = await contentLoader()
 
+    // The disk read yields to remote recovery and other enrollment callers.
+    // Re-check after it resolves so whichever path initialized first wins.
+    const originAfterLoad = await this.getOrigin()
+    if (this._destroyed || !this._hasLiveDoc()) return false
+    if (originAfterLoad !== undefined || this.hasUserData()) {
+      return false
+    }
+
     // Insert content. The `relay` map carries a single op so every enrolled
     // doc produces a non-empty state vector — lets the server (and peers)
     // tell "uploaded" from "never uploaded" for truly-empty content.

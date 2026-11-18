@@ -651,6 +651,12 @@ export class Document
 					`Local document is not ready for upload: ${fileName(this.path)}`,
 				);
 			}
+			// Publishing existing membership can reach upload before its disk
+			// file has enrolled. The in-memory replica has not contacted the
+			// server yet, so verify the room before treating it as empty.
+			if (isEmptyDoc(localDoc) && isEmptyDoc(remoteDoc)) {
+				await this.prepareUnenrolledUpload(hsm, localDoc, remoteDoc);
+			}
 
 			Y.applyUpdate(remoteDoc, Y.encodeStateAsUpdate(localDoc), hsm);
 			hsm.setRemoteDoc(remoteDoc);
@@ -659,6 +665,42 @@ export class Document
 		} catch (e) {
 			releaseLease();
 			throw e;
+		}
+	}
+
+	private async prepareUnenrolledUpload(
+		hsm: MergeHSM,
+		localDoc: Y.Doc,
+		remoteDoc: Y.Doc,
+	): Promise<void> {
+		const sharedFolder = this.sharedFolder;
+		const serverUpdate = await sharedFolder.backgroundSync.downloadByGuid(
+			sharedFolder,
+			this.guid,
+			this.path,
+		);
+		if (serverUpdate) {
+			const adopted = await hsm.initializeFromRemote(serverUpdate);
+			if (!adopted && !isEmptyDoc(localDoc)) {
+				throw new RetryableProviderSyncError(
+					`Local document changed while checking remote history: ${fileName(this.path)}`,
+				);
+			}
+			Y.applyUpdate(remoteDoc, serverUpdate, remoteDoc);
+			return;
+		}
+		sharedFolder.recordServerEmpty(this.guid);
+
+		try {
+			await hsm.initializeWithContent();
+		} catch (error) {
+			if (error instanceof DiskFileNotFoundError) {
+				throw new RetryableProviderSyncError(
+					`Disk file is not ready for upload: ${fileName(this.path)}`,
+					error,
+				);
+			}
+			throw error;
 		}
 	}
 
