@@ -44,6 +44,7 @@ import { CaseConflictBanners } from "./ui/CaseConflictBanners";
 import { ResourceMeterMount } from "./ui/ResourceMeter";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager, type LoginSettings } from "./LoginManager";
+import { UploadSettingsModal } from "./ui/UploadSettingsModal";
 import { EndpointConfigModal } from "./ui/EndpointConfigModal";
 import {
 	curryLog,
@@ -785,6 +786,16 @@ export default class Live extends Plugin {
 		});
 
 		this.addCommand({
+			id: "upload-settings",
+			name: "Upload settings",
+			checkCallback: (checking) => {
+				if (!this.attachmentTransfers?.supportsDesktopUploads) return false;
+				if (!checking) this.openUploadSettings();
+				return true;
+			},
+		});
+
+		this.addCommand({
 			id: "configure-endpoints",
 			name: "Configure enterprise tenant",
 			callback: () => {
@@ -1284,6 +1295,14 @@ export default class Live extends Plugin {
 	}
 
 	/** Opens why an item's name conflicts with another spelling, from its pill or banner. */
+	private openUploadSettings = (): void => {
+		const manager = this.attachmentTransfers;
+		new UploadSettingsModal(this.app, manager.uploadLimitBytes, manager.streamLargeUploads, async (bytes, stream) => {
+			await this.featureSettings.update(current => ({ ...current, enableStreamingUploads: stream }));
+			manager.setUploadLimitBytes(bytes);
+		}).open();
+	};
+
 	explainCaseConflict = (folder: SharedFolder, file: TAbstractFile): void => {
 		openCaseConflictExplanation(this.app, folder, file);
 	};
@@ -1437,6 +1456,7 @@ export default class Live extends Plugin {
 			this.sharedFolders,
 			this.backgroundSync,
 			this.explainCaseConflict,
+			this.openUploadSettings,
 		);
 		this.folderNavDecorations.refresh();
 

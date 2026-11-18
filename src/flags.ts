@@ -62,8 +62,8 @@ export const FeatureFlagSchema: {
 		description: "Download and verify attachments in bounded chunks.",
 	},
 	enableStreamingUploads: {
-		default: true, category: "labs", title: "Stream desktop attachment uploads",
-		description: "Read and upload desktop attachments without loading the whole file into memory.",
+		default: true, category: "labs", title: "Stream large desktop uploads",
+		description: "Stream attachments above the threshold set in Upload settings.",
 	},
 	enableAttachmentSizeLimit: {
 		default: true, category: "labs", title: "Limit attachments on this device",

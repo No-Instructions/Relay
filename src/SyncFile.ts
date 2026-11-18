@@ -868,6 +868,11 @@ export class SyncFile
 		return this.sharedFolder.cas.verify(this);
 	}
 
+	get blockedByUploadLimit(): boolean {
+		const row = this.sharedFolder.attachmentTransfers?.rows.get(this.attachmentTask().key);
+		return row?.phase === "blocked" && row.limitSource === "upload";
+	}
+
 	public attachmentTask(): AttachmentTask {
 		return { key: `${this.sharedFolder.guid}:${this.guid}`, path: this.caf.path, retry: () => this.sync() };
 	}
@@ -1096,12 +1101,6 @@ export class SyncFile
 		// listed content moves nothing, so no limit stands in its way; a
 		// forced upload moves the local file whatever the listing says.
 		const matches = this.contentMatchesListing(local);
-		const transfer = uploadRequired ? localSize : Math.max(localSize, remoteSize);
-		if (matches === undefined && !uploadRequired && manager.exceedsDeviceLimit(task.key, transfer)) {
-			void this.loadStoredRecord().then(() => this.recheckSizeLimits(intent));
-			return false;
-		}
-		const size = matches && !uploadRequired ? 0 : transfer;
 		const pending = this.pendingUploadVersion;
 		const knownEdit = local && pending && this.matchesEditStat(pending, local) &&
 			pending.remoteHash === this.meta?.hash && pending.remoteSynctime === this.meta?.synctime;
@@ -1110,9 +1109,19 @@ export class SyncFile
 		// the server cap. Device limits always precede content reads.
 		const needsUpload = intent !== "download" && local &&
 			(uploadRequired || (!matches && (!this.meta || knownEdit)));
+		const newerLocal = intent === "converge" && local && this.meta &&
+			local.mtime > this.meta.synctime && !this.isLastServerEditSuccessor(this.meta);
+		const desktopUpload = manager.supportsDesktopUploads && (intent === "upload" || !!needsUpload || !!newerLocal);
+		const transfer = desktopUpload ? localSize : manager.supportsDesktopUploads ? remoteSize : Math.max(localSize, remoteSize);
+		if (matches === undefined && !uploadRequired && (desktopUpload
+			? manager.blocksUpload(task.key, transfer) : manager.exceedsDeviceLimit(task.key, transfer))) {
+			void this.loadStoredRecord().then(() => this.recheckSizeLimits(intent));
+			return false;
+		}
+		const size = matches && !uploadRequired ? 0 : transfer;
 		const serverMaxBytes = needsUpload ? this.sharedFolder.remote?.relay.storageQuota?.maxFileSize : undefined;
 		try {
-			manager.check(task, size, serverMaxBytes, localSize);
+			manager.check(task, size, { serverMaxBytes, uploadSize: localSize, desktopUpload });
 		} catch (error) {
 			if (error instanceof AttachmentLimitError) {
 				this.sizeLimitError = error.message;
@@ -1151,7 +1160,8 @@ export class SyncFile
 		if (!manager) return;
 		const deviceLimit = flags().enableAttachmentSizeLimit && manager.maxBytes > 0;
 		const serverLimit = intent !== "download" ? this.sharedFolder.remote?.relay.storageQuota?.maxFileSize : undefined;
-		if (!deviceLimit && serverLimit === undefined) return;
+		const uploadLimit = intent !== "download" && manager.supportsDesktopUploads && manager.uploadLimitBytes > 0 && !manager.streamLargeUploads;
+		if (!deviceLimit && !uploadLimit && serverLimit === undefined) return;
 		const local = await this.vault.adapter.stat(this.caf.path);
 		this._refreshMeta();
 		this.checkSizeLimits(intent, local ?? undefined, uploadRequired);
