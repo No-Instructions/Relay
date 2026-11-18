@@ -9,6 +9,7 @@ export interface S3ErrorDetails {
 	hostId?: string;
 	status?: number;
 	operation?: string;
+	actualObjectSize?: number;
 }
 
 const RETRYABLE_S3_CODES = new Set([
@@ -125,6 +126,10 @@ export function parseS3ErrorXml(body: string): S3ErrorDetails | null {
 		requestId: xmlText(error, "RequestId"),
 		hostId: xmlText(error, "HostId"),
 	};
+	const size = xmlText(error, "ActualObjectSize");
+	if (size !== undefined && /^\d+$/.test(size) && Number.isSafeInteger(Number(size))) {
+		details.actualObjectSize = Number(size);
+	}
 	return details.code || details.message || details.requestId ? details : null;
 }
 
