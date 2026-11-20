@@ -100,7 +100,7 @@ import { ReleaseManager } from "./ui/ReleaseManager";
 import { openPluginPage } from "./PluginPage";
 import type { ReleaseSettings } from "./UpdateManager";
 import { SyncSettingsManager } from "./SyncSettings";
-import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
+import { ContentAddressedFileStore, isSyncFile, type SyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
 import { isCanvas } from "./Canvas";
 import { EndpointManager, type EndpointSettings } from "./EndpointManager";
@@ -786,16 +786,6 @@ export default class Live extends Plugin {
 		});
 
 		this.addCommand({
-			id: "upload-settings",
-			name: "Upload settings",
-			checkCallback: (checking) => {
-				if (!this.attachmentTransfers?.supportsDesktopUploads) return false;
-				if (!checking) this.openUploadSettings();
-				return true;
-			},
-		});
-
-		this.addCommand({
 			id: "configure-endpoints",
 			name: "Configure enterprise tenant",
 			callback: () => {
@@ -1294,15 +1284,14 @@ export default class Live extends Plugin {
 		});
 	}
 
-	/** Opens why an item's name conflicts with another spelling, from its pill or banner. */
-	private openUploadSettings = (): void => {
+	private openUploadSettings = (file: SyncFile): void => {
 		const manager = this.attachmentTransfers;
-		new UploadSettingsModal(this.app, manager.uploadLimitBytes, manager.streamLargeUploads, async (bytes, stream) => {
-			await this.featureSettings.update(current => ({ ...current, enableStreamingUploads: stream }));
-			manager.setUploadLimitBytes(bytes);
+		new UploadSettingsModal(this.app, manager.uploadLimitBytes, bytes => {
+			manager.setUploadLimitBytes(bytes, file.attachmentTask().key);
 		}).open();
 	};
 
+	/** Opens why an item's name conflicts with another spelling, from its pill or banner. */
 	explainCaseConflict = (folder: SharedFolder, file: TAbstractFile): void => {
 		openCaseConflictExplanation(this.app, folder, file);
 	};
@@ -1456,7 +1445,7 @@ export default class Live extends Plugin {
 			this.sharedFolders,
 			this.backgroundSync,
 			this.explainCaseConflict,
-			this.openUploadSettings,
+			Platform.isMobile ? this.openUploadSettings : undefined,
 		);
 		this.folderNavDecorations.refresh();
 

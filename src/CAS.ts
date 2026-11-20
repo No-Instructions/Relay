@@ -1,6 +1,7 @@
+import { Platform } from "obsidian";
 import { isRetryableHttpError } from "./HttpError";
 import { generateHash } from "./hashing";
-import { ATTACHMENT_CHUNK_BYTES, AttachmentUploadTimeoutError, checkAttachmentAbort, snapshotAttachment, streamAttachmentPut, type AttachmentVersion } from "./AttachmentIO";
+import { ATTACHMENT_CHUNK_BYTES, AttachmentUploadTimeoutError, checkAttachmentAbort, desktopAttachmentIO, snapshotAttachment, streamAttachmentPut, type AttachmentVersion } from "./AttachmentIO";
 import { downloadAttachment, probeAttachmentSize } from "./AttachmentDownload";
 import type { LiveTokenStore } from "./LiveTokenStore";
 import { S3RN } from "./S3RN";
@@ -174,7 +175,7 @@ export class ContentAddressedStore extends HasLogging {
 					row.bytes = bytes; row.total = total; manager.notifyListeners();
 				});
 				manager.check(task, version.size, {
-					serverMaxBytes: this.sharedFolder.remote?.relay.storageQuota?.maxFileSize, desktopUpload: true,
+					serverMaxBytes: this.sharedFolder.remote?.relay.storageQuota?.maxFileSize,
 				});
 				await this.withTransientRetry("upload attachment", async () => {
 					checkAttachmentAbort(signal);
@@ -206,24 +207,24 @@ export class ContentAddressedStore extends HasLogging {
 			);
 		}
 		const size = syncFile.stat.size;
-		if (this.shouldStreamUpload(syncFile, size)) return this.writeStreaming(syncFile);
+		if (await this.shouldStreamUpload(syncFile, size)) return this.writeStreaming(syncFile);
 		return this.s3Request(() => this.writeBuffered(syncFile, size), "upload attachment");
 	}
 
-	private shouldStreamUpload(file: SyncFile, size: number): boolean {
+	private async shouldStreamUpload(file: SyncFile, size: number): Promise<boolean> {
 		const manager = this.sharedFolder.attachmentTransfers;
-		if (!manager?.supportsDesktopUploads) return false;
+		if (!manager) return false;
 		manager.check(file.attachmentTask(), size, {
-			serverMaxBytes: this.sharedFolder.remote?.relay.storageQuota?.maxFileSize, desktopUpload: true,
+			serverMaxBytes: this.sharedFolder.remote?.relay.storageQuota?.maxFileSize, mobileUpload: Platform.isMobile,
 		});
-		return manager.shouldStreamUpload(size);
+		return manager.shouldStreamUpload(size) && !!await desktopAttachmentIO(file.vault);
 	}
 
 	private async writeBuffered(syncFile: SyncFile, plannedSize: number): Promise<AttachmentVersion> {
 		const mtime = syncFile.stat.mtime;
 		const content = await syncFile.caf.read();
 		if (!content) throw new Error("Attachment is missing");
-		if (content.byteLength !== plannedSize && this.shouldStreamUpload(syncFile, content.byteLength)) {
+		if (content.byteLength !== plannedSize && await this.shouldStreamUpload(syncFile, content.byteLength)) {
 			return this.writeStreaming(syncFile);
 		}
 		const hash = await generateHash(content);

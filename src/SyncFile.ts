@@ -8,7 +8,7 @@ import {
 import type { SharedFolder } from "./SharedFolder";
 import { HasLogging } from "./debug";
 import { type FileMetas, type SyncFileType } from "./SyncTypes";
-import { TFile, type Vault, type TFolder, type FileStats } from "obsidian";
+import { Platform, TFile, type Vault, type TFolder, type FileStats } from "obsidian";
 import { Observable, type Unsubscriber } from "./observable/Observable";
 import { snapshotAttachment, desktopAttachmentIO, checkAttachmentAbort } from "./AttachmentIO";
 import { AttachmentLimitError, type AttachmentTask } from "./AttachmentTransfers";
@@ -1111,17 +1111,16 @@ export class SyncFile
 			(uploadRequired || (!matches && (!this.meta || knownEdit)));
 		const newerLocal = intent === "converge" && local && this.meta &&
 			local.mtime > this.meta.synctime && !this.isLastServerEditSuccessor(this.meta);
-		const desktopUpload = manager.supportsDesktopUploads && (intent === "upload" || !!needsUpload || !!newerLocal);
-		const transfer = desktopUpload ? localSize : manager.supportsDesktopUploads ? remoteSize : Math.max(localSize, remoteSize);
-		if (matches === undefined && !uploadRequired && (desktopUpload
-			? manager.blocksUpload(task.key, transfer) : manager.exceedsDeviceLimit(task.key, transfer))) {
+		const mobileUpload = Platform.isMobile && (intent === "upload" || !!needsUpload || !!newerLocal);
+		const transfer = mobileUpload || uploadRequired ? localSize : Math.max(localSize, remoteSize);
+		if (matches === undefined && !uploadRequired && manager.exceedsDeviceLimit(task.key, transfer, mobileUpload ? manager.uploadLimitBytes : manager.maxBytes)) {
 			void this.loadStoredRecord().then(() => this.recheckSizeLimits(intent));
 			return false;
 		}
 		const size = matches && !uploadRequired ? 0 : transfer;
 		const serverMaxBytes = needsUpload ? this.sharedFolder.remote?.relay.storageQuota?.maxFileSize : undefined;
 		try {
-			manager.check(task, size, { serverMaxBytes, uploadSize: localSize, desktopUpload });
+			manager.check(task, size, { serverMaxBytes, uploadSize: localSize, mobileUpload });
 		} catch (error) {
 			if (error instanceof AttachmentLimitError) {
 				this.sizeLimitError = error.message;
@@ -1160,7 +1159,7 @@ export class SyncFile
 		if (!manager) return;
 		const deviceLimit = flags().enableAttachmentSizeLimit && manager.maxBytes > 0;
 		const serverLimit = intent !== "download" ? this.sharedFolder.remote?.relay.storageQuota?.maxFileSize : undefined;
-		const uploadLimit = intent !== "download" && manager.supportsDesktopUploads && manager.uploadLimitBytes > 0 && !manager.streamLargeUploads;
+		const uploadLimit = intent !== "download" && Platform.isMobile && flags().enableAttachmentSizeLimit && manager.uploadLimitBytes > 0;
 		if (!deviceLimit && !uploadLimit && serverLimit === undefined) return;
 		const local = await this.vault.adapter.stat(this.caf.path);
 		this._refreshMeta();

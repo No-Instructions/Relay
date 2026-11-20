@@ -393,7 +393,7 @@ class FilePillDecoration {
 	constructor(
 		private el: HTMLElement,
 		public file: SyncFile,
-		private openUploadSettings?: () => void,
+		private openUploadSettings?: (file: SyncFile) => void,
 	) {
 		this.el.querySelectorAll(".system3-uploadpill").forEach((el) => {
 			el.remove();
@@ -421,9 +421,10 @@ class FilePillDecoration {
 			: this.file.pending
 				? ("pending" as const)
 				: ("unknown" as const);
-		const openSettings = this.file.blockedByUploadLimit ? this.openUploadSettings : undefined;
+		const openSettings = this.openUploadSettings && this.file.blockedByUploadLimit
+			? () => this.openUploadSettings?.(this.file) : undefined;
 		const props = {
-			text: openSettings ? "Too large" : tag,
+			text: tag,
 			label: this.file.uploadError ?? tag,
 			status,
 			openSettings,
@@ -446,7 +447,7 @@ class FilePillDecoration {
 }
 
 class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
-	constructor(private openUploadSettings?: () => void) { super(); }
+	constructor(private openUploadSettings?: (file: SyncFile) => void) { super(); }
 
 	visitFile(
 		tfile: TFile,
@@ -1042,7 +1043,7 @@ export class FolderNavigationDecorations {
 		sharedFolders: SharedFolders,
 		backgroundSync: BackgroundSync,
 		private explainCaseConflict?: ExplainCaseConflict,
-		private openUploadSettings?: () => void,
+		private openUploadSettings?: (file: SyncFile) => void,
 	) {
 		this.vault = vault;
 		this.workspace = workspace;
