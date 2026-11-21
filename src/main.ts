@@ -1,6 +1,6 @@
 "use strict";
 import { noteEditorSessionExtension, restoreBeforeUnload, restoreEditorSessions } from "./conflict-note/editorSession";
-import { AttachmentTransfers } from "./AttachmentTransfers";
+import { AttachmentTransfers, type AttachmentLimits } from "./AttachmentTransfers";
 
 import type { MergeEvent } from "./merge-hsm/types";
 import {
@@ -138,6 +138,7 @@ const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
 };
 
 interface RelaySettings extends FeatureFlags, DebugSettings {
+	attachments?: AttachmentLimits;
 	sharedFolders: SharedFolderSettings[];
 	release: ReleaseSettings;
 	endpoints: EndpointSettings;
@@ -852,7 +853,9 @@ export default class Live extends Plugin {
 		}));
 
 		this.vault = this.app.vault;
-		this.attachmentTransfers = new AttachmentTransfers(this.vault, this.manifest.id, this.appId);
+		const attachmentSettings = new NamespacedSettings<AttachmentLimits>(settingsTree, "attachments");
+		this.register(() => attachmentSettings.destroy());
+		this.attachmentTransfers = await AttachmentTransfers.load(this.vault, this.manifest.id, this.appId, attachmentSettings);
 		await this.attachmentTransfers.initialize();
 		const vaultName = this.vault.getName();
 		this.fileManager = this.app.fileManager;
@@ -1286,9 +1289,9 @@ export default class Live extends Plugin {
 
 	private openUploadSettings = (file: SyncFile): void => {
 		const manager = this.attachmentTransfers;
-		new UploadSettingsModal(this.app, manager.uploadLimitBytes, bytes => {
-			manager.setUploadLimitBytes(bytes, file.attachmentTask().key);
-		}).open();
+		new UploadSettingsModal(this.app, manager.uploadLimitBytes, bytes =>
+			manager.setUploadLimitBytes(bytes, file.attachmentTask().key),
+		).open();
 	};
 
 	/** Opens why an item's name conflicts with another spelling, from its pill or banner. */

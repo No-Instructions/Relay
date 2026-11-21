@@ -6,7 +6,7 @@ export class UploadSettingsModal extends Modal {
 	constructor(
 		app: App,
 		private bytes: number,
-		private save: (bytes: number) => void,
+		private save: (bytes: number) => Promise<void>,
 	) {
 		super(app);
 	}
@@ -32,13 +32,16 @@ export class UploadSettingsModal extends Modal {
 		const error = this.contentEl.createDiv({ attr: { role: "alert" } });
 		actions.addButton(button => button.setButtonText("Cancel").onClick(() => this.close()));
 		const saveButton = actions.controlEl.createEl("button", { text: "Save", cls: "mod-cta" });
-		saveButton.addEventListener("click", () => {
+		saveButton.addEventListener("click", async () => {
 			saveButton.disabled = true;
+			const input = limit.controlEl.querySelector("input")!;
+			input.disabled = true;
 			try {
-				this.save(bytes);
+				await this.save(bytes);
 				this.close();
 			} catch {
 				error.setText("Couldn’t save the upload limit. Try again.");
+				input.disabled = false;
 				saveButton.disabled = false;
 			}
 		});
