@@ -10,7 +10,7 @@
 
 {#if openSettings}
 	<button type="button" class="nav-file-tag system3-uploadpill system3-pill-button" data-status={status}
-		aria-label={label + ". Change upload limit"} on:click|stopPropagation={() => openSettings?.()}>
+		aria-label={label + " Change upload limit"} on:click|stopPropagation={() => openSettings?.()}>
 		{text}
 	</button>
 {:else}
@@ -27,13 +27,13 @@
 <style>
 	.system3-uploadpill {
 		text-wrap: nowrap;
+		max-width: 50%;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 	button.system3-uploadpill {
 		display: block;
-		max-width: 50%;
 		height: auto;
-		overflow: hidden;
-		text-overflow: ellipsis;
 		box-shadow: none;
 	}
 </style>

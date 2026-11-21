@@ -1,6 +1,6 @@
 "use strict";
 import { noteEditorSessionExtension, restoreBeforeUnload, restoreEditorSessions } from "./conflict-note/editorSession";
-import { AttachmentTransfers, type AttachmentLimits } from "./AttachmentTransfers";
+import { AttachmentTransfers, type UploadLimitSettings } from "./AttachmentTransfers";
 
 import type { MergeEvent } from "./merge-hsm/types";
 import {
@@ -138,7 +138,7 @@ const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
 };
 
 interface RelaySettings extends FeatureFlags, DebugSettings {
-	attachments?: AttachmentLimits;
+	uploadLimit?: number;
 	sharedFolders: SharedFolderSettings[];
 	release: ReleaseSettings;
 	endpoints: EndpointSettings;
@@ -853,9 +853,9 @@ export default class Live extends Plugin {
 		}));
 
 		this.vault = this.app.vault;
-		const attachmentSettings = new NamespacedSettings<AttachmentLimits>(settingsTree, "attachments");
-		this.register(() => attachmentSettings.destroy());
-		this.attachmentTransfers = await AttachmentTransfers.load(this.vault, this.manifest.id, this.appId, attachmentSettings);
+		const uploadSettings = new NamespacedSettings<UploadLimitSettings>(settingsTree, "(uploadLimit)");
+		this.register(() => uploadSettings.destroy());
+		this.attachmentTransfers = new AttachmentTransfers(this.vault, this.manifest.id, uploadSettings);
 		await this.attachmentTransfers.initialize();
 		const vaultName = this.vault.getName();
 		this.fileManager = this.app.fileManager;
@@ -1289,8 +1289,8 @@ export default class Live extends Plugin {
 
 	private openUploadSettings = (file: SyncFile): void => {
 		const manager = this.attachmentTransfers;
-		new UploadSettingsModal(this.app, manager.uploadLimitBytes, bytes =>
-			manager.setUploadLimitBytes(bytes, file.attachmentTask().key),
+		new UploadSettingsModal(this.app, manager.uploadLimit, bytes =>
+			manager.setUploadLimit(bytes, file.attachmentTask().key),
 		).open();
 	};
 

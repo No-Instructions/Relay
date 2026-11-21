@@ -432,7 +432,7 @@ export class SyncFile
 	private syncRequestedDuringSync = false;
 	private lastServerEdit: ServerEditMarker | null = null;
 	private lastUserEdit: UserEditMarker | null = null;
-	private sizeLimitError?: string;
+	private sizeLimitError?: AttachmentLimitError;
 	/**
 	 * The hash store's row for this path: durable evidence of which content
 	 * the file on disk held at a given mtime, surviving restarts where the
@@ -1113,7 +1113,7 @@ export class SyncFile
 			local.mtime > this.meta.synctime && !this.isLastServerEditSuccessor(this.meta);
 		const mobileUpload = Platform.isMobile && (intent === "upload" || !!needsUpload || !!newerLocal);
 		const transfer = mobileUpload || uploadRequired ? localSize : Math.max(localSize, remoteSize);
-		if (matches === undefined && !uploadRequired && manager.exceedsDeviceLimit(task.key, transfer, mobileUpload ? manager.uploadLimitBytes : manager.maxBytes)) {
+		if (matches === undefined && !uploadRequired && manager.exceedsDeviceLimit(task.key, transfer, mobileUpload ? manager.uploadLimit : manager.maxBytes)) {
 			void this.loadStoredRecord().then(() => this.recheckSizeLimits(intent));
 			return false;
 		}
@@ -1123,8 +1123,8 @@ export class SyncFile
 			manager.check(task, size, { serverMaxBytes, uploadSize: localSize, mobileUpload });
 		} catch (error) {
 			if (error instanceof AttachmentLimitError) {
-				this.sizeLimitError = error.message;
-				if (this.uploadError !== error.message) {
+				if (this.uploadError !== error.message || this.sizeLimitError?.source !== error.source) {
+					this.sizeLimitError = error;
 					this.uploadError = error.message;
 					this.notifyListeners();
 				}
@@ -1132,7 +1132,7 @@ export class SyncFile
 			throw error;
 		}
 		if (this.sizeLimitError) {
-			if (this.uploadError === this.sizeLimitError) {
+			if (this.uploadError === this.sizeLimitError.message) {
 				this.uploadError = undefined;
 				this.notifyListeners();
 			}
@@ -1159,7 +1159,7 @@ export class SyncFile
 		if (!manager) return;
 		const deviceLimit = flags().enableAttachmentSizeLimit && manager.maxBytes > 0;
 		const serverLimit = intent !== "download" ? this.sharedFolder.remote?.relay.storageQuota?.maxFileSize : undefined;
-		const uploadLimit = intent !== "download" && Platform.isMobile && flags().enableAttachmentSizeLimit && manager.uploadLimitBytes > 0;
+		const uploadLimit = intent !== "download" && Platform.isMobile && flags().enableAttachmentSizeLimit && manager.uploadLimit > 0;
 		if (!deviceLimit && !uploadLimit && serverLimit === undefined) return;
 		const local = await this.vault.adapter.stat(this.caf.path);
 		this._refreshMeta();
