@@ -24,9 +24,11 @@ export class UploadSettingsModal extends Modal {
 		this.containerEl.addClass("relay-upload-limit-container");
 		this.setTitle("Upload limit");
 		if (this.file?.total !== undefined) {
-			const name = this.file.path.split("/").pop();
+			const name = this.file.path.split("/").pop() ?? this.file.path;
 			const limitMiB = Math.ceil(this.file.total / (MIB / 2)) / 2;
-			this.contentEl.createEl("p", { text: `To upload “${name}”, enter ${limitMiB} MiB.` });
+			new Setting(this.contentEl)
+				.setName(name)
+				.setDesc(`${this.file.total.toLocaleString()} bytes · Fits at ${limitMiB} MiB`);
 		}
 		const limit = new Setting(this.contentEl)
 			.setName("Upload limit (MiB)")
@@ -35,6 +37,7 @@ export class UploadSettingsModal extends Modal {
 		limit.addText(text => {
 			const input = text.inputEl;
 			input.type = "number";
+			input.inputMode = "decimal";
 			input.min = "0";
 			input.step = "any";
 			input.setAttribute("aria-label", "Upload limit (MiB)");
