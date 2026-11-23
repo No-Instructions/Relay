@@ -1,4 +1,4 @@
-import { App, Modal, Setting } from "obsidian";
+import { App, Modal, Setting, setIcon } from "obsidian";
 import type { AttachmentTransfer, AttachmentTransfers } from "../AttachmentTransfers";
 
 export function openUploadSettings(app: App, transfers: AttachmentTransfers, key?: string): void {
@@ -10,6 +10,12 @@ export function openUploadSettings(app: App, transfers: AttachmentTransfers, key
 
 const MIB = 1024 * 1024;
 
+function limitInputValue(bytes: number): string {
+	const mib = bytes / MIB;
+	const rounded = Number(mib.toFixed(6));
+	return String(Math.round(rounded * MIB) === bytes ? rounded : Number(mib.toFixed(7)));
+}
+
 export class UploadSettingsModal extends Modal {
 	constructor(
 		app: App,
@@ -20,27 +26,44 @@ export class UploadSettingsModal extends Modal {
 		super(app);
 	}
 
+	private renderFile(): ((limit: number | undefined) => void) | undefined {
+		if (this.file?.total === undefined) return;
+		const total = this.file.total;
+		const name = this.file.path.split("/").pop() ?? this.file.path;
+		const sizeMiB = total / MIB;
+		const rounded = Number(sizeMiB.toFixed(2));
+		let size = rounded.toLocaleString();
+		if (rounded === 0 && sizeMiB > 0) size = `<${(0.01).toLocaleString()}`;
+		else if (rounded === this.bytes / MIB && sizeMiB > rounded) size = `>${size}`;
+		const row = new Setting(this.contentEl).setName(name).setClass("relay-upload-file-row");
+		const details = row.descEl;
+		details.createDiv({ text: `File size: ${size} MiB` });
+		const suggested = Math.ceil(sizeMiB * 2) / 2;
+		if (suggested !== sizeMiB) {
+			details.createDiv({ text: `Suggested limit: ${suggested.toLocaleString()} MiB` });
+		}
+		const indicator = row.controlEl.createSpan({ cls: "relay-upload-file-status", attr: { role: "status" } });
+		return limit => {
+			const ready = limit === 0 || (limit !== undefined && total <= limit);
+			const label = limit === undefined ? "Invalid limit" : ready ? "Can upload" : "Over limit";
+			if (indicator.textContent === label) return;
+			indicator.empty();
+			indicator.classList.toggle("is-ready", ready);
+			const icon = indicator.createSpan({ attr: { "aria-hidden": "true" } });
+			setIcon(icon, ready ? "check" : "alert-triangle");
+			indicator.createSpan({ text: label });
+		};
+	}
+
 	onOpen(): void {
 		this.containerEl.addClass("relay-upload-limit-container");
 		this.setTitle("Upload limit");
-		if (this.file?.total !== undefined) {
-			const name = this.file.path.split("/").pop() ?? this.file.path;
-			const sizeMiB = this.file.total / MIB;
-			const rounded = Number(sizeMiB.toFixed(2));
-			let size = rounded.toLocaleString();
-			if (rounded === 0 && sizeMiB > 0) size = `<${(0.01).toLocaleString()}`;
-			else if (rounded === this.bytes / MIB && sizeMiB > rounded) size = `>${size}`;
-			const details = new Setting(this.contentEl).setName(name).descEl;
-			details.createDiv({ text: `File size: ${size} MiB` });
-			const suggested = Math.ceil(sizeMiB * 2) / 2;
-			if (suggested !== sizeMiB) {
-				details.createDiv({ text: `Suggested limit: ${suggested.toLocaleString()} MiB` });
-			}
-		}
+		const updateStatus = this.renderFile();
 		const limit = new Setting(this.contentEl)
 			.setName("Upload limit (MiB)")
-			.setDesc("0 disables the device limit. Uploads load the entire file into memory. Obsidian can crash if memory is insufficient.");
+			.setDesc("Applies to all Relay folders in this vault on this device. 0 disables the limit. Uploads load the entire file into memory. Obsidian can crash if memory is insufficient.");
 		let bytes = this.bytes;
+		updateStatus?.(bytes);
 		limit.addText(text => {
 			const input = text.inputEl;
 			input.type = "number";
@@ -48,9 +71,12 @@ export class UploadSettingsModal extends Modal {
 			input.min = "0";
 			input.step = "any";
 			input.setAttribute("aria-label", "Upload limit (MiB)");
-			text.setValue(String(bytes / MIB)).onChange(() => {
-				bytes = input.valueAsNumber * MIB;
-				saveButton.disabled = !Number.isSafeInteger(bytes) || bytes < 0;
+			text.setValue(limitInputValue(bytes)).onChange(() => {
+				const mib = input.valueAsNumber;
+				bytes = Math.round(mib * MIB);
+				const valid = Number.isSafeInteger(bytes) && (bytes > 0 || mib === 0);
+				saveButton.disabled = !valid;
+				updateStatus?.(valid ? bytes : undefined);
 			});
 		});
 		const actions = new Setting(this.contentEl);

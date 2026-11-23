@@ -19,6 +19,33 @@
 	max-height: min(100%, var(--dialog-max-height));
 }
 
+.relay-upload-file-row.setting-item {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.relay-upload-file-row .setting-item-name {
+	overflow-wrap: anywhere;
+}
+
+.relay-upload-file-status {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-1);
+	white-space: nowrap;
+	color: var(--text-warning);
+	font-size: var(--font-ui-smaller);
+	--icon-size: var(--icon-s);
+}
+
+.relay-upload-file-status svg {
+	display: block;
+}
+
+.relay-upload-file-status.is-ready {
+	color: var(--text-success, var(--color-green));
+}
+
 .is-mobile .relay-hidden-modal-wrapper ~ .prompt .breadcrumb-icon,
 .is-mobile .relay-hidden-modal-wrapper ~ .prompt .breadcrumb-separator {
 	flex-shrink: 0;
