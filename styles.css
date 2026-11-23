@@ -120,6 +120,30 @@
 	white-space: nowrap;
 }
 
+.system3-sync-status-panel .blocked-upload-setting {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.system3-sync-status-panel .blocked-upload-limit {
+	min-width: 44px;
+	min-height: 44px;
+	padding: 0;
+	justify-content: flex-end;
+	background: transparent;
+	box-shadow: none;
+	color: var(--link-color);
+	font: inherit;
+	cursor: pointer;
+}
+
+.system3-sync-status-panel .blocked-upload-limit:hover {
+	color: var(--link-color-hover);
+}
+
 .relay-folder-create-actions {
 	display: flex;
 	justify-content: flex-end;

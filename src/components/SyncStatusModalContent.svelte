@@ -218,10 +218,43 @@
 	const timeAgo = formatTimeAgo;
 </script>
 
+{#snippet statusRow(path: string, label: string, kind: "blocked" | "conflict" | "error", error?: ActionableSyncFile)}
+	<div class="sync-status-row">
+		<span class="sync-status-icon" class:error={kind === "error"} class:conflict={kind !== "error"}>
+			{#if kind === "error"}
+				<XCircle size={14} />
+			{:else}
+				<AlertTriangle size={14} />
+			{/if}
+		</span>
+		{#if kind === "blocked"}
+			<span class="sync-status-path" title={relativePath(path)}>{relativePath(path)}</span>
+		{:else}
+			<span
+				class="sync-status-path"
+				role="link"
+				tabindex="0"
+				title={fileLabel(path)}
+				on:click={() => openFile(path)}
+				on:keydown={(e) => handlePathKeydown(e, path)}
+			>{fileLabel(path)}</span>
+		{/if}
+		<div class="sync-status-meta">
+			<span class="sync-status-state">{label}</span>
+		</div>
+		{#if error}
+			<button class="sync-status-dismiss" type="button" aria-label="Dismiss error"
+				on:click={(e) => dismissError(error, e)}>
+				<X size={14} />
+			</button>
+		{/if}
+	</div>
+{/snippet}
+
 <div class="sync-status-modal">
 	<div class="sync-status-toolbar">
 		<div class="sync-status-toolbar-main">
-			<div class="sync-status-queue-state {snapshot.visibleState}" class:uploads-blocked={heldWhileIdle}>
+			<div class="sync-status-queue-state {heldWhileIdle ? "sync-issue" : snapshot.visibleState}">
 				{#if snapshot.visibleState === "syncing" || snapshot.visibleState === "queued"}
 					<FolderSync size={14} />
 				{:else if snapshot.visibleState === "paused"}
@@ -265,20 +298,15 @@
 
 	{#if transfers && blockedUploads.length}
 		<div class="sync-status-section blocked-uploads">
-			<div class="sync-status-section-header">
-				<span>Blocked uploads ({blockedUploads.length})</span>
-				<span class="blocked-upload-setting">
-					Upload limit
-					<button class="blocked-upload-limit" type="button" aria-haspopup="dialog"
-						aria-label={`Change upload limit, ${formatUploadSize(uploadLimit)}`}
-						on:click={() => openUploadSettings(app, transfers)}>{formatUploadSize(uploadLimit)}</button>
-				</span>
+			<div class="blocked-upload-setting">
+				Upload limit
+				<button class="clickable-icon blocked-upload-limit" type="button" aria-haspopup="dialog"
+					aria-label={`Change upload limit, ${formatUploadSize(uploadLimit)}`}
+					on:click={() => openUploadSettings(app, transfers)}>{formatUploadSize(uploadLimit)}</button>
 			</div>
+			<div class="sync-status-section-header">Blocked uploads ({blockedUploads.length})</div>
 			{#each blockedUploads as upload (upload.key)}
-				<div class="sync-status-row blocked-upload-row">
-					<span class="sync-status-path" title={relativePath(upload.path)}>{relativePath(upload.path)}</span>
-					{#if upload.total !== undefined}<span class="blocked-upload-size">{formatUploadSize(upload.total, uploadLimit)}</span>{/if}
-				</div>
+				{@render statusRow(upload.path, upload.total === undefined ? "" : formatUploadSize(upload.total, uploadLimit), "blocked")}
 			{/each}
 		</div>
 	{/if}
@@ -287,20 +315,7 @@
 		<div class="sync-status-section">
 			<div class="sync-status-section-header">Conflicts ({conflicts.length})</div>
 			{#each conflicts as file}
-				<div class="sync-status-row">
-					<span class="sync-status-icon conflict"><AlertTriangle size={14} /></span>
-					<span
-						class="sync-status-path"
-						role="link"
-						tabindex="0"
-						title={fileLabel(file.path)}
-						on:click={() => openFile(file.path)}
-						on:keydown={(e) => handlePathKeydown(e, file.path)}
-					>{fileLabel(file.path)}</span>
-					<div class="sync-status-meta">
-						<span class="sync-status-state">{file.label}</span>
-					</div>
-				</div>
+				{@render statusRow(file.path, file.label, "conflict")}
 			{/each}
 		</div>
 	{/if}
@@ -320,28 +335,7 @@
 				</button>
 			</div>
 			{#each errors as file}
-				<div class="sync-status-row">
-					<span class="sync-status-icon error"><XCircle size={14} /></span>
-					<span
-						class="sync-status-path"
-						role="link"
-						tabindex="0"
-						title={fileLabel(file.path)}
-						on:click={() => openFile(file.path)}
-						on:keydown={(e) => handlePathKeydown(e, file.path)}
-					>{fileLabel(file.path)}</span>
-					<div class="sync-status-meta">
-						<span class="sync-status-state">{file.label}</span>
-					</div>
-					<button
-						class="sync-status-dismiss"
-						type="button"
-						aria-label="Dismiss error"
-						on:click={(e) => dismissError(file, e)}
-					>
-						<X size={14} />
-					</button>
-				</div>
+				{@render statusRow(file.path, file.label, "error", file)}
 			{/each}
 		</div>
 	{/if}
@@ -424,8 +418,7 @@
 		color: var(--text-accent);
 	}
 
-	.sync-status-queue-state.paused,
-	.sync-status-queue-state.uploads-blocked {
+	.sync-status-queue-state.paused {
 		color: var(--text-warning);
 	}
 
@@ -580,60 +573,6 @@
 	.sync-status-path[role="link"]:focus-visible {
 		outline: 1px solid var(--background-modifier-border-focus);
 		outline-offset: 2px;
-	}
-
-	.blocked-uploads .sync-status-section-header {
-		flex-wrap: wrap;
-		padding: 0;
-		margin-bottom: 0;
-	}
-
-	.blocked-upload-setting {
-		display: inline-flex;
-		align-items: baseline;
-		gap: var(--size-4-1);
-		margin-inline-start: auto;
-		font-size: var(--font-ui-small);
-		font-weight: var(--font-normal);
-		text-transform: none;
-		letter-spacing: normal;
-	}
-
-	.blocked-upload-limit {
-		height: auto;
-		min-height: var(--touch-size-m, 44px);
-		min-width: var(--touch-size-m, 44px);
-		padding: 0;
-		background: transparent;
-		box-shadow: none;
-		border: 0;
-		color: var(--link-color);
-		cursor: pointer;
-		font: inherit;
-	}
-
-	.blocked-upload-limit:hover {
-		color: var(--link-color-hover);
-		text-decoration: underline;
-	}
-
-	.blocked-upload-row {
-		grid-template-columns: minmax(0, 1fr) auto;
-		grid-template-areas: "path size";
-		align-items: center;
-		padding: var(--size-4-2) 0;
-	}
-
-	.blocked-upload-row .sync-status-path {
-		white-space: normal;
-		overflow-wrap: anywhere;
-	}
-
-	.blocked-upload-size {
-		grid-area: size;
-		white-space: nowrap;
-		color: var(--text-muted);
-		font-size: var(--font-ui-smaller);
 	}
 
 	.sync-status-meta {
