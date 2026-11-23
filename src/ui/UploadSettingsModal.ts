@@ -3,7 +3,7 @@ import type { AttachmentTransfers } from "../AttachmentTransfers";
 
 export function openUploadSettings(app: App, transfers: AttachmentTransfers, key: string): void {
 	if (transfers.isBlockedByUploadLimit(key)) {
-		new UploadSettingsModal(app, transfers.uploadLimit, bytes => transfers.setUploadLimit(bytes, key)).open();
+		new UploadSettingsModal(app, transfers.uploadLimit, bytes => transfers.setUploadLimit(bytes)).open();
 	}
 }
 

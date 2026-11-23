@@ -60,7 +60,7 @@ export class AttachmentTransfers extends Observable<AttachmentTransfers> {
 		const row = this.rows.get(key);
 		return row?.phase === "blocked" && row.limitSource === "upload";
 	}
-	async setUploadLimit(bytes: number, key: string): Promise<void> {
+	async setUploadLimit(bytes: number): Promise<void> {
 		if (!validLimit(bytes)) throw new Error("Invalid upload limit");
 		const save = this.pendingSave.then(async () => {
 			await this.settings.set({ uploadLimit: bytes });
@@ -68,9 +68,10 @@ export class AttachmentTransfers extends Observable<AttachmentTransfers> {
 		});
 		this.pendingSave = save.catch(() => {});
 		await save;
-		const row = this.rows.get(key);
-		if (row?.total !== undefined && this.isBlockedByUploadLimit(key) && !this.exceedsDeviceLimit(key, row.total, bytes)) {
-			this.retry(key);
+		for (const [key, row] of this.rows) {
+			if (row.total !== undefined && this.isBlockedByUploadLimit(key) && !this.exceedsDeviceLimit(key, row.total, bytes)) {
+				this.retry(key);
+			}
 		}
 		this.notifyListeners();
 	}

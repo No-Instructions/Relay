@@ -873,7 +873,11 @@ export class SyncFile
 	}
 
 	public attachmentTask(): AttachmentTask {
-		return { key: `${this.sharedFolder.guid}:${this.guid}`, path: this.caf.path, retry: () => this.sync() };
+		return {
+			key: `${this.sharedFolder.guid}:${this.guid}`,
+			path: this.caf.path,
+			retry: () => this.sharedFolder.backgroundSync.enqueueSync(this),
+		};
 	}
 
 	private async pullStaged(): Promise<void> {
