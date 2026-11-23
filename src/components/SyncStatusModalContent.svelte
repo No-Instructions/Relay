@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { onDestroy } from "svelte";
-	import { normalizePath, TFile, type App } from "obsidian";
+	import { normalizePath, Platform, TFile, type App } from "obsidian";
+	import type { AttachmentTransfer } from "../AttachmentTransfers";
+	import { openUploadSettings } from "../ui/UploadSettingsModal";
 	import type { SharedFolder } from "../SharedFolder";
 	import type { TimeProvider } from "../TimeProvider";
 	import type { FolderSyncSnapshot } from "../BackgroundSyncProgress";
@@ -62,6 +64,19 @@
 	$: errors = statusModel.actionableFiles.filter(
 		(f: ActionableSyncFile) => f.category === "error",
 	);
+
+	const transfers = Platform.isMobile ? sharedFolder.attachmentTransfers : undefined;
+	let blockedUploads: AttachmentTransfer[] = [];
+	if (transfers) {
+		const folderPrefix = `${sharedFolder.guid}:`;
+		onDestroy(
+			transfers.subscribe(() => {
+				blockedUploads = [...transfers.rows.values()].filter(
+					(row) => row.key.startsWith(folderPrefix) && transfers.isBlockedByUploadLimit(row.key),
+				);
+			}),
+		);
+	}
 
 	// ── Activity log ───────────────────────────────────────────────────
 
@@ -246,6 +261,21 @@
 	     the div is unconditional so Svelte keeps it stable across updates. -->
 	<div class="system3-note-state-slot"></div>
 
+	{#if transfers && blockedUploads.length}
+		<div class="sync-status-section">
+			<div class="sync-status-section-header">Blocked uploads ({blockedUploads.length})</div>
+			{#each blockedUploads as upload (upload.key)}
+				<div class="sync-status-row">
+					<span class="sync-status-icon conflict"><AlertTriangle size={14} /></span>
+					<span class="sync-status-path" title={relativePath(upload.path)}>{relativePath(upload.path)}</span>
+					<div class="sync-status-meta">
+						<button type="button" on:click={() => openUploadSettings(app, transfers, upload.key)}>Change upload limit</button>
+					</div>
+				</div>
+			{/each}
+		</div>
+	{/if}
+
 	{#if conflicts.length > 0}
 		<div class="sync-status-section">
 			<div class="sync-status-section-header">Conflicts ({conflicts.length})</div>
@@ -344,7 +374,7 @@
 		</div>
 	{/if}
 
-	{#if conflicts.length === 0 && errors.length === 0 && visibleActivity.length === 0}
+	{#if blockedUploads.length === 0 && conflicts.length === 0 && errors.length === 0 && visibleActivity.length === 0}
 		<div class="sync-status-empty">No conflicts or errors.</div>
 	{/if}
 </div>

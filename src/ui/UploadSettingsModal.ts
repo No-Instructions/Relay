@@ -1,4 +1,11 @@
 import { App, Modal, Setting } from "obsidian";
+import type { AttachmentTransfers } from "../AttachmentTransfers";
+
+export function openUploadSettings(app: App, transfers: AttachmentTransfers, key: string): void {
+	if (transfers.isBlockedByUploadLimit(key)) {
+		new UploadSettingsModal(app, transfers.uploadLimit, bytes => transfers.setUploadLimit(bytes, key)).open();
+	}
+}
 
 const MIB = 1024 * 1024;
 

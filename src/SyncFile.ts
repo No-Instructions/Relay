@@ -869,8 +869,7 @@ export class SyncFile
 	}
 
 	get blockedByUploadLimit(): boolean {
-		const row = this.sharedFolder.attachmentTransfers?.rows.get(this.attachmentTask().key);
-		return row?.phase === "blocked" && row.limitSource === "upload";
+		return this.sharedFolder.attachmentTransfers?.isBlockedByUploadLimit(this.attachmentTask().key) ?? false;
 	}
 
 	public attachmentTask(): AttachmentTask {

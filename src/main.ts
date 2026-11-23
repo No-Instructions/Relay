@@ -44,7 +44,7 @@ import { CaseConflictBanners } from "./ui/CaseConflictBanners";
 import { ResourceMeterMount } from "./ui/ResourceMeter";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager, type LoginSettings } from "./LoginManager";
-import { UploadSettingsModal } from "./ui/UploadSettingsModal";
+import { openUploadSettings } from "./ui/UploadSettingsModal";
 import { EndpointConfigModal } from "./ui/EndpointConfigModal";
 import {
 	curryLog,
@@ -100,7 +100,7 @@ import { ReleaseManager } from "./ui/ReleaseManager";
 import { openPluginPage } from "./PluginPage";
 import type { ReleaseSettings } from "./UpdateManager";
 import { SyncSettingsManager } from "./SyncSettings";
-import { ContentAddressedFileStore, isSyncFile, type SyncFile } from "./SyncFile";
+import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
 import { isCanvas } from "./Canvas";
 import { EndpointManager, type EndpointSettings } from "./EndpointManager";
@@ -1287,13 +1287,6 @@ export default class Live extends Plugin {
 		});
 	}
 
-	private openUploadSettings = (file: SyncFile): void => {
-		const manager = this.attachmentTransfers;
-		new UploadSettingsModal(this.app, manager.uploadLimit, bytes =>
-			manager.setUploadLimit(bytes, file.attachmentTask().key),
-		).open();
-	};
-
 	/** Opens why an item's name conflicts with another spelling, from its pill or banner. */
 	explainCaseConflict = (folder: SharedFolder, file: TAbstractFile): void => {
 		openCaseConflictExplanation(this.app, folder, file);
@@ -1448,7 +1441,7 @@ export default class Live extends Plugin {
 			this.sharedFolders,
 			this.backgroundSync,
 			this.explainCaseConflict,
-			Platform.isMobile ? this.openUploadSettings : undefined,
+			Platform.isMobile ? file => openUploadSettings(this.app, this.attachmentTransfers, file.attachmentTask().key) : undefined,
 		);
 		this.folderNavDecorations.refresh();
 
