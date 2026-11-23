@@ -25,14 +25,21 @@ export class UploadSettingsModal extends Modal {
 		this.setTitle("Upload limit");
 		if (this.file?.total !== undefined) {
 			const name = this.file.path.split("/").pop() ?? this.file.path;
-			const limitMiB = Math.ceil(this.file.total / (MIB / 2)) / 2;
-			new Setting(this.contentEl)
-				.setName(name)
-				.setDesc(`${this.file.total.toLocaleString()} bytes · Fits at ${limitMiB} MiB`);
+			const sizeMiB = this.file.total / MIB;
+			const rounded = Number(sizeMiB.toFixed(2));
+			let size = rounded.toLocaleString();
+			if (rounded === 0 && sizeMiB > 0) size = `<${(0.01).toLocaleString()}`;
+			else if (rounded === this.bytes / MIB && sizeMiB > rounded) size = `>${size}`;
+			const details = new Setting(this.contentEl).setName(name).descEl;
+			details.createDiv({ text: `File size: ${size} MiB` });
+			const suggested = Math.ceil(sizeMiB * 2) / 2;
+			if (suggested !== sizeMiB) {
+				details.createDiv({ text: `Suggested limit: ${suggested.toLocaleString()} MiB` });
+			}
 		}
 		const limit = new Setting(this.contentEl)
 			.setName("Upload limit (MiB)")
-			.setDesc("Obsidian loads the whole file into memory when uploading. If this device runs out of memory, Obsidian can crash. Set to 0 for unlimited.");
+			.setDesc("0 disables the device limit. Uploads load the entire file into memory. Obsidian can crash if memory is insufficient.");
 		let bytes = this.bytes;
 		limit.addText(text => {
 			const input = text.inputEl;
@@ -58,7 +65,7 @@ export class UploadSettingsModal extends Modal {
 				await this.save(bytes);
 				this.close();
 			} catch {
-				error.setText("Couldn’t save the upload limit. Try again.");
+				error.setText("Upload limit could not be saved.");
 				input.disabled = false;
 				saveButton.disabled = false;
 			}
