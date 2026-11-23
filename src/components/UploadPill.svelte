@@ -6,12 +6,13 @@
 	// The declared status is a closed vocabulary, never the display text:
 	// consumers must be able to match it without pinning human copy.
 	export let status: "pending" | "error" | "unknown" | undefined = undefined;
+	$: displayText = text === "File is too large." ? "File is too large" : text;
 </script>
 
 {#if openSettings}
 	<button type="button" class="nav-file-tag system3-uploadpill system3-pill-button" data-status={status}
 		aria-label={label + " Change upload limit"} on:click|stopPropagation={() => openSettings?.()}>
-		{text}
+		{displayText}
 	</button>
 {:else}
 <div
@@ -20,12 +21,17 @@
 	data-status={status}
 	style={color ? `color:${color}` : ""}
 >
-	<span>{text}</span>
+	<span>{displayText}</span>
 </div>
 {/if}
 
 <style>
+	:global(.nav-file-title:has(> .system3-uploadpill) > .nav-file-title-content) {
+		flex-grow: 1;
+	}
 	.system3-uploadpill {
+		order: 1;
+		margin-inline-start: var(--size-4-1);
 		text-wrap: nowrap;
 		max-width: 50%;
 		overflow: hidden;
