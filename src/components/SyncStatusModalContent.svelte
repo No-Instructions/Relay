@@ -2,7 +2,7 @@
 	import { onDestroy } from "svelte";
 	import { normalizePath, Platform, TFile, type App } from "obsidian";
 	import type { AttachmentTransfer } from "../AttachmentTransfers";
-	import { openUploadSettings } from "../ui/UploadSettingsModal";
+	import { formatUploadSize, openUploadSettings } from "../ui/UploadSettingsModal";
 	import type { SharedFolder } from "../SharedFolder";
 	import type { TimeProvider } from "../TimeProvider";
 	import type { FolderSyncSnapshot } from "../BackgroundSyncProgress";
@@ -67,13 +67,16 @@
 
 	const transfers = Platform.isMobile ? sharedFolder.attachmentTransfers : undefined;
 	let blockedUploads: AttachmentTransfer[] = [];
+	let uploadLimit = 0;
+	$: heldWhileIdle = snapshot.visibleState === "synced" && blockedUploads.length > 0;
 	if (transfers) {
 		const folderPrefix = `${sharedFolder.guid}:`;
 		onDestroy(
 			transfers.subscribe(() => {
-				blockedUploads = [...transfers.rows.values()].filter(
-					(row) => row.key.startsWith(folderPrefix) && transfers.isBlockedByUploadLimit(row.key),
-				);
+				uploadLimit = transfers.uploadLimit;
+				blockedUploads = [...transfers.rows.values()]
+					.filter(row => row.key.startsWith(folderPrefix) && transfers.isBlockedByUploadLimit(row.key))
+					.sort((a, b) => a.path.localeCompare(b.path));
 			}),
 		);
 	}
@@ -218,17 +221,17 @@
 <div class="sync-status-modal">
 	<div class="sync-status-toolbar">
 		<div class="sync-status-toolbar-main">
-			<div class="sync-status-queue-state {snapshot.visibleState}">
+			<div class="sync-status-queue-state {snapshot.visibleState}" class:uploads-blocked={heldWhileIdle}>
 				{#if snapshot.visibleState === "syncing" || snapshot.visibleState === "queued"}
 					<FolderSync size={14} />
 				{:else if snapshot.visibleState === "paused"}
 					<Pause size={14} />
-				{:else if snapshot.visibleState === "sync-issue"}
+				{:else if snapshot.visibleState === "sync-issue" || heldWhileIdle}
 					<AlertTriangle size={14} />
 				{:else}
 					<FolderCheck size={14} />
 				{/if}
-				<span>{snapshot.label}</span>
+				<span>{heldWhileIdle ? "Sync issue" : snapshot.label}</span>
 			</div>
 			<button
 				class:hidden={!showSyncAction()}
@@ -250,10 +253,9 @@
 				{/if}
 			</button>
 		</div>
-		<span
-			class="sync-status-latest-activity"
-			aria-hidden={!snapshot.latestActivity}
-		>{snapshot.latestActivity ?? ""}</span>
+		{#if snapshot.latestActivity || !blockedUploads.length}
+			<span class="sync-status-latest-activity" aria-hidden={!snapshot.latestActivity}>{snapshot.latestActivity ?? ""}</span>
+		{/if}
 	</div>
 
 	<!-- Mount point for the note state inspector strip. The strip component
@@ -262,15 +264,20 @@
 	<div class="system3-note-state-slot"></div>
 
 	{#if transfers && blockedUploads.length}
-		<div class="sync-status-section">
-			<div class="sync-status-section-header">Blocked uploads ({blockedUploads.length})</div>
+		<div class="sync-status-section blocked-uploads">
+			<div class="sync-status-section-header">
+				<span>Blocked uploads ({blockedUploads.length})</span>
+				<span class="blocked-upload-setting">
+					Upload limit
+					<button class="blocked-upload-limit" type="button" aria-haspopup="dialog"
+						aria-label={`Change upload limit, ${formatUploadSize(uploadLimit)}`}
+						on:click={() => openUploadSettings(app, transfers)}>{formatUploadSize(uploadLimit)}</button>
+				</span>
+			</div>
 			{#each blockedUploads as upload (upload.key)}
-				<div class="sync-status-row">
-					<span class="sync-status-icon conflict"><AlertTriangle size={14} /></span>
+				<div class="sync-status-row blocked-upload-row">
 					<span class="sync-status-path" title={relativePath(upload.path)}>{relativePath(upload.path)}</span>
-					<div class="sync-status-meta">
-						<button type="button" on:click={() => openUploadSettings(app, transfers, upload.key)}>Change upload limit</button>
-					</div>
+					{#if upload.total !== undefined}<span class="blocked-upload-size">{formatUploadSize(upload.total, uploadLimit)}</span>{/if}
 				</div>
 			{/each}
 		</div>
@@ -417,7 +424,8 @@
 		color: var(--text-accent);
 	}
 
-	.sync-status-queue-state.paused {
+	.sync-status-queue-state.paused,
+	.sync-status-queue-state.uploads-blocked {
 		color: var(--text-warning);
 	}
 
@@ -572,6 +580,60 @@
 	.sync-status-path[role="link"]:focus-visible {
 		outline: 1px solid var(--background-modifier-border-focus);
 		outline-offset: 2px;
+	}
+
+	.blocked-uploads .sync-status-section-header {
+		flex-wrap: wrap;
+		padding: 0;
+		margin-bottom: 0;
+	}
+
+	.blocked-upload-setting {
+		display: inline-flex;
+		align-items: baseline;
+		gap: var(--size-4-1);
+		margin-inline-start: auto;
+		font-size: var(--font-ui-small);
+		font-weight: var(--font-normal);
+		text-transform: none;
+		letter-spacing: normal;
+	}
+
+	.blocked-upload-limit {
+		height: auto;
+		min-height: var(--touch-size-m, 44px);
+		min-width: var(--touch-size-m, 44px);
+		padding: 0;
+		background: transparent;
+		box-shadow: none;
+		border: 0;
+		color: var(--link-color);
+		cursor: pointer;
+		font: inherit;
+	}
+
+	.blocked-upload-limit:hover {
+		color: var(--link-color-hover);
+		text-decoration: underline;
+	}
+
+	.blocked-upload-row {
+		grid-template-columns: minmax(0, 1fr) auto;
+		grid-template-areas: "path size";
+		align-items: center;
+		padding: var(--size-4-2) 0;
+	}
+
+	.blocked-upload-row .sync-status-path {
+		white-space: normal;
+		overflow-wrap: anywhere;
+	}
+
+	.blocked-upload-size {
+		grid-area: size;
+		white-space: nowrap;
+		color: var(--text-muted);
+		font-size: var(--font-ui-smaller);
 	}
 
 	.sync-status-meta {

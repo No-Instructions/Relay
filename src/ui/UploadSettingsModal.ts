@@ -10,6 +10,15 @@ export function openUploadSettings(app: App, transfers: AttachmentTransfers, key
 
 const MIB = 1024 * 1024;
 
+export function formatUploadSize(bytes: number, limit?: number): string {
+	const mib = bytes / MIB;
+	const rounded = Number(mib.toFixed(2));
+	let size = rounded.toLocaleString();
+	if (rounded === 0 && mib > 0) size = `<${(0.01).toLocaleString()}`;
+	else if (limit !== undefined && rounded === limit / MIB && mib > rounded) size = `>${size}`;
+	return `${size} MB`;
+}
+
 function limitInputValue(bytes: number): string {
 	const mib = bytes / MIB;
 	const rounded = Number(mib.toFixed(6));
@@ -31,16 +40,12 @@ export class UploadSettingsModal extends Modal {
 		const total = this.file.total;
 		const name = this.file.path.split("/").pop() ?? this.file.path;
 		const sizeMiB = total / MIB;
-		const rounded = Number(sizeMiB.toFixed(2));
-		let size = rounded.toLocaleString();
-		if (rounded === 0 && sizeMiB > 0) size = `<${(0.01).toLocaleString()}`;
-		else if (rounded === this.bytes / MIB && sizeMiB > rounded) size = `>${size}`;
 		const row = new Setting(this.contentEl).setName(name).setClass("relay-upload-file-row");
 		const details = row.descEl;
-		details.createDiv({ text: `File size: ${size} MiB` });
+		details.createDiv({ text: `File size: ${formatUploadSize(total, this.bytes)}` });
 		const suggested = Math.ceil(sizeMiB * 2) / 2;
 		if (suggested !== sizeMiB) {
-			details.createDiv({ text: `Suggested limit: ${suggested.toLocaleString()} MiB` });
+			details.createDiv({ text: `Suggested limit: ${suggested.toLocaleString()} MB` });
 		}
 		const indicator = row.controlEl.createSpan({ cls: "relay-upload-file-status", attr: { role: "status" } });
 		return limit => {
@@ -60,7 +65,7 @@ export class UploadSettingsModal extends Modal {
 		this.setTitle("Upload limit");
 		const updateStatus = this.renderFile();
 		const limit = new Setting(this.contentEl)
-			.setName("Upload limit (MiB)")
+			.setName("Upload limit (MB)")
 			.setDesc("Applies to all Relay folders in this vault on this device. 0 disables the limit. Uploads load the entire file into memory. Obsidian can crash if memory is insufficient.");
 		let bytes = this.bytes;
 		updateStatus?.(bytes);
@@ -70,7 +75,7 @@ export class UploadSettingsModal extends Modal {
 			input.inputMode = "decimal";
 			input.min = "0";
 			input.step = "any";
-			input.setAttribute("aria-label", "Upload limit (MiB)");
+			input.setAttribute("aria-label", "Upload limit (MB)");
 			text.setValue(limitInputValue(bytes)).onChange(() => {
 				const mib = input.valueAsNumber;
 				bytes = Math.round(mib * MIB);
