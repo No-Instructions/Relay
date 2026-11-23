@@ -1,9 +1,10 @@
 import { App, Modal, Setting } from "obsidian";
-import type { AttachmentTransfers } from "../AttachmentTransfers";
+import type { AttachmentTransfer, AttachmentTransfers } from "../AttachmentTransfers";
 
 export function openUploadSettings(app: App, transfers: AttachmentTransfers, key?: string): void {
 	if (key === undefined || transfers.isBlockedByUploadLimit(key)) {
-		new UploadSettingsModal(app, transfers.uploadLimit, bytes => transfers.setUploadLimit(bytes)).open();
+		const file = key === undefined ? undefined : transfers.rows.get(key);
+		new UploadSettingsModal(app, transfers.uploadLimit, bytes => transfers.setUploadLimit(bytes), file).open();
 	}
 }
 
@@ -14,6 +15,7 @@ export class UploadSettingsModal extends Modal {
 		app: App,
 		private bytes: number,
 		private save: (bytes: number) => Promise<void>,
+		private file?: Pick<AttachmentTransfer, "path" | "total">,
 	) {
 		super(app);
 	}
@@ -21,6 +23,11 @@ export class UploadSettingsModal extends Modal {
 	onOpen(): void {
 		this.containerEl.addClass("relay-upload-limit-container");
 		this.setTitle("Upload limit");
+		if (this.file?.total !== undefined) {
+			const name = this.file.path.split("/").pop();
+			const limitMiB = Math.ceil(this.file.total / (MIB / 2)) / 2;
+			this.contentEl.createEl("p", { text: `To upload “${name}”, enter ${limitMiB} MiB.` });
+		}
 		const limit = new Setting(this.contentEl)
 			.setName("Upload limit (MiB)")
 			.setDesc("Obsidian loads the whole file into memory when uploading. If this device runs out of memory, Obsidian can crash. Set to 0 for unlimited.");
