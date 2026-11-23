@@ -6,7 +6,7 @@
 	// The declared status is a closed vocabulary, never the display text:
 	// consumers must be able to match it without pinning human copy.
 	export let status: "pending" | "error" | "unknown" | undefined = undefined;
-	$: displayText = text === "File is too large." ? "File is too large" : text;
+	$: displayText = text === "File is too large." ? "Too large" : text;
 </script>
 
 {#if openSettings}

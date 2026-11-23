@@ -1,8 +1,8 @@
 import { App, Modal, Setting } from "obsidian";
 import type { AttachmentTransfers } from "../AttachmentTransfers";
 
-export function openUploadSettings(app: App, transfers: AttachmentTransfers, key: string): void {
-	if (transfers.isBlockedByUploadLimit(key)) {
+export function openUploadSettings(app: App, transfers: AttachmentTransfers, key?: string): void {
+	if (key === undefined || transfers.isBlockedByUploadLimit(key)) {
 		new UploadSettingsModal(app, transfers.uploadLimit, bytes => transfers.setUploadLimit(bytes)).open();
 	}
 }
@@ -19,6 +19,7 @@ export class UploadSettingsModal extends Modal {
 	}
 
 	onOpen(): void {
+		this.containerEl.addClass("relay-upload-limit-container");
 		this.setTitle("Upload limit");
 		const limit = new Setting(this.contentEl)
 			.setName("Upload limit (MiB)")

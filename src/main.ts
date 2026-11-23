@@ -857,6 +857,13 @@ export default class Live extends Plugin {
 		this.register(() => uploadSettings.destroy());
 		this.attachmentTransfers = new AttachmentTransfers(this.vault, this.manifest.id, uploadSettings);
 		await this.attachmentTransfers.initialize();
+		if (Platform.isMobile) {
+			this.addCommand({
+				id: "upload-settings",
+				name: "Upload settings",
+				callback: () => openUploadSettings(this.app, this.attachmentTransfers),
+			});
+		}
 		const vaultName = this.vault.getName();
 		this.fileManager = this.app.fileManager;
 

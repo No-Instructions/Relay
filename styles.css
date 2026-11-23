@@ -11,6 +11,14 @@
 	display: none;
 }
 
+.is-mobile .relay-upload-limit-container {
+	padding-bottom: var(--keyboard-height, 0px);
+}
+
+.is-mobile .relay-upload-limit-container .modal {
+	max-height: min(100%, var(--dialog-max-height));
+}
+
 .is-mobile .relay-hidden-modal-wrapper ~ .prompt .breadcrumb-icon,
 .is-mobile .relay-hidden-modal-wrapper ~ .prompt .breadcrumb-separator {
 	flex-shrink: 0;
