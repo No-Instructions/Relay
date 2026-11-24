@@ -1,13 +1,24 @@
 import { Platform, type Vault } from "obsidian";
 import { Observable } from "./observable/Observable";
 import { flags } from "./flagManager";
-import { LocalStorage } from "./LocalStorage";
+import type { NamespacedSettings } from "./SettingsStorage";
 import { AttachmentCancelledError, checkAttachmentAbort } from "./AttachmentIO";
 
 const TRANSFER_ID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const PARTIAL_FILE = new RegExp(`\\.relay-${TRANSFER_ID}\\.(download|upload)$`);
 const TARGET_MARKER = new RegExp(`\\.relay-${TRANSFER_ID}\\.download\\.target$`);
 const DESTINATION_TEMPORARY = new RegExp(`^\\.relay-${TRANSFER_ID}\\.download$`);
+const DEFAULT_ATTACHMENT_LIMIT = 20 * 1024 * 1024;
+export interface UploadLimitSettings {
+	uploadLimit?: number;
+}
+type LimitSettings = Pick<NamespacedSettings<UploadLimitSettings>, "get" | "set">;
+
+function validLimit(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+type LimitSource = "device" | "upload" | "server";
 
 export interface AttachmentTask {
 	key: string;
@@ -19,38 +30,61 @@ export interface AttachmentTransfer extends AttachmentTask {
 	bytes: number;
 	total?: number;
 	error?: string;
-	limitSource?: "device" | "server";
+	limitSource?: LimitSource;
 	controller?: AbortController;
 }
 export class AttachmentLimitError extends Error {
-	constructor(readonly source: "device" | "server" = "device") { super(source === "server" ? "Attachment exceeds the server file size limit" : "Attachment exceeds this device's size limit"); }
+	constructor(readonly source: LimitSource = "device") {
+		super("File is too large.");
+	}
 }
 export class AttachmentTransfers extends Observable<AttachmentTransfers> {
 	readonly rows = new Map<string, AttachmentTransfer>();
 	readonly directory: string;
 	private tail: Promise<unknown> = Promise.resolve();
 	private readonly sizeOverrides = new Map<string, number>();
-	private readonly storage: LocalStorage<number>;
-	maxBytes: number;
-	constructor(readonly vault: Vault, pluginId: string, appId: string) {
+	private savedUploadLimit?: number;
+	private pendingSave: Promise<void> = Promise.resolve();
+	constructor(readonly vault: Vault, pluginId: string, private readonly settings: LimitSettings) {
 		super("Attachment transfers");
 		this.directory = `${vault.configDir}/plugins/${pluginId}/downloads`;
-		this.storage = new LocalStorage<number>(`${appId}-${pluginId}/attachments`);
-		const value = this.storage.get("maxBytes") ?? (Platform.isMobile ? 20 * 1024 * 1024 : 0);
-		this.maxBytes = Number.isSafeInteger(value) && value >= 0 ? value : 20 * 1024 * 1024;
+		this.savedUploadLimit = settings.get().uploadLimit;
 	}
-	setMaxBytes(value: number): void {
-		if (!Number.isSafeInteger(value) || value < 0) { this.notifyListeners(); return; }
-		this.storage.set("maxBytes", value);
-		this.maxBytes = value;
+	get maxBytes(): number {
+		return Platform.isMobile ? DEFAULT_ATTACHMENT_LIMIT : 0;
+	}
+	get uploadLimit(): number {
+		return validLimit(this.savedUploadLimit) ? this.savedUploadLimit : this.maxBytes;
+	}
+	isBlockedByUploadLimit(key: string): boolean {
+		const row = this.rows.get(key);
+		return row?.phase === "blocked" && row.limitSource === "upload";
+	}
+	async setUploadLimit(bytes: number): Promise<void> {
+		if (!validLimit(bytes)) throw new Error("Invalid upload limit");
+		const save = this.pendingSave.then(async () => {
+			await this.settings.set({ uploadLimit: bytes });
+			this.savedUploadLimit = bytes;
+		});
+		this.pendingSave = save.catch(() => {});
+		await save;
+		for (const [key, row] of this.rows) {
+			if (row.total !== undefined && this.isBlockedByUploadLimit(key) && !this.exceedsDeviceLimit(key, row.total, bytes)) {
+				this.retry(key);
+			}
+		}
 		this.notifyListeners();
+	}
+	shouldStreamUpload(size: number): boolean {
+		return !Platform.isMobile && Platform.isDesktopApp && flags().enableStreamingUploads &&
+			size > DEFAULT_ATTACHMENT_LIMIT && typeof (this.vault.adapter as { getFullPath?: unknown }).getFullPath === "function";
 	}
 	hasSizeOverride(key: string, size: number): boolean {
 		return size <= (this.sizeOverrides.get(key) ?? -1);
 	}
 	/** Whether transferring `size` bytes for `key` would be refused by this device's limit. */
-	exceedsDeviceLimit(key: string, size: number): boolean {
-		return flags().enableAttachmentSizeLimit && this.maxBytes > 0 && size > this.maxBytes && !this.hasSizeOverride(key, size);
+	exceedsDeviceLimit(key: string, size: number, limit = this.maxBytes): boolean {
+		return flags().enableAttachmentSizeLimit && limit > 0 && size > limit && !this.hasSizeOverride(key, size);
 	}
 	/** Approve only the reviewed size, for this one sync attempt. */
 	async overrideAndRetry(key: string): Promise<void> {
@@ -67,12 +101,13 @@ export class AttachmentTransfers extends Observable<AttachmentTransfers> {
 			this.sizeOverrides.delete(key);
 		}
 	}
-	check(task: AttachmentTask, size: number, serverMaxBytes?: number, uploadSize = size): void {
+	check(task: AttachmentTask, size: number, options: { serverMaxBytes?: number; uploadSize?: number; mobileUpload?: boolean } = {}): void {
 		if (!Number.isSafeInteger(size) || size < 0) throw new Error("Invalid attachment size");
+		const { serverMaxBytes, uploadSize = size, mobileUpload } = options;
 		const serverBlocked = serverMaxBytes !== undefined && Number.isSafeInteger(serverMaxBytes) && serverMaxBytes >= 0 && uploadSize > serverMaxBytes;
-		const deviceBlocked = this.exceedsDeviceLimit(task.key, size);
+		const deviceBlocked = this.exceedsDeviceLimit(task.key, size, mobileUpload ? this.uploadLimit : this.maxBytes);
 		if (serverBlocked || deviceBlocked) {
-			const error = new AttachmentLimitError(serverBlocked ? "server" : "device");
+			const error = new AttachmentLimitError(serverBlocked ? "server" : mobileUpload ? "upload" : "device");
 			const row = this.rows.get(task.key);
 			if (row?.phase === "blocked" && row.total === size && row.limitSource === error.source) throw error;
 			if (row) { row.phase = "blocked"; row.error = error.message; row.total = size; row.limitSource = error.source; }
@@ -108,7 +143,8 @@ export class AttachmentTransfers extends Observable<AttachmentTransfers> {
 	}
 	isHeld(key: string): boolean {
 		const row = this.rows.get(key);
-		if (row?.phase === "blocked" && row.limitSource !== "server" && (!flags().enableAttachmentSizeLimit || !this.maxBytes || (row.total ?? Infinity) <= this.maxBytes)) {
+		if (row?.phase === "blocked" && row.limitSource !== "server" &&
+			!this.exceedsDeviceLimit(key, row.total ?? Infinity, row.limitSource === "upload" ? this.uploadLimit : this.maxBytes)) {
 			this.rows.delete(key);
 			this.notifyListeners();
 			return false;

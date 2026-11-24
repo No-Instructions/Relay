@@ -393,6 +393,7 @@ class FilePillDecoration {
 	constructor(
 		private el: HTMLElement,
 		public file: SyncFile,
+		private openUploadSettings?: (file: SyncFile) => void,
 	) {
 		this.el.querySelectorAll(".system3-uploadpill").forEach((el) => {
 			el.remove();
@@ -412,6 +413,7 @@ class FilePillDecoration {
 		const tag = this.file.tag;
 		if (!tag) {
 			this.pill?.destroy();
+			this.pill = undefined;
 			return;
 		}
 		const status = this.file.uploadError
@@ -419,21 +421,18 @@ class FilePillDecoration {
 			: this.file.pending
 				? ("pending" as const)
 				: ("unknown" as const);
+		const openSettings = this.openUploadSettings && this.file.blockedByUploadLimit
+			? () => this.openUploadSettings?.(this.file) : undefined;
+		const props = {
+			text: tag,
+			label: this.file.uploadError ?? tag,
+			status,
+			openSettings,
+		};
 		if (!this.pill) {
-			this.pill = mountComponent(UploadPill, {
-				target: this.el,
-				props: {
-					text: tag,
-					label: this.file.uploadError ?? tag,
-					status,
-				},
-			});
+			this.pill = mountComponent(UploadPill, { target: this.el, props });
 		} else {
-			this.pill.set({
-				text: tag,
-				label: this.file.uploadError ?? tag,
-				status,
-			});
+			this.pill.set(props);
 		}
 	}
 
@@ -448,6 +447,8 @@ class FilePillDecoration {
 }
 
 class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
+	constructor(private openUploadSettings?: (file: SyncFile) => void) { super(); }
+
 	visitFile(
 		tfile: TFile,
 		item: FileItem,
@@ -467,7 +468,7 @@ class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
 						if (storage && storage.file === file) {
 							return storage;
 						}
-						return new FilePillDecoration(item.selfEl, file);
+						return new FilePillDecoration(item.selfEl, file, this.openUploadSettings);
 					}
 				} catch (e) {
 					const error = curryLog("FilePillVisitor.visitFile", "error");
@@ -1042,6 +1043,7 @@ export class FolderNavigationDecorations {
 		sharedFolders: SharedFolders,
 		backgroundSync: BackgroundSync,
 		private explainCaseConflict?: ExplainCaseConflict,
+		private openUploadSettings?: (file: SyncFile) => void,
 	) {
 		this.vault = vault;
 		this.workspace = workspace;
@@ -1165,7 +1167,7 @@ export class FolderNavigationDecorations {
 				),
 			);
 		});
-		visitors.push(new FilePillVisitor());
+		visitors.push(new FilePillVisitor(this.openUploadSettings));
 		visitors.push(new NotSyncedPillVisitor());
 		visitors.push(new CaseConflictPillVisitor(this.explainCaseConflict));
 		visitors.push(new FileConflictVisitor());

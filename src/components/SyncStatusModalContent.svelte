@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { onDestroy } from "svelte";
-	import { normalizePath, TFile, type App } from "obsidian";
+	import { normalizePath, Platform, TFile, type App } from "obsidian";
+	import type { AttachmentTransfer } from "../AttachmentTransfers";
+	import { formatUploadSize, openUploadSettings } from "../ui/UploadSettingsModal";
 	import type { SharedFolder } from "../SharedFolder";
 	import type { TimeProvider } from "../TimeProvider";
 	import type { FolderSyncSnapshot } from "../BackgroundSyncProgress";
@@ -62,6 +64,22 @@
 	$: errors = statusModel.actionableFiles.filter(
 		(f: ActionableSyncFile) => f.category === "error",
 	);
+
+	const transfers = Platform.isMobile ? sharedFolder.attachmentTransfers : undefined;
+	let blockedUploads: AttachmentTransfer[] = [];
+	let uploadLimit = 0;
+	$: heldWhileIdle = snapshot.visibleState === "synced" && blockedUploads.length > 0;
+	if (transfers) {
+		const folderPrefix = `${sharedFolder.guid}:`;
+		onDestroy(
+			transfers.subscribe(() => {
+				uploadLimit = transfers.uploadLimit;
+				blockedUploads = [...transfers.rows.values()]
+					.filter(row => row.key.startsWith(folderPrefix) && transfers.isBlockedByUploadLimit(row.key))
+					.sort((a, b) => a.path.localeCompare(b.path));
+			}),
+		);
+	}
 
 	// ── Activity log ───────────────────────────────────────────────────
 
@@ -200,20 +218,53 @@
 	const timeAgo = formatTimeAgo;
 </script>
 
+{#snippet statusRow(path: string, label: string, kind: "blocked" | "conflict" | "error", error?: ActionableSyncFile)}
+	<div class="sync-status-row">
+		<span class="sync-status-icon" class:error={kind === "error"} class:conflict={kind !== "error"}>
+			{#if kind === "error"}
+				<XCircle size={14} />
+			{:else}
+				<AlertTriangle size={14} />
+			{/if}
+		</span>
+		{#if kind === "blocked"}
+			<span class="sync-status-path" title={relativePath(path)}>{relativePath(path)}</span>
+		{:else}
+			<span
+				class="sync-status-path"
+				role="link"
+				tabindex="0"
+				title={fileLabel(path)}
+				on:click={() => openFile(path)}
+				on:keydown={(e) => handlePathKeydown(e, path)}
+			>{fileLabel(path)}</span>
+		{/if}
+		<div class="sync-status-meta">
+			<span class="sync-status-state">{label}</span>
+		</div>
+		{#if error}
+			<button class="sync-status-dismiss" type="button" aria-label="Dismiss error"
+				on:click={(e) => dismissError(error, e)}>
+				<X size={14} />
+			</button>
+		{/if}
+	</div>
+{/snippet}
+
 <div class="sync-status-modal">
 	<div class="sync-status-toolbar">
 		<div class="sync-status-toolbar-main">
-			<div class="sync-status-queue-state {snapshot.visibleState}">
+			<div class="sync-status-queue-state {heldWhileIdle ? "sync-issue" : snapshot.visibleState}">
 				{#if snapshot.visibleState === "syncing" || snapshot.visibleState === "queued"}
 					<FolderSync size={14} />
 				{:else if snapshot.visibleState === "paused"}
 					<Pause size={14} />
-				{:else if snapshot.visibleState === "sync-issue"}
+				{:else if snapshot.visibleState === "sync-issue" || heldWhileIdle}
 					<AlertTriangle size={14} />
 				{:else}
 					<FolderCheck size={14} />
 				{/if}
-				<span>{snapshot.label}</span>
+				<span>{heldWhileIdle ? "Sync issue" : snapshot.label}</span>
 			</div>
 			<button
 				class:hidden={!showSyncAction()}
@@ -235,10 +286,9 @@
 				{/if}
 			</button>
 		</div>
-		<span
-			class="sync-status-latest-activity"
-			aria-hidden={!snapshot.latestActivity}
-		>{snapshot.latestActivity ?? ""}</span>
+		{#if snapshot.latestActivity || !blockedUploads.length}
+			<span class="sync-status-latest-activity" aria-hidden={!snapshot.latestActivity}>{snapshot.latestActivity ?? ""}</span>
+		{/if}
 	</div>
 
 	<!-- Mount point for the note state inspector strip. The strip component
@@ -246,24 +296,26 @@
 	     the div is unconditional so Svelte keeps it stable across updates. -->
 	<div class="system3-note-state-slot"></div>
 
+	{#if transfers && blockedUploads.length}
+		<div class="sync-status-section blocked-uploads">
+			<div class="sync-status-section-header">
+				{blockedUploads.length === 1 ? "Blocked upload" : "Blocked uploads"} –
+				<button class="clickable-icon blocked-upload-limit" type="button" aria-haspopup="dialog"
+					aria-label={`Change upload limit, ${formatUploadSize(uploadLimit)}`}
+					on:click={() => openUploadSettings(app, transfers)}>{formatUploadSize(uploadLimit)}</button>
+				limit
+			</div>
+			{#each blockedUploads as upload (upload.key)}
+				{@render statusRow(upload.path, upload.total === undefined ? "" : formatUploadSize(upload.total, uploadLimit), "blocked")}
+			{/each}
+		</div>
+	{/if}
+
 	{#if conflicts.length > 0}
 		<div class="sync-status-section">
 			<div class="sync-status-section-header">Conflicts ({conflicts.length})</div>
 			{#each conflicts as file}
-				<div class="sync-status-row">
-					<span class="sync-status-icon conflict"><AlertTriangle size={14} /></span>
-					<span
-						class="sync-status-path"
-						role="link"
-						tabindex="0"
-						title={fileLabel(file.path)}
-						on:click={() => openFile(file.path)}
-						on:keydown={(e) => handlePathKeydown(e, file.path)}
-					>{fileLabel(file.path)}</span>
-					<div class="sync-status-meta">
-						<span class="sync-status-state">{file.label}</span>
-					</div>
-				</div>
+				{@render statusRow(file.path, file.label, "conflict")}
 			{/each}
 		</div>
 	{/if}
@@ -283,28 +335,7 @@
 				</button>
 			</div>
 			{#each errors as file}
-				<div class="sync-status-row">
-					<span class="sync-status-icon error"><XCircle size={14} /></span>
-					<span
-						class="sync-status-path"
-						role="link"
-						tabindex="0"
-						title={fileLabel(file.path)}
-						on:click={() => openFile(file.path)}
-						on:keydown={(e) => handlePathKeydown(e, file.path)}
-					>{fileLabel(file.path)}</span>
-					<div class="sync-status-meta">
-						<span class="sync-status-state">{file.label}</span>
-					</div>
-					<button
-						class="sync-status-dismiss"
-						type="button"
-						aria-label="Dismiss error"
-						on:click={(e) => dismissError(file, e)}
-					>
-						<X size={14} />
-					</button>
-				</div>
+				{@render statusRow(file.path, file.label, "error", file)}
 			{/each}
 		</div>
 	{/if}
@@ -344,7 +375,7 @@
 		</div>
 	{/if}
 
-	{#if conflicts.length === 0 && errors.length === 0 && visibleActivity.length === 0}
+	{#if blockedUploads.length === 0 && conflicts.length === 0 && errors.length === 0 && visibleActivity.length === 0}
 		<div class="sync-status-empty">No conflicts or errors.</div>
 	{/if}
 </div>
