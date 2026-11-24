@@ -88,7 +88,7 @@ export class UploadSettingsModal extends Modal {
 		const error = this.contentEl.createDiv({ attr: { role: "alert" } });
 		actions.addButton(button => button.setButtonText("Cancel").onClick(() => this.close()));
 		const saveButton = actions.controlEl.createEl("button", { text: "Save", cls: "mod-cta" });
-		saveButton.addEventListener("click", async () => {
+		const saveLimit = async () => {
 			saveButton.disabled = true;
 			const input = limit.controlEl.querySelector("input")!;
 			input.disabled = true;
@@ -100,7 +100,8 @@ export class UploadSettingsModal extends Modal {
 				input.disabled = false;
 				saveButton.disabled = false;
 			}
-		});
+		};
+		saveButton.addEventListener("click", () => { void saveLimit(); });
 	}
 
 	onClose(): void {
