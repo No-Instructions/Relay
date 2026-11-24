@@ -1,6 +1,6 @@
 "use strict";
 import { noteEditorSessionExtension, restoreBeforeUnload, restoreEditorSessions } from "./conflict-note/editorSession";
-import { AttachmentTransfers } from "./AttachmentTransfers";
+import { AttachmentTransfers, type UploadLimitSettings } from "./AttachmentTransfers";
 
 import type { MergeEvent } from "./merge-hsm/types";
 import {
@@ -44,6 +44,7 @@ import { CaseConflictBanners } from "./ui/CaseConflictBanners";
 import { ResourceMeterMount } from "./ui/ResourceMeter";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager, type LoginSettings } from "./LoginManager";
+import { openUploadSettings } from "./ui/UploadSettingsModal";
 import { EndpointConfigModal } from "./ui/EndpointConfigModal";
 import {
 	curryLog,
@@ -137,6 +138,7 @@ const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
 };
 
 interface RelaySettings extends FeatureFlags, DebugSettings {
+	uploadLimit?: number;
 	sharedFolders: SharedFolderSettings[];
 	release: ReleaseSettings;
 	endpoints: EndpointSettings;
@@ -851,8 +853,17 @@ export default class Live extends Plugin {
 		}));
 
 		this.vault = this.app.vault;
-		this.attachmentTransfers = new AttachmentTransfers(this.vault, this.manifest.id, this.appId);
+		const uploadSettings = new NamespacedSettings<UploadLimitSettings>(settingsTree, "(uploadLimit)");
+		this.register(() => uploadSettings.destroy());
+		this.attachmentTransfers = new AttachmentTransfers(this.vault, this.manifest.id, uploadSettings);
 		await this.attachmentTransfers.initialize();
+		if (Platform.isMobile) {
+			this.addCommand({
+				id: "upload-settings",
+				name: "Upload settings",
+				callback: () => openUploadSettings(this.app, this.attachmentTransfers),
+			});
+		}
 		const vaultName = this.vault.getName();
 		this.fileManager = this.app.fileManager;
 
@@ -1437,6 +1448,7 @@ export default class Live extends Plugin {
 			this.sharedFolders,
 			this.backgroundSync,
 			this.explainCaseConflict,
+			Platform.isMobile ? file => openUploadSettings(this.app, this.attachmentTransfers, file.attachmentTask().key) : undefined,
 		);
 		this.folderNavDecorations.refresh();
 
