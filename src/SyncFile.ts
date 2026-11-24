@@ -10,7 +10,7 @@ import { HasLogging } from "./debug";
 import { type FileMetas, type SyncFileType } from "./SyncTypes";
 import { Platform, TFile, type Vault, type TFolder, type FileStats } from "obsidian";
 import { Observable, type Unsubscriber } from "./observable/Observable";
-import { snapshotAttachment, desktopAttachmentIO, checkAttachmentAbort } from "./AttachmentIO";
+import { AttachmentChangedError, hashAttachment, desktopAttachmentIO, checkAttachmentAbort } from "./AttachmentIO";
 import { AttachmentLimitError, type AttachmentTask } from "./AttachmentTransfers";
 import { generateHash } from "./hashing";
 import type { HasMimeType, IFile } from "./IFile";
@@ -310,7 +310,7 @@ export class ContentAddressedFile extends HasLogging {
 
 	async _hash(): Promise<string> {
 		if (flags().enableStreamingUploads && await desktopAttachmentIO(this.vault)) {
-			const version = await snapshotAttachment(this.vault, this.path, undefined, new AbortController().signal);
+			const version = await hashAttachment(this.vault, this.path, new AbortController().signal);
 			await this.store.saveHash(this.path, version.hash, version.mtime, this.guidProvider?.());
 			return version.hash;
 		}
@@ -624,9 +624,10 @@ export class SyncFile
 			}
 			await this.prepareSyncWork("upload", true);
 			try {
-				const uploaded = await this.sharedFolder.cas.writeFile(this);
+				const uploaded = await this.sharedFolder.cas.writeFile(this, { hash, size: hashStat.size, mtime: hashStat.mtime });
 				await this.sharedFolder.markUploaded(this, "completed", uploaded);
-				if (hash) this.rememberContent(hash, hashStat.mtime);
+				if (uploaded) this.rememberContent(uploaded.hash, uploaded.mtime);
+				else if (hash) this.rememberContent(hash, hashStat.mtime);
 				this.uploadError = undefined;
 				this.notifyListeners();
 				this.debug("push complete", {
@@ -636,6 +637,11 @@ export class SyncFile
 					force,
 				});
 			} catch (error) {
+				if (error instanceof AttachmentChangedError) {
+					// An in-place edit can preserve mtime. Rehash the source on retry.
+					this.storedRecord = null;
+					await this.hashStore.removeHash(this.caf.path);
+				}
 				this.uploadError = formatUserFacingError(error, "Failed to push file");
 				this.uploadErrorTitle = formatUserFacingErrorTitle(error, this.uploadError);
 				this.notifyListeners();

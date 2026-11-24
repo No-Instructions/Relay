@@ -1,7 +1,7 @@
 import { Platform } from "obsidian";
 import { isRetryableHttpError } from "./HttpError";
 import { generateHash } from "./hashing";
-import { ATTACHMENT_CHUNK_BYTES, AttachmentUploadTimeoutError, checkAttachmentAbort, desktopAttachmentIO, snapshotAttachment, streamAttachmentPut, type AttachmentVersion } from "./AttachmentIO";
+import { ATTACHMENT_CHUNK_BYTES, AttachmentUploadTimeoutError, checkAttachmentAbort, desktopAttachmentIO, hashAttachment, streamAttachmentPut, type AttachmentVersion } from "./AttachmentIO";
 import { downloadAttachment, probeAttachmentSize } from "./AttachmentDownload";
 import type { LiveTokenStore } from "./LiveTokenStore";
 import { S3RN } from "./S3RN";
@@ -164,50 +164,43 @@ export class ContentAddressedStore extends HasLogging {
 		await this.s3Request(() => downloadAttachment(syncFile.vault, getUrl, path, meta.hash, signal, progress), "download attachment");
 	}
 
-	private async writeStreaming(syncFile: SyncFile): Promise<AttachmentVersion> {
+	private async writeStreaming(syncFile: SyncFile, knownVersion?: AttachmentVersion): Promise<AttachmentVersion> {
 		const manager = this.sharedFolder.attachmentTransfers!;
 		const task = syncFile.attachmentTask();
 		return manager.run(task, async (row, signal) => {
-			const snapshot = manager.partialPath(task, "upload");
-			try {
-				row.phase = "preparing";
-				const version = await snapshotAttachment(syncFile.vault, task.path, snapshot, signal, (bytes, total) => {
-					row.bytes = bytes; row.total = total; manager.notifyListeners();
+			row.phase = "preparing";
+			const version = knownVersion ?? await hashAttachment(syncFile.vault, task.path, signal);
+			manager.check(task, version.size, {
+				serverMaxBytes: this.sharedFolder.remote?.relay.storageQuota?.maxFileSize,
+			});
+			await this.withTransientRetry("upload attachment", async () => {
+				checkAttachmentAbort(signal);
+				const token = await this.tokenStore.getFileToken(S3RN.encode(syncFile.s3rn), version.hash, syncFile.mimetype, version.size);
+				const response = await customFetch(token.baseUrl + "/upload-url", { method: "POST", headers: { Authorization: `Bearer ${token.token}` }, relayNetworkDomain: "relay" });
+				if (!response.ok) throw await this.s3ResponseError(response, "upload attachment url");
+				const { uploadUrl } = await response.json() as { uploadUrl: string };
+				row.phase = "uploading"; row.bytes = 0; row.total = version.size; manager.notifyListeners();
+				let reportedBytes = 0;
+				const status = await streamAttachmentPut(syncFile.vault, uploadUrl, task.path, version, syncFile.mimetype, signal, bytes => {
+					if (bytes !== version.size && bytes - reportedBytes < ATTACHMENT_CHUNK_BYTES) return;
+					reportedBytes = bytes;
+					row.bytes = bytes;
+					manager.notifyListeners();
 				});
-				manager.check(task, version.size, {
-					serverMaxBytes: this.sharedFolder.remote?.relay.storageQuota?.maxFileSize,
-				});
-				await this.withTransientRetry("upload attachment", async () => {
-					checkAttachmentAbort(signal);
-					const token = await this.tokenStore.getFileToken(S3RN.encode(syncFile.s3rn), version.hash, syncFile.mimetype, version.size);
-					const response = await customFetch(token.baseUrl + "/upload-url", { method: "POST", headers: { Authorization: `Bearer ${token.token}` }, relayNetworkDomain: "relay" });
-					if (!response.ok) throw await this.s3ResponseError(response, "upload attachment url");
-					const { uploadUrl } = await response.json() as { uploadUrl: string };
-					row.phase = "uploading"; row.bytes = 0; manager.notifyListeners();
-					let reportedBytes = 0;
-					const status = await streamAttachmentPut(syncFile.vault, uploadUrl, snapshot, version.size, syncFile.mimetype, signal, bytes => {
-						if (bytes !== version.size && bytes - reportedBytes < ATTACHMENT_CHUNK_BYTES) return;
-						reportedBytes = bytes;
-						row.bytes = bytes;
-						manager.notifyListeners();
-					});
-					if (status < 200 || status >= 300) throw s3ApiErrorFromResponse(status, "", "upload attachment");
-				});
-				return version;
-			} finally {
-				if (await manager.vault.adapter.exists(snapshot)) await manager.vault.adapter.remove(snapshot);
-			}
+				if (status < 200 || status >= 300) throw s3ApiErrorFromResponse(status, "", "upload attachment");
+			});
+			return version;
 		});
 	}
 
-	async writeFile(syncFile: SyncFile): Promise<AttachmentVersion | undefined> {
+	async writeFile(syncFile: SyncFile, knownVersion?: AttachmentVersion): Promise<AttachmentVersion | undefined> {
 		if (!this.sharedFolder.canWriteContent) {
 			throw new Error(
 				`Cannot upload ${syncFile.path}: read-only access`,
 			);
 		}
 		const size = syncFile.stat.size;
-		if (await this.shouldStreamUpload(syncFile, size)) return this.writeStreaming(syncFile);
+		if (await this.shouldStreamUpload(syncFile, size)) return this.writeStreaming(syncFile, knownVersion);
 		return this.s3Request(() => this.writeBuffered(syncFile, size), "upload attachment");
 	}
 
@@ -225,7 +218,7 @@ export class ContentAddressedStore extends HasLogging {
 		const content = await syncFile.caf.read();
 		if (!content) throw new Error("Attachment is missing");
 		if (content.byteLength !== plannedSize && await this.shouldStreamUpload(syncFile, content.byteLength)) {
-			return this.writeStreaming(syncFile);
+			return this.writeStreaming(syncFile, { hash: await generateHash(content), size: content.byteLength, mtime });
 		}
 		const hash = await generateHash(content);
 		this.log("writeFile", hash);
