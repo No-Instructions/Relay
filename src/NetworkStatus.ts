@@ -77,8 +77,10 @@ class NetworkStatus {
 		if (this.destroyed || this.timer !== undefined) return;
 		this.monitorConnectivity = monitorConnectivity;
 		this.observingValidity = true;
-		if (typeof window !== "undefined" && typeof window.addEventListener === "function") window.addEventListener("focus", this.refreshOnResume);
-		if (typeof document !== "undefined") document.addEventListener("visibilitychange", this.refreshOnResume);
+		if (typeof window !== "undefined") {
+			window.addEventListener?.("focus", this.refreshOnResume);
+			window.document?.addEventListener("visibilitychange", this.refreshOnResume);
+		}
 		this.refreshMessages();
 		this.timer = this.timeProvider.setInterval(() => { void this._checkStatus(); }, this.interval);
 	}
@@ -87,8 +89,10 @@ class NetworkStatus {
 		this.observingValidity = false;
 		if (this.validityTimer !== undefined) this.timeProvider.clearTimeout(this.validityTimer);
 		this.validityTimer = undefined;
-		if (typeof window !== "undefined" && typeof window.removeEventListener === "function") window.removeEventListener("focus", this.refreshOnResume);
-		if (typeof document !== "undefined") document.removeEventListener("visibilitychange", this.refreshOnResume);
+		if (typeof window !== "undefined") {
+			window.removeEventListener?.("focus", this.refreshOnResume);
+			window.document?.removeEventListener("visibilitychange", this.refreshOnResume);
+		}
 		if (this.timer !== undefined) this.timeProvider.clearInterval(this.timer);
 		this.timer = undefined;
 		this.generation++;
