@@ -13,7 +13,7 @@
  */
 
 export function ownerDoc(el: Node | null | undefined): Document {
-	return el?.ownerDocument ?? document;
+	return el?.ownerDocument ?? window.document;
 }
 
 export function ownerWin(el: Node | null | undefined): Window {
