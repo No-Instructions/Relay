@@ -157,7 +157,7 @@ function userMessageForS3Error(details: S3ErrorDetails): string {
 		return "Attachment storage is temporarily unavailable. Relay will retry the upload.";
 	}
 	if (details.message) {
-		return `Attachment storage error: ${details.message}`;
+		return details.message;
 	}
 	if (details.code) {
 		return `Attachment storage error (${details.code})`;
