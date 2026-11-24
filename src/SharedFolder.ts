@@ -2850,7 +2850,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	private remoteCreateStates(): Map<string, RemoteCreateState> {
-		return (this._remoteCreateStates ??= new Map());
+		return (this._remoteCreateStates ??= new Map<string, RemoteCreateState>());
 	}
 
 	private clearDeferredRemoteCreate(guid: string, path?: string): void {
