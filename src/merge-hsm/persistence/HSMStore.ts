@@ -278,7 +278,7 @@ export class HSMStore {
         transaction.onabort = null;
         if (this._cancelStateMetaLoad === cancel) this._cancelStateMetaLoad = null;
       };
-      const fail = (error: unknown) => {
+      const fail = (error: Error) => {
         if (settled) return;
         settled = true;
         detach();
