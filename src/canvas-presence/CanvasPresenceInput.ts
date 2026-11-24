@@ -105,7 +105,7 @@ export class CanvasPresenceInput {
 
 		const onPointer = (evt: PointerEvent) => {
 			if (this.destroyed || evt.pointerType === "touch") return;
-			if (this.frame && !(evt.target instanceof HTMLIFrameElement)) this.exitFrame();
+			if (this.frame && !evt.targetNode?.instanceOf(HTMLIFrameElement)) this.exitFrame();
 			this.pointerInside = true;
 			this.lastClient = { x: evt.clientX, y: evt.clientY };
 			this.lastTarget = eventTargetElement(evt.target);
