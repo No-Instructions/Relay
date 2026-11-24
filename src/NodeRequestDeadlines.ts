@@ -9,8 +9,11 @@ export interface RequestDeadlines {
 export function watchRequestDeadlines(
 	request: import("http").ClientRequest, target: URL, timeout: () => void, options: RequestDeadlines = {},
 ): () => void {
-	const connectTimer = globalThis.setTimeout(timeout, options.connectTimeoutMs ?? 30_000);
-	const connected = () => globalThis.clearTimeout(connectTimer);
+	const timers = typeof window === "undefined"
+		? { setTimeout, clearTimeout, setInterval, clearInterval }
+		: window;
+	const connectTimer = timers.setTimeout(timeout, options.connectTimeoutMs ?? 30_000);
+	const connected = () => timers.clearTimeout(connectTimer);
 	const connectEvent = target.protocol === "https:" ? "secureConnect" : "connect";
 	request.once("socket", socket => {
 		if (socket.connecting) socket.once(connectEvent, connected);
@@ -22,7 +25,7 @@ export function watchRequestDeadlines(
 	const finishedWriteTimeoutMs = options.finishedWriteTimeoutMs ?? idleTimeoutMs;
 	let lastBytes = 0;
 	let lastProgress = performance.now();
-	const idleTimer = globalThis.setInterval(() => {
+	const idleTimer = timers.setInterval(() => {
 		const socket = request.socket;
 		const bytes = (socket?.bytesRead ?? 0) + (socket?.bytesWritten ?? 0);
 		if (bytes !== lastBytes) {
@@ -34,8 +37,8 @@ export function watchRequestDeadlines(
 	}, Math.max(1, Math.min(1000, idleTimeoutMs / 4)));
 
 	return () => {
-		globalThis.clearTimeout(connectTimer);
-		globalThis.clearInterval(idleTimer);
+		timers.clearTimeout(connectTimer);
+		timers.clearInterval(idleTimer);
 		request.socket?.off(connectEvent, connected);
 	};
 }
