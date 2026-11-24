@@ -298,13 +298,13 @@
 
 	{#if transfers && blockedUploads.length}
 		<div class="sync-status-section blocked-uploads">
-			<div class="blocked-upload-setting">
-				Upload limit
+			<div class="sync-status-section-header">
+				{blockedUploads.length === 1 ? "Blocked upload" : "Blocked uploads"} –
 				<button class="clickable-icon blocked-upload-limit" type="button" aria-haspopup="dialog"
 					aria-label={`Change upload limit, ${formatUploadSize(uploadLimit)}`}
 					on:click={() => openUploadSettings(app, transfers)}>{formatUploadSize(uploadLimit)}</button>
+				limit
 			</div>
-			<div class="sync-status-section-header">Blocked uploads ({blockedUploads.length})</div>
 			{#each blockedUploads as upload (upload.key)}
 				{@render statusRow(upload.path, upload.total === undefined ? "" : formatUploadSize(upload.total, uploadLimit), "blocked")}
 			{/each}

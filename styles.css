@@ -120,23 +120,22 @@
 	white-space: nowrap;
 }
 
-.system3-sync-status-panel .blocked-upload-setting {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	color: var(--text-muted);
-	font-size: var(--font-ui-small);
+.system3-sync-status-panel .blocked-uploads .sync-status-section-header {
+	display: block;
+	padding-block: 0;
 }
 
 .system3-sync-status-panel .blocked-upload-limit {
+	display: inline-block;
 	min-width: 44px;
 	min-height: 44px;
 	padding: 0;
-	justify-content: flex-end;
 	background: transparent;
 	box-shadow: none;
 	color: var(--link-color);
 	font: inherit;
+	letter-spacing: inherit;
+	white-space: nowrap;
 	cursor: pointer;
 }
 
