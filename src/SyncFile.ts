@@ -702,7 +702,13 @@ export class SyncFile
 	private async syncUntilSettled() {
 		do {
 			this.syncRequestedDuringSync = false;
-			await this.syncOnce();
+			try {
+				await this.syncOnce();
+			} catch (error) {
+				if (!(error instanceof AttachmentChangedError) || !this.syncRequestedDuringSync) {
+					throw error;
+				}
+			}
 		} while (this.syncRequestedDuringSync);
 	}
 
