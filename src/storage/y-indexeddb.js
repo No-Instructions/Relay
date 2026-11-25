@@ -122,7 +122,7 @@ export const RUNTIME_TRIM_SIZE = 50
  */
 export const fetchUpdates = (idbPersistence, beforeApplyUpdatesCallback = () => {}, afterApplyUpdatesCallback = () => {}) => {
   const [updatesStore] = idb.transact(/** @type {IDBDatabase} */ (idbPersistence.db), [updatesStoreName]) // , 'readonly')
-  return idb.getAll(updatesStore, idb.createIDBKeyRangeLowerBound(idbPersistence._dbref, false)).then((/** @type {Uint8Array[]} */ updates) => {
+  return idb.getAll(updatesStore, idb.createIDBKeyRangeLowerBound(idbPersistence._dbref, false)).then(async (/** @type {Uint8Array[]} */ updates) => {
     if (!idbPersistence._destroyed) {
       beforeApplyUpdatesCallback(updatesStore)
       // Validate each update on a throwaway doc BEFORE applying to the real doc.
@@ -141,19 +141,17 @@ export const fetchUpdates = (idbPersistence, beforeApplyUpdatesCallback = () => 
       Y.transact(idbPersistence.doc, () => {
         validUpdates.forEach(val => Y.applyUpdate(idbPersistence.doc, val))
       }, idbPersistence, false)
-    }
-  })
-    .then(() => idb.getLastKey(updatesStore).then((/** @type {number} */ lastKey) => { idbPersistence._dbref = lastKey + 1 }))
-    .then(() => idb.count(updatesStore).then(cnt => {
+      const lastKey = await idb.getLastKey(updatesStore)
+      if (idbPersistence._destroyed) return updatesStore
+      idbPersistence._dbref = lastKey + 1
+      const cnt = await idb.count(updatesStore)
+      if (idbPersistence._destroyed) return updatesStore
       idbPersistence._dbsize = cnt
       metrics.setDbSize(idbPersistence.name, cnt)
-    }))
-    .then(() => {
-      if (!idbPersistence._destroyed) {
-        afterApplyUpdatesCallback(updatesStore)
-      }
-      return updatesStore
-    })
+      afterApplyUpdatesCallback(updatesStore)
+    }
+    return updatesStore
+  })
 }
 
 /**
@@ -163,7 +161,7 @@ export const fetchUpdates = (idbPersistence, beforeApplyUpdatesCallback = () => 
 export const storeState = (idbPersistence, forceStore = true) =>
   fetchUpdates(idbPersistence)
     .then(updatesStore => {
-      if (forceStore || idbPersistence._dbsize >= RUNTIME_TRIM_SIZE) {
+      if (!idbPersistence._destroyed && (forceStore || idbPersistence._dbsize >= RUNTIME_TRIM_SIZE)) {
         const compactedState = Y.encodeStateAsUpdate(idbPersistence.doc)
         const startTime = performance.now()
         // Return the promise chain so callers can await the writes
@@ -193,7 +191,7 @@ export class IndexeddbPersistence extends Observable {
    * @param {string} name
    * @param {Y.Doc} doc
    * @param {{ scope: string|string[], scopeType?: 'map'|'text', trackedOrigins: Set<any>, captureTimeout?: number }|null} [captureOpts] - OpCapture config (null = no capture); scopeType 'map' resolves Y.Map roots (folder membership capture)
-   * @param {string|null} [migrateFrom] - Old DB name to migrate data from (one-time, then deleted)
+   * @param {string|null} [migrateFrom] - Old DB name to migrate data from once
    * @param {import('../TimeProvider').TimeProvider} timeProvider
    */
   constructor (name, doc, captureOpts = null, migrateFrom = null, timeProvider) {
@@ -286,6 +284,7 @@ export class IndexeddbPersistence extends Observable {
         : Promise.resolve()
 
       return migrationDone.then(() => {
+      if (this._destroyed) return
       // Capture pending state before loading from IDB
       /** @type {Uint8Array|null} */
       let pendingState = null
@@ -420,41 +419,18 @@ export class IndexeddbPersistence extends Observable {
 
   /**
    * @param {Promise<unknown>} promise
-   * @return {Promise<boolean>}
+   * @return {Promise<void>}
    */
   _settleOrTimeout (promise) {
     return new Promise(resolve => {
-      let finished = false
-      /** @param {boolean} settled */
-      const finish = (settled) => {
-        if (finished) return
-        finished = true
-        this.timeProvider.clearTimeout(timer)
-        resolve(settled)
+      const finish = () => {
+        window.clearTimeout(timer)
+        resolve()
       }
-      const timer = this.timeProvider.setTimeout(() => finish(false), DESTROY_DRAIN_TIMEOUT_MS)
-      promise.then(
-        () => finish(true),
-        () => finish(true)
-      )
+      // The plugin's time provider is destroyed during synchronous unload.
+      const timer = window.setTimeout(finish, DESTROY_DRAIN_TIMEOUT_MS)
+      void promise.then(finish, finish)
     })
-  }
-
-  async _drainPendingWritesForDestroy () {
-    while (this._pendingWrites.size > 0) {
-      const pendingWrites = Promise.allSettled(Array.from(this._pendingWrites)).then(() => {})
-      const drained = await this._settleOrTimeout(pendingWrites)
-      if (!drained) return
-    }
-  }
-
-  async _drainCompactionForDestroy () {
-    if (!this._pendingCompaction) return
-    await this._settleOrTimeout(
-      this._pendingCompaction.catch((/** @type {unknown} */ err) => {
-        idbWarn(`compaction failed during destroy for ${this.name}:`, err)
-      })
-    )
   }
 
   /** @param {IDBDatabase} db */
@@ -493,6 +469,7 @@ export class IndexeddbPersistence extends Observable {
    */
   async _initCapture () {
     const saved = await this._loadCaptureEntries()
+    if (this._destroyed) return
     // scope: string | string[]; scopeType 'map' resolves Y.Map roots
     // (folder membership capture), default resolves a Y.Text root
     // (document content capture).
@@ -612,6 +589,8 @@ export class IndexeddbPersistence extends Observable {
         this.opCapture.destroy()
         this.opCapture = null
       }
+      // Release document and folder observers before waiting on IndexedDB.
+      super.destroy()
       // If indexedDB.open never resolved, `this.db` is null and queued
       // writes/compaction are chained on `_db`. Reject those chains so their
       // callers can unwind, and close the db if the browser eventually opens it.
@@ -621,26 +600,25 @@ export class IndexeddbPersistence extends Observable {
         }).catch(() => {})
         this._pendingWrites.clear()
         this._pendingCompaction = null
-        super.destroy()
         return
       }
 
-      try {
-        await this._drainPendingWritesForDestroy()
-        await this._drainCompactionForDestroy()
-      } finally {
-        this._closeDb(this.db)
-        this.db = null
-        this._pendingWrites.clear()
-        this._pendingCompaction = null
-        // Clear the lib0/observable _observers map. The whenSynced promise
-        // registers an `on('synced', ...)` handler that only removes its sibling
-        // `failed` handler when it fires — leaving the synced listener attached
-        // for the lifetime of this instance. Each listener is an arrow whose
-        // closure captures Document/SharedFolder lexical scope, so a forgotten
-        // observer pins the entire plugin module across reload.
-        super.destroy()
+      const pending = Array.from(this._pendingWrites)
+      if (this._pendingCompaction) {
+        pending.push(this._pendingCompaction.catch((/** @type {unknown} */ err) => {
+          idbWarn(`compaction failed during destroy for ${this.name}:`, err)
+        }))
       }
+      // Let queued write reactions submit their transactions. Closing now
+      // leaves them to commit and releases the connection for deletion.
+      if (pending.length > 0) await Promise.resolve()
+      this._closeDb(this.db)
+      this.db = null
+      if (pending.length > 0) {
+        await this._settleOrTimeout(Promise.allSettled(pending))
+      }
+      this._pendingWrites.clear()
+      this._pendingCompaction = null
     })()
     return this._destroyPromise
   }
@@ -802,56 +780,48 @@ export class IndexeddbPersistence extends Observable {
     // Check if we already migrated (marker in custom store)
     const [customStore] = idb.transact(this.db, [customStoreName], 'readonly')
     return idb.get(customStore, 'migratedFrom').then(existing => {
-      if (existing === oldName) return // already migrated
+      if (existing === oldName || this._destroyed) return
       return /** @type {Promise<void>} */ (new Promise(resolve => {
         let finished = false
-        // onupgradeneeded fires iff indexedDB.open had to create a new DB at
-        // v1 (i.e. oldName did not previously exist). We use it as a sentinel
-        // to distinguish "legacy data present" from "nothing to migrate, and
-        // we just auto-created an empty husk we need to clean up".
         let didNotExist = false
         const done = () => {
           if (finished) return
           finished = true
           resolve()
         }
-        const markMigrated = () => {
+        const markMigrated = async () => {
+          if (this._destroyed) return
           // Record completion in the new DB so subsequent boots skip this
           // whole path. Failure here is non-fatal — worst case we retry next
           // boot and converge then.
-          const [writeStore] = idb.transact(this.db, [customStoreName])
-          return idb.put(writeStore, oldName, 'migratedFrom').catch(() => {})
+          try {
+            const [writeStore] = idb.transact(this.db, [customStoreName])
+            await idb.put(writeStore, oldName, 'migratedFrom')
+          } catch {}
         }
         const req = indexedDB.open(oldName)
         req.onblocked = () => {
           idbWarn(`migration open blocked for ${oldName}`)
           done()
         }
-        req.onerror = () => done()
+        req.onerror = () => {
+          if (didNotExist && req.error?.name === 'AbortError') {
+            void markMigrated().then(done)
+          } else {
+            done()
+          }
+        }
         req.onupgradeneeded = () => {
+          // An unversioned open upgrades only when the name is absent.
+          // Abort creation so the probe never needs a database deletion.
           didNotExist = true
+          req.transaction.abort()
         }
         req.onsuccess = () => {
           const oldDb = req.result
-          if (didNotExist) {
-            // We auto-created an empty v1 DB. Drop it and mark migrated so
-            // we don't re-enter this branch on every boot. Concurrent peers
-            // sharing this oldName will each reach the same conclusion
-            // independently; the deleteDatabase attempt races harmlessly.
+          if (finished || this._destroyed) {
             oldDb.close()
-            const delReq = indexedDB.deleteDatabase(oldName)
-            let deleteFinished = false
-            const finish = () => {
-              if (deleteFinished) return
-              deleteFinished = true
-              markMigrated().finally(done)
-            }
-            delReq.onsuccess = finish
-            delReq.onerror = finish
-            delReq.onblocked = () => {
-              idbWarn(`deleteDatabase blocked for ${oldName}`)
-              finish()
-            }
+            done()
             return
           }
           const storeNames = [updatesStoreName, customStoreName, historyStoreName]
@@ -861,7 +831,7 @@ export class IndexeddbPersistence extends Observable {
             // prior crashed run). Nothing to copy; record completion so we
             // stop probing it.
             oldDb.close()
-            markMigrated().finally(done)
+            void markMigrated().then(done)
             return
           }
           // Read all entries from each store in the old DB
@@ -901,7 +871,7 @@ export class IndexeddbPersistence extends Observable {
               oldDb.close()
               done()
             }
-            writeTx.onerror = () => {
+            writeTx.onabort = () => {
               oldDb.close()
               done()
             }
