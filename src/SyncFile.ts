@@ -10,7 +10,7 @@ import { HasLogging } from "./debug";
 import { type FileMetas, type SyncFileType } from "./SyncTypes";
 import { Platform, TFile, type Vault, type TFolder, type FileStats } from "obsidian";
 import { Observable, type Unsubscriber } from "./observable/Observable";
-import { snapshotAttachment, desktopAttachmentIO, checkAttachmentAbort } from "./AttachmentIO";
+import { AttachmentChangedError, hashAttachment, desktopAttachmentIO, checkAttachmentAbort, withAttachmentRetry } from "./AttachmentIO";
 import { AttachmentLimitError, type AttachmentTask } from "./AttachmentTransfers";
 import { generateHash } from "./hashing";
 import type { HasMimeType, IFile } from "./IFile";
@@ -310,7 +310,11 @@ export class ContentAddressedFile extends HasLogging {
 
 	async _hash(): Promise<string> {
 		if (flags().enableStreamingUploads && await desktopAttachmentIO(this.vault)) {
-			const version = await snapshotAttachment(this.vault, this.path, undefined, new AbortController().signal);
+			const { signal } = new AbortController();
+			const version = await withAttachmentRetry(
+				() => hashAttachment(this.vault, this.path, signal),
+				(error) => error instanceof AttachmentChangedError,
+			);
 			await this.store.saveHash(this.path, version.hash, version.mtime, this.guidProvider?.());
 			return version.hash;
 		}
@@ -570,6 +574,28 @@ export class SyncFile
 		};
 	}
 
+	private recordUploadError(error: unknown): void {
+		this.uploadError = formatUserFacingError(error, "Failed to push file");
+		this.uploadErrorTitle = formatUserFacingErrorTitle(error, this.uploadError);
+		this.notifyListeners();
+	}
+
+	private async invalidateUploadHash(): Promise<void> {
+		this.storedRecord = null;
+		await this.hashStore.removeHash(this.caf.path).catch((error) => {
+			this.warn("Failed to remove hash from store:", error);
+		});
+	}
+
+	private async hashForUpload(): Promise<string> {
+		try {
+			return await this.caf.hash();
+		} catch (error) {
+			if (error instanceof AttachmentChangedError) this.recordUploadError(error);
+			throw error;
+		}
+	}
+
 	public async push(force = false) {
 		this.log("push");
 		// Explicit user uploads retain their current force semantics.
@@ -597,7 +623,7 @@ export class SyncFile
 		}
 		await this.prepareSyncWork("upload");
 		const hashStat = { ...this.stat };
-		const hash = await this.caf.hash();
+		const hash = await this.hashForUpload();
 		this._refreshMeta();
 		if (this.meta?.hash === hash) {
 			this.clearCurrentUserEdit();
@@ -624,9 +650,14 @@ export class SyncFile
 			}
 			await this.prepareSyncWork("upload", true);
 			try {
-				const uploaded = await this.sharedFolder.cas.writeFile(this);
+				const uploaded = await this.sharedFolder.cas.writeFile(this, { hash, size: hashStat.size, mtime: hashStat.mtime });
+				if (uploaded && uploaded.mtime === hashStat.mtime && uploaded.hash !== hash) {
+					// The verified bytes changed without invalidating the cached mtime.
+					await this.invalidateUploadHash();
+				}
 				await this.sharedFolder.markUploaded(this, "completed", uploaded);
-				if (hash) this.rememberContent(hash, hashStat.mtime);
+				if (uploaded) this.rememberContent(uploaded.hash, uploaded.mtime);
+				else if (hash) this.rememberContent(hash, hashStat.mtime);
 				this.uploadError = undefined;
 				this.notifyListeners();
 				this.debug("push complete", {
@@ -636,9 +667,11 @@ export class SyncFile
 					force,
 				});
 			} catch (error) {
-				this.uploadError = formatUserFacingError(error, "Failed to push file");
-				this.uploadErrorTitle = formatUserFacingErrorTitle(error, this.uploadError);
-				this.notifyListeners();
+				if (error instanceof AttachmentChangedError) {
+					// An in-place edit can preserve mtime. Rehash the source on retry.
+					await this.invalidateUploadHash();
+				}
+				this.recordUploadError(error);
 				throw error instanceof Error ? error : errorFromUnknown(error);
 			}
 		} else {
@@ -669,7 +702,13 @@ export class SyncFile
 	private async syncUntilSettled() {
 		do {
 			this.syncRequestedDuringSync = false;
-			await this.syncOnce();
+			try {
+				await this.syncOnce();
+			} catch (error) {
+				if (!(error instanceof AttachmentChangedError) || !this.syncRequestedDuringSync) {
+					throw error;
+				}
+			}
 		} while (this.syncRequestedDuringSync);
 	}
 
@@ -735,7 +774,7 @@ export class SyncFile
 		}
 
 		try {
-			const hash = await this.caf.hash();
+			const hash = await this.hashForUpload();
 			this.debug("sync hash comparison", {
 				path: this.path,
 				guid: this.guid,
@@ -751,8 +790,8 @@ export class SyncFile
 						this.warn("file in metadata, but not on the server!");
 						await this.push();
 					}
-				} catch {
-					// pass
+				} catch (error) {
+					if (error instanceof AttachmentChangedError) throw error;
 				}
 			}
 			if (hash === this.meta.hash) {
