@@ -1,5 +1,6 @@
 import { apiVersion, Platform, type RequestUrlParam, type RequestUrlResponse } from "obsidian";
 import { watchRequestDeadlines, type RequestDeadlines } from "./NodeRequestDeadlines";
+import { nodeUploadAgent } from "./NodeUploadTLS";
 import { flags } from "./flagManager";
 
 declare const GIT_TAG: string;
@@ -9,6 +10,7 @@ export function useNativeNetworking(): boolean {
 }
 
 interface NodeRequestOptions extends RequestDeadlines {
+	useSystemCAs?: boolean;
 	signal?: AbortSignal;
 	redirect?: RequestRedirect;
 	maxResponseBytes?: number;
@@ -63,6 +65,7 @@ async function requestOnce(target: URL, params: RequestUrlParam, options: NodeRe
 	if (!Platform.isDesktop) throw new Error("Node networking is only available on desktop");
 	const http = target.protocol === "https:" ? await import("https") : await import("http");
 	const { Buffer } = await import("buffer");
+	const agent = options.useSystemCAs ? await nodeUploadAgent(target) : undefined;
 	if (options.signal?.aborted) throw abortError(options.signal);
 	const body = typeof params.body === "string" ? Buffer.from(params.body) : params.body ? Buffer.from(params.body) : undefined;
 	const headers: Record<string, string> = { ...params.headers, "accept-encoding": "identity" };
@@ -84,7 +87,7 @@ async function requestOnce(target: URL, params: RequestUrlParam, options: NodeRe
 		};
 		const abort = () => finish(abortError(options.signal!));
 		const timeout = () => finish(Object.assign(new Error("ETIMEDOUT: HTTP request stopped making progress"), { code: "ETIMEDOUT" }));
-		const request = http.request(target, { method: params.method, headers }, incoming => {
+		const request = http.request(target, { agent, method: params.method, headers }, incoming => {
 			response = incoming;
 			const status = incoming.statusCode ?? 0;
 			const responseHeaders: Record<string, string> = {};

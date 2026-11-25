@@ -257,6 +257,7 @@ export class ContentAddressedStore extends HasLogging {
 					headers: { "Content-Type": syncFile.mimetype },
 					body: content,
 					relayNetworkDomain: "external",
+					useSystemCAs: true,
 				}),
 			"upload attachment",
 		);

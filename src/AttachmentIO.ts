@@ -2,6 +2,7 @@ import { Platform, type Vault } from "obsidian";
 import { sha256 } from "@noble/hashes/sha2";
 import { bytesToHex } from "@noble/hashes/utils";
 import { watchRequestDeadlines, type RequestDeadlines } from "./NodeRequestDeadlines";
+import { nodeUploadAgent } from "./NodeUploadTLS";
 import { S3ApiError, s3NetworkFailureFromUnknown } from "./S3Error";
 
 export const ATTACHMENT_CHUNK_BYTES = 1024 * 1024;
@@ -150,6 +151,7 @@ export async function streamAttachmentPut(
 		throw new AttachmentChangedError();
 	}
 	const { Transform } = await import("stream");
+	const agent = await nodeUploadAgent(target);
 	const hash = await attachmentHasher();
 	const { size } = version;
 	return new Promise((resolve, reject) => {
@@ -199,6 +201,7 @@ export async function streamAttachmentPut(
 			if (error) reject(error); else resolve(status!);
 		};
 		const request = (target.protocol === "https:" ? io.https : io.http).request(target, {
+			agent,
 			method: "PUT", headers: { "Content-Length": String(size), "Content-Type": contentType },
 		}, response => {
 			response.on("error", error => finish(new S3ApiError({ code: "NetworkingError", operation: "upload attachment" }, error)));
