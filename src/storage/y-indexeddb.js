@@ -519,9 +519,13 @@ export class IndexeddbPersistence extends Observable {
         return p
       },
       clear: () => {
+        const closing = this._destroyed
         const p = this._db.then(db => {
           const [store] = idb.transact(db, [historyStoreName])
-          return /** @type {Promise<void>} */ (idb.rtop(store.clear()))
+          const request = store.clear()
+          // Closing drains this transaction. A request handler would retain
+          // the plugin module while the browser finishes discarding history.
+          if (!closing) return /** @type {Promise<void>} */ (idb.rtop(request))
         })
         this._trackWrite(p)
         return p
@@ -584,7 +588,7 @@ export class IndexeddbPersistence extends Observable {
         this._rejectDbForDestroy(this._destroyError)
         this._rejectDbForDestroy = null
       }
-      // Destroy OpCapture (releases keepItem holds, no persistence needed)
+      // Release capture holds and submit the history cleanup before closing.
       if (this.opCapture) {
         this.opCapture.destroy()
         this.opCapture = null
