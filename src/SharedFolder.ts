@@ -4023,12 +4023,13 @@ export class SharedFolder extends HasProvider {
 	 * instance; explicit removal is the only point where these records
 	 * become garbage.
 	 */
-	public async reclaimOwnedRecords(): Promise<void> {
+	public async reclaimOwnedRecords(loadedGuids: ReadonlySet<string>): Promise<void> {
 		try {
 			const stateMetas = await this._hsmStore.getFolderStateMeta(this.guid);
-			for (const stateMeta of stateMetas) {
-				await this._hsmStore.deleteState(stateMeta.guid).catch(() => {});
-			}
+			const unloadedGuids = stateMetas
+				.filter(({ guid }) => !loadedGuids.has(guid))
+				.map(({ guid }) => guid);
+			await this._hsmStore.deleteStates(unloadedGuids);
 		} catch (e) {
 			this.warn("record reclaim: HSM state metadata unavailable", e);
 		}
@@ -6344,7 +6345,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 	public delete(item: SharedFolder): boolean {
 		// Collect IDB database names before destroy nulls references
 		const dbNames: string[] = [];
-		const docGuids: string[] = [];
+		const docGuids = new Set<string>();
 		if (item) {
 			item.files.forEach((file: IFile) => {
 				// Databases are named by file type; attachments have no
@@ -6355,19 +6356,15 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 				} else if (isDocument(file)) {
 					dbNames.push(`${item.appId}-relay-doc-${file.guid}`);
 				}
-				docGuids.push(file.guid);
+				docGuids.add(file.guid);
 			});
-			// Folder-level databases: the raw-guid database and the split-era
-			// local and remote folder databases.
-			dbNames.push(item.guid);
 			dbNames.push(`${item.appId}-relay-folder-${item.guid}`);
-			dbNames.push(`${item.appId}-relay-folder-${item.guid}-remote`);
 			// Folder removal discards its durable upload and disk-work claims.
 			item.clearPendingUploads();
 			item.clearPendingServerOps();
 			// Folder-scoped HSM states and in-folder hash rows, including
 			// records for files outside the current in-memory enumeration.
-			void item.reclaimOwnedRecords();
+			void item.reclaimOwnedRecords(docGuids);
 		}
 		item?.destroy();
 		const deleted = super.delete(item);
@@ -6378,16 +6375,37 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 			const message = error instanceof Error ? error.message : String(error);
 			this.warn(`Failed to persist shared folder removal for ${item.path}: ${message}`);
 		});
-		// Delete IDB databases after in-memory objects are destroyed
+		// Purge the known states in one transaction after destroy has
+		// submitted its final writes.
+		if (docGuids.size > 0) {
+			trackAsyncCleanup(this._hsmStore.deleteStates([...docGuids]));
+		}
+		this.deleteObsoleteFolderDatabases(item);
+		// The active databases may still be opening. Submit their deletes
+		// unconditionally so IndexedDB queues them after the pending opens.
 		for (const name of dbNames) {
 			indexedDB.deleteDatabase(name);
 		}
-		// Purge merge-HSM states so orphaned records cannot masquerade as
-		// local-record evidence for a future folder sharing these vpaths.
-		for (const guid of docGuids) {
-			void this._hsmStore.deleteState(guid).catch(() => {});
-		}
 		return deleted;
+	}
+
+	private deleteObsoleteFolderDatabases(item: SharedFolder): void {
+		const factory = indexedDB;
+		const names = [item.guid, `${item.appId}-relay-folder-${item.guid}-remote`];
+		const remove = (existing?: IDBDatabaseInfo[]) => {
+			for (const name of names) {
+				if (!existing || existing.some(db => db.name === name)) {
+					factory.deleteDatabase(name);
+				}
+			}
+		};
+		// Current folders only open the local name. Avoid queuing deletions
+		// for absent compatibility databases when enumeration is available.
+		if (typeof factory.databases === "function") {
+			trackAsyncCleanup(factory.databases().then(remove, () => remove()));
+		} else {
+			remove();
+		}
 	}
 
 	/**

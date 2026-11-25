@@ -32,6 +32,7 @@ const STORES = {
 } as const;
 
 const DESTROY_DRAIN_TIMEOUT_MS = 2000;
+const STATE_META_PAGE_SIZE = 64;
 
 // =============================================================================
 // Serialization Helpers
@@ -129,10 +130,10 @@ export class HSMStore {
   private _dbInstance: IDBDatabase | null = null;
   private _pendingWrites = new Set<Promise<unknown>>();
   private _stateMeta: StateMetaIndex | null = null;
+  private _loadingStateMeta: StateMetaIndex | null = null;
   private _stateMetaLoad: Promise<StateMetaIndex> | null = null;
   private _cancelStateMetaLoad: (() => void) | null = null;
   private _destroyed = false;
-  private _dbClosed = false;
   private _destroyPromise: Promise<void> | null = null;
   private _destroyError: Error | null = null;
   private _rejectDbForDestroy?: (reason?: unknown) => void;
@@ -146,7 +147,7 @@ export class HSMStore {
       })
       .then(db => {
         this._dbInstance = db;
-        if (this._destroyed) {
+        if (this._destroyed && this._pendingWrites.size === 0) {
           this._closeDb(db);
           this._dbInstance = null;
         }
@@ -167,22 +168,14 @@ export class HSMStore {
   async saveState(guid: string, state: PersistedHSMRecord): Promise<void> {
     if (this._destroyed) return;
     const sanitized = sanitizeState({ ...state, guid });
-    const p = this._db
-      .then(db => {
-        if (this._dbClosed) return;
-        const meta = this._stateMeta || this._stateMetaLoad
-          ? structuredClone(stateMeta(sanitized))
-          : null;
-        return this._write(db, store => { store.put(sanitized); }, index => {
-          if (meta) index.set(meta);
-        });
-      })
-      .catch(err => {
-        if (this._shouldIgnoreClosingError(err)) return;
-        throw err;
+    return this._queueWrite((db) => {
+      const meta = !this._destroyed && (this._stateMeta || this._stateMetaLoad)
+        ? structuredClone(stateMeta(sanitized))
+        : null;
+      return this._write(db, store => { store.put(sanitized); }, index => {
+        if (meta) index.set(meta);
       });
-    this._trackWrite(p);
-    await p;
+    });
   }
 
   async loadState(guid: string): Promise<PersistedHSMRecord | null> {
@@ -194,18 +187,16 @@ export class HSMStore {
   }
 
   async deleteState(guid: string): Promise<void> {
-    if (this._destroyed) return;
-    const p = this._db
-      .then(db => {
-        if (this._dbClosed) return;
-        return this._write(db, store => { store.delete(guid); }, index => index.delete(guid));
-      })
-      .catch(err => {
-        if (this._shouldIgnoreClosingError(err)) return;
-        throw err;
-      });
-    this._trackWrite(p);
-    await p;
+    return this.deleteStates([guid]);
+  }
+
+  async deleteStates(guids: readonly string[]): Promise<void> {
+    if (this._destroyed || guids.length === 0) return;
+    return this._queueWrite(db => this._write(db, store => {
+      for (const guid of guids) store.delete(guid);
+    }, index => {
+      for (const guid of guids) index.delete(guid);
+    }));
   }
 
   async getAllStateGuids(): Promise<string[]> {
@@ -263,13 +254,34 @@ export class HSMStore {
     return this._stateMetaLoad;
   }
 
-  private _collectStateMeta(db: IDBDatabase): Promise<StateMetaIndex> {
-    if (this._destroyed) return Promise.resolve(new StateMetaIndex());
+  private async _collectStateMeta(db: IDBDatabase): Promise<StateMetaIndex> {
+    const index = new StateMetaIndex();
+    if (this._destroyed) return index;
+    this._loadingStateMeta = index;
+    try {
+      let after: string | undefined;
+      do {
+        after = await this._readStateMetaPage(db, index, after);
+      } while (after !== undefined && !this._destroyed);
+      return index;
+    } finally {
+      this._loadingStateMeta = null;
+    }
+  }
+
+  private _readStateMetaPage(
+    db: IDBDatabase,
+    index: StateMetaIndex,
+    after: string | undefined,
+  ): Promise<string | undefined> {
     const [store] = idb.transact(db, [STORES.states], 'readonly');
     const transaction = store.transaction;
-    const index = new StateMetaIndex();
     return new Promise((resolve, reject) => {
-      const req = store.openCursor();
+      // Bound the body data cloned at once and let queued writes commit
+      // between reads of adjacent primary-key ranges.
+      const range = after === undefined ? undefined : IDBKeyRange.lowerBound(after, true);
+      const req = store.getAll(range, STATE_META_PAGE_SIZE);
+      let next: string | undefined;
       let settled = false;
       const detach = () => {
         req.onsuccess = null;
@@ -299,17 +311,16 @@ export class HSMStore {
         if (settled) return;
         settled = true;
         detach();
-        resolve(index);
+        resolve(next);
       };
       transaction.onabort = () => fail(transaction.error ?? new Error('Metadata read aborted'));
       req.onsuccess = () => {
         if (this._destroyed) { cancel(); return; }
-        const cursor = req.result;
-        if (!cursor) return;
-        index.set(stateMeta(cursor.value as PersistedHSMRecord));
-        cursor.continue();
+        const records = req.result as PersistedHSMRecord[];
+        for (const record of records) index.set(stateMeta(record));
+        if (records.length === STATE_META_PAGE_SIZE) next = records[records.length - 1].guid;
       };
-      req.onerror = () => fail(req.error ?? new Error('Metadata cursor failed'));
+      req.onerror = () => fail(req.error ?? new Error('Metadata page read failed'));
     });
   }
 
@@ -319,17 +330,7 @@ export class HSMStore {
 
   async clearAllData(): Promise<void> {
     if (this._destroyed) return;
-    const p = this._db
-      .then(db => {
-        if (this._dbClosed) return;
-        return this._write(db, store => { store.clear(); }, index => index.clear());
-      })
-      .catch(err => {
-        if (this._shouldIgnoreClosingError(err)) return;
-        throw err;
-      });
-    this._trackWrite(p);
-    await p;
+    return this._queueWrite(db => this._write(db, store => { store.clear(); }, index => index.clear()));
   }
 
   // ===========================================================================
@@ -355,20 +356,25 @@ export class HSMStore {
       this._rejectDbForDestroy?.(this._destroyError);
       this._rejectDbForDestroy = undefined;
 
-      const db = this._dbInstance;
-      if (!db) {
-        this._pendingWrites.clear();
-        return;
+      let db = this._dbInstance;
+      if (!db && this._pendingWrites.size > 0) {
+        try {
+          db = await this._openDb;
+        } catch {
+          // The queued writes report the open failure to their callers.
+          return;
+        }
       }
+      if (!db) return;
 
-      try {
-        await this._drainPendingWritesForDestroy();
-      } finally {
-        this._dbClosed = true;
-        this._closeDb(db);
-        this._dbInstance = null;
-        this._pendingWrites.clear();
-      }
+      // Accepted writes have registered their open reactions; let those
+      // submit transactions before closing. IndexedDB close then drains
+      // submitted work while preventing any new transactions.
+      if (this._pendingWrites.size > 0) await Promise.resolve();
+      this._closeDb(db);
+      this._dbInstance = null;
+      await this._drainPendingWritesForDestroy();
+      this._pendingWrites.clear();
     })();
     return this._destroyPromise;
   }
@@ -376,6 +382,14 @@ export class HSMStore {
   // ===========================================================================
   // Internals
   // ===========================================================================
+
+  private _queueWrite(write: (db: IDBDatabase) => Promise<void>): Promise<void> {
+    // Reads can fall back during teardown. Writes already accepted must
+    // still reach IndexedDB, even if the connection has yet to open.
+    const p = this._openDb.then(write);
+    this._trackWrite(p);
+    return p;
+  }
 
   /**
    * Run a read against the open connection. A read racing teardown resolves to
@@ -385,6 +399,7 @@ export class HSMStore {
   private async _read<T>(fallback: T, fn: (db: IDBDatabase) => Promise<T>): Promise<T> {
     try {
       const db = await this._db;
+      if (this._destroyed) return fallback;
       return await fn(db);
     } catch (err) {
       if (this._shouldIgnoreClosingError(err)) return fallback;
@@ -401,13 +416,23 @@ export class HSMStore {
     const [store] = idb.transact(db, [STORES.states], 'readwrite');
     return new Promise((resolve, reject) => {
       write(store);
-      store.transaction.oncomplete = () => {
-        // Transactions on this store are ordered: writes preceding the first
-        // read are included in its cursor; later commits update its index.
-        if (!this._destroyed && this._stateMeta) update(this._stateMeta);
+      const transaction = store.transaction;
+      const detach = () => {
+        transaction.oncomplete = null;
+        transaction.onabort = null;
+      };
+      transaction.oncomplete = () => {
+        detach();
+        // Apply commits to pages already read as well as the published index.
+        // Later pages read from the same store after these writes commit.
+        const index = this._stateMeta ?? this._loadingStateMeta;
+        if (!this._destroyed && index) update(index);
         resolve();
       };
-      store.transaction.onabort = () => reject(store.transaction.error ?? new Error('State write aborted'));
+      transaction.onabort = () => {
+        detach();
+        reject(transaction.error ?? new Error('State write aborted'));
+      };
     });
   }
 
@@ -420,29 +445,14 @@ export class HSMStore {
   }
 
   private async _drainPendingWritesForDestroy(): Promise<void> {
-    while (this._pendingWrites.size > 0) {
-      const pendingWrites = Promise
-        .allSettled([...this._pendingWrites])
-        .then(() => undefined);
-      const drained = await this._settleOrTimeout(pendingWrites);
-      if (!drained) return;
-    }
-  }
-
-  private _settleOrTimeout(promise: Promise<void>): Promise<boolean> {
-    return new Promise(resolve => {
-      let finished = false;
-      const finish = (settled: boolean) => {
-        if (finished) return;
-        finished = true;
+    if (this._pendingWrites.size === 0) return;
+    await new Promise<void>(resolve => {
+      const finish = () => {
         window.clearTimeout(timer);
-        resolve(settled);
+        resolve();
       };
-      const timer = window.setTimeout(() => finish(false), DESTROY_DRAIN_TIMEOUT_MS);
-      promise.then(
-        () => finish(true),
-        () => finish(true),
-      );
+      const timer = window.setTimeout(finish, DESTROY_DRAIN_TIMEOUT_MS);
+      void Promise.allSettled([...this._pendingWrites]).then(finish);
     });
   }
 
