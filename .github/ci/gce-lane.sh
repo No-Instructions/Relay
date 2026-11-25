@@ -425,9 +425,10 @@ ci_net_retry() {
 # ci_public_filter: passes through only the harness output lines that may be
 # published: plan verdicts ("[tpNNN] FAIL (exit 1, 123s)"), orchestrator
 # progress ("[mn] ...") and the private report's URL. Test content never reaches the public log, whatever
-# a harness prints. ci_vm_run ships it to the VM with each job script.
+# a harness prints. ci_vm_run ships it to the VM with each job script. The
+# carriage return is spelled as a literal so that BSD sed strips it too.
 ci_public_filter() {
-  sed -u 's/\r$//' | grep --line-buffered -E '^\[tp[0-9]{3}\] (PASS|FAIL|SKIP|ERROR)( \((exit [0-9]+, [0-9]+s|[a-z0-9-]+)\))?$|^\[mn\] |^report: https://ci\.system3\.dev/[A-Za-z0-9._/-]+$' || true
+  sed -u $'s/\r$//' | grep --line-buffered -E '^\[tp[0-9]{3}\] (PASS|FAIL|SKIP|ERROR)( \((exit [0-9]+, [0-9]+s|[a-z0-9-]+)\))?$|^\[mn\] |^report: https://ci\.system3\.dev/[A-Za-z0-9._/-]+$' || true
 }
 
 # ci_vm_run SCRIPT ARGS...: runs SCRIPT on the VM with ARGS as its positional
