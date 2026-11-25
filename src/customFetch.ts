@@ -28,9 +28,11 @@ type RelayRequestDomain = NetworkDomain;
 
 export interface RelayRequestInit extends RequestInit {
 	relayNetworkDomain?: RelayRequestDomain;
+	useSystemCAs?: boolean;
 }
 
 export interface RelayRequestUrlParam extends RequestUrlParam {
+	useSystemCAs?: boolean;
 	signal?: AbortSignal;
 	maxResponseBytes?: number;
 	redirect?: RequestRedirect;
@@ -163,17 +165,13 @@ function recordRequestMetrics(args: {
 export async function requestUrlWithMetrics(
 	params: RelayRequestUrlParam,
 ): Promise<RequestUrlResponse> {
-	const domain = classifyNetworkDomain(params.url, params.relayNetworkDomain);
-	const method = params.method ?? "GET";
-	const requestParams = { ...params };
-	delete requestParams.relayNetworkDomain;
-	delete requestParams.signal;
-	delete requestParams.maxResponseBytes;
-	delete requestParams.redirect;
+	const { relayNetworkDomain, signal, maxResponseBytes, redirect, useSystemCAs, ...requestParams } = params;
+	const domain = classifyNetworkDomain(requestParams.url, relayNetworkDomain);
+	const method = requestParams.method ?? "GET";
 	const startMs = getNowMs();
 	try {
 		const response = useNativeNetworking()
-			? await nodeRequestUrl(requestParams, { signal: params.signal, maxResponseBytes: params.maxResponseBytes, redirect: params.redirect })
+			? await nodeRequestUrl(requestParams, { signal, maxResponseBytes, redirect, useSystemCAs })
 			: await obsidianRequestUrl(requestParams);
 		recordRequestMetrics({
 			domain,
@@ -228,6 +226,7 @@ export const customFetch = async (
 		relayNetworkDomain: domain,
 		signal: signal ?? undefined,
 		redirect: config?.redirect ?? input?.redirect,
+		useSystemCAs: config?.useSystemCAs,
 	});
 
 	// Login and configuration callers rely on server errors rejecting.
