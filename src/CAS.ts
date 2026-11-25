@@ -169,7 +169,10 @@ export class ContentAddressedStore extends HasLogging {
 		const task = syncFile.attachmentTask();
 		return manager.run(task, async (row, signal) => {
 			row.phase = "preparing";
-			const version = knownVersion ?? await hashAttachment(syncFile.vault, task.path, signal);
+			const current = knownVersion ? await syncFile.vault.adapter.stat(task.path) : null;
+			const version = knownVersion && current?.size === knownVersion.size && current.mtime === knownVersion.mtime
+				? knownVersion
+				: await hashAttachment(syncFile.vault, task.path, signal);
 			manager.check(task, version.size, {
 				serverMaxBytes: this.sharedFolder.remote?.relay.storageQuota?.maxFileSize,
 			});

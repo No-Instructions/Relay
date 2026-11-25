@@ -125,7 +125,9 @@ export async function streamAttachmentPut(
 	if (target.protocol !== "http:" && target.protocol !== "https:") throw new Error("Unsupported upload URL");
 	const fullPath = io.fullPath(path);
 	const before = await io.fs.promises.stat(fullPath);
-	if (before.size !== version.size) throw new AttachmentChangedError();
+	if (before.size !== version.size || Math.round(before.mtimeMs) !== version.mtime) {
+		throw new AttachmentChangedError();
+	}
 	const { Transform } = await import("stream");
 	const hash = await attachmentHasher();
 	const { size } = version;
