@@ -640,7 +640,9 @@ export class SyncFile
 				if (error instanceof AttachmentChangedError) {
 					// An in-place edit can preserve mtime. Rehash the source on retry.
 					this.storedRecord = null;
-					await this.hashStore.removeHash(this.caf.path);
+					await this.hashStore.removeHash(this.caf.path).catch((cacheError) => {
+						this.warn("Failed to remove hash from store:", cacheError);
+					});
 				}
 				this.uploadError = formatUserFacingError(error, "Failed to push file");
 				this.uploadErrorTitle = formatUserFacingErrorTitle(error, this.uploadError);
@@ -675,7 +677,13 @@ export class SyncFile
 	private async syncUntilSettled() {
 		do {
 			this.syncRequestedDuringSync = false;
-			await this.syncOnce();
+			try {
+				await this.syncOnce();
+			} catch (error) {
+				if (!(error instanceof AttachmentChangedError) || !this.syncRequestedDuringSync) {
+					throw error;
+				}
+			}
 		} while (this.syncRequestedDuringSync);
 	}
 
