@@ -5,6 +5,7 @@ import { watchRequestDeadlines, type RequestDeadlines } from "./NodeRequestDeadl
 import { S3ApiError, s3NetworkFailureFromUnknown } from "./S3Error";
 
 export const ATTACHMENT_CHUNK_BYTES = 1024 * 1024;
+export const ATTACHMENT_RETRY_DELAYS_MS: readonly number[] = [500, 2000];
 const ATTACHMENT_UPLOAD_WRITE_BYTES = 64 * 1024;
 // After the body enters the kernel, Node exposes no acknowledgement counter. A
 // separate bound lets a slow receiver drain that queue without hiding a stall forever.
@@ -70,6 +71,26 @@ export async function desktopAttachmentIO(vault: Vault) {
 
 export interface AttachmentVersion { hash: string; size: number; mtime: number }
 
+export async function withAttachmentRetry<T>(
+	request: () => Promise<T>,
+	shouldRetry: (error: unknown) => boolean,
+	delays = ATTACHMENT_RETRY_DELAYS_MS,
+	wait: (delayMs: number, retry: number, error: unknown) => Promise<void> =
+		(delayMs) => new Promise((resolve) => window.setTimeout(resolve, delayMs)),
+): Promise<T> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return await request();
+		} catch (error) {
+			const delayCapMs = delays[attempt];
+			if (delayCapMs === undefined || !shouldRetry(error)) throw error;
+			// Full jitter within the round's cap.
+			const delayMs = Math.floor(Math.random() * (delayCapMs + 1));
+			await wait(delayMs, attempt + 1, error);
+		}
+	}
+}
+
 export async function hashAttachment(
 	vault: Vault, path: string, signal: AbortSignal,
 	progress: (bytes: number, total: number) => void = () => {},
@@ -86,7 +107,7 @@ export async function hashAttachment(
 		while (offset < before.size) {
 			checkAttachmentAbort(signal);
 			const { bytesRead } = await source.read(buffer, 0, Math.min(buffer.length, before.size - offset), offset);
-			if (!bytesRead) throw new Error("Attachment changed while reading");
+			if (!bytesRead) throw new AttachmentChangedError("Attachment changed while reading");
 			hash.update(buffer.subarray(0, bytesRead));
 			offset += bytesRead;
 			progress(offset, before.size);
@@ -96,7 +117,7 @@ export async function hashAttachment(
 		const current = await io.fs.promises.stat(io.fullPath(path));
 		if (before.size !== after.size || before.mtimeMs !== after.mtimeMs ||
 			before.ino !== current.ino || before.size !== current.size || before.mtimeMs !== current.mtimeMs) {
-			throw new Error("Attachment changed while reading");
+			throw new AttachmentChangedError("Attachment changed while reading");
 		}
 		return { hash: attachmentDigest(hash), size: offset, mtime: Math.round(before.mtimeMs) };
 	} finally {
@@ -110,7 +131,7 @@ export class AttachmentUploadTimeoutError extends S3ApiError {
 }
 
 export class AttachmentChangedError extends Error {
-	constructor() { super("Attachment changed during upload"); }
+	constructor(message = "Attachment changed during upload") { super(message); }
 }
 
 /** Ordinary presigned PUT with a known length, not AWS chunk-signing or multipart. */

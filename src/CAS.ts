@@ -1,7 +1,11 @@
 import { Platform } from "obsidian";
 import { isRetryableHttpError } from "./HttpError";
 import { generateHash } from "./hashing";
-import { ATTACHMENT_CHUNK_BYTES, AttachmentUploadTimeoutError, checkAttachmentAbort, desktopAttachmentIO, hashAttachment, streamAttachmentPut, type AttachmentVersion } from "./AttachmentIO";
+import {
+	ATTACHMENT_CHUNK_BYTES, ATTACHMENT_RETRY_DELAYS_MS, AttachmentChangedError,
+	AttachmentUploadTimeoutError, checkAttachmentAbort, desktopAttachmentIO, hashAttachment,
+	streamAttachmentPut, withAttachmentRetry, type AttachmentVersion,
+} from "./AttachmentIO";
 import { downloadAttachment, probeAttachmentSize } from "./AttachmentDownload";
 import type { LiveTokenStore } from "./LiveTokenStore";
 import { S3RN } from "./S3RN";
@@ -15,12 +19,6 @@ import {
 	s3ApiErrorFromUnknown,
 	s3NetworkFailureFromUnknown,
 } from "./S3Error";
-
-// In-attempt retry schedule for transient transfer failures: one retry per
-// entry, each entry the delay cap for that round. Full jitter spreads the
-// retries of a bulk transfer hitting one server blip apart instead of
-// re-hammering in lockstep.
-const TRANSFER_RETRY_DELAYS_MS: readonly number[] = [500, 2000];
 
 export interface ContentAddressedStoreOptions {
 	transferRetryDelaysMs?: readonly number[];
@@ -40,7 +38,7 @@ export class ContentAddressedStore extends HasLogging {
 		this.pb = new PocketBase(authUrl, sharedFolder.loginManager.authStore);
 		this.tokenStore = sharedFolder.tokenStore;
 		this.transferRetryDelaysMs =
-			options?.transferRetryDelaysMs ?? TRANSFER_RETRY_DELAYS_MS;
+			options?.transferRetryDelaysMs ?? ATTACHMENT_RETRY_DELAYS_MS;
 	}
 
 	async verify(syncFile: SyncFile): Promise<boolean> {
@@ -111,37 +109,35 @@ export class ContentAddressedStore extends HasLogging {
 	/**
 	 * Run a transfer, retrying transient failures (5xx/throttle-class answers
 	 * and network-level transport errors) a bounded number of times with
-	 * jittered backoff. Permanent classes (auth/permission) are never
-	 * retried. Whatever finally escapes is classified, so the background
-	 * queue above can decide whether to re-drive the operation later.
+	 * jittered backoff. Uploads can also re-read a changed file within the
+	 * same budget. The error that escapes stays classified for the queue.
 	 */
-	private async withTransientRetry<T>(
+	private withTransientRetry<T>(
 		operation: string,
 		request: () => Promise<T>,
+		shouldRetry: (error: unknown) => boolean = isRetryableHttpError,
 	): Promise<T> {
-		for (let attempt = 0; ; attempt++) {
-			try {
-				return await request();
-			} catch (error) {
-				// Release the shared transfer slot after a deadline. The background queue can retry.
-				if (error instanceof AttachmentUploadTimeoutError) throw error;
-				const classified =
-					s3NetworkFailureFromUnknown(error, operation) ?? error;
-				const delayCapMs = this.transferRetryDelaysMs[attempt];
-				if (!isRetryableHttpError(classified) || delayCapMs === undefined) {
-					throw classified;
+		return withAttachmentRetry(
+			async () => {
+				try {
+					return await request();
+				} catch (error) {
+					throw s3NetworkFailureFromUnknown(error, operation) ?? error;
 				}
-				// Full jitter within the round's cap.
-				const delayMs = Math.floor(Math.random() * (delayCapMs + 1));
+			},
+			// Release the shared transfer slot after a deadline. The background queue can retry.
+			(error) => !(error instanceof AttachmentUploadTimeoutError) && shouldRetry(error),
+			this.transferRetryDelaysMs,
+			(delayMs, attempt, error) => {
 				this.debug(
-					`transient ${operation} failure (attempt ${attempt + 1}); retrying in ${delayMs}ms`,
-					classified,
+					`transient ${operation} failure (attempt ${attempt}); retrying in ${delayMs}ms`,
+					error,
 				);
-				await new Promise<void>((resolve) =>
+				return new Promise<void>((resolve) =>
 					this.sharedFolder.timeProvider.setTimeout(resolve, delayMs),
 				);
-			}
-		}
+			},
+		);
 	}
 
 	private async downloadUrl(syncFile: SyncFile, hash: string): Promise<string> {
@@ -168,31 +164,41 @@ export class ContentAddressedStore extends HasLogging {
 		const manager = this.sharedFolder.attachmentTransfers!;
 		const task = syncFile.attachmentTask();
 		return manager.run(task, async (row, signal) => {
-			row.phase = "preparing";
-			const current = knownVersion ? await syncFile.vault.adapter.stat(task.path) : null;
-			const version = knownVersion && current?.size === knownVersion.size && current.mtime === knownVersion.mtime
-				? knownVersion
-				: await hashAttachment(syncFile.vault, task.path, signal);
-			manager.check(task, version.size, {
-				serverMaxBytes: this.sharedFolder.remote?.relay.storageQuota?.maxFileSize,
-			});
-			await this.withTransientRetry("upload attachment", async () => {
+			let candidate = knownVersion;
+			let version: AttachmentVersion | undefined;
+			return this.withTransientRetry("upload attachment", async () => {
 				checkAttachmentAbort(signal);
-				const token = await this.tokenStore.getFileToken(S3RN.encode(syncFile.s3rn), version.hash, syncFile.mimetype, version.size);
+				if (!version) {
+					row.phase = "preparing";
+					const current = candidate ? await syncFile.vault.adapter.stat(task.path) : null;
+					const reusable = candidate && current?.size === candidate.size && current.mtime === candidate.mtime
+						? candidate
+						: undefined;
+					candidate = undefined;
+					version = reusable ?? await hashAttachment(syncFile.vault, task.path, signal);
+					manager.check(task, version.size, {
+						serverMaxBytes: this.sharedFolder.remote?.relay.storageQuota?.maxFileSize,
+					});
+				}
+				const expected = version;
+				const token = await this.tokenStore.getFileToken(S3RN.encode(syncFile.s3rn), expected.hash, syncFile.mimetype, expected.size);
 				const response = await customFetch(token.baseUrl + "/upload-url", { method: "POST", headers: { Authorization: `Bearer ${token.token}` }, relayNetworkDomain: "relay" });
 				if (!response.ok) throw await this.s3ResponseError(response, "upload attachment url");
 				const { uploadUrl } = await response.json() as { uploadUrl: string };
-				row.phase = "uploading"; row.bytes = 0; row.total = version.size; manager.notifyListeners();
+				row.phase = "uploading"; row.bytes = 0; row.total = expected.size; manager.notifyListeners();
 				let reportedBytes = 0;
-				const status = await streamAttachmentPut(syncFile.vault, uploadUrl, task.path, version, syncFile.mimetype, signal, bytes => {
-					if (bytes !== version.size && bytes - reportedBytes < ATTACHMENT_CHUNK_BYTES) return;
+				const status = await streamAttachmentPut(syncFile.vault, uploadUrl, task.path, expected, syncFile.mimetype, signal, bytes => {
+					if (bytes !== expected.size && bytes - reportedBytes < ATTACHMENT_CHUNK_BYTES) return;
 					reportedBytes = bytes;
 					row.bytes = bytes;
 					manager.notifyListeners();
+				}).catch((error) => {
+					if (error instanceof AttachmentChangedError) version = undefined;
+					throw error;
 				});
 				if (status < 200 || status >= 300) throw s3ApiErrorFromResponse(status, "", "upload attachment");
-			});
-			return version;
+				return expected;
+			}, (error) => error instanceof AttachmentChangedError || isRetryableHttpError(error));
 		});
 	}
 
