@@ -3,11 +3,12 @@ name: E2E multi-node
 # Runs scripted test plans through the multi-node orchestrator
 # (relay-harness scripts/orchestrate_test_plans.py). Topology is input data:
 # `slots` lists each slot's platform, and both slots run colocated on one
-# host. Supported: linux,linux (a leased pool VM) and windows,windows.
+# host. Supported: linux,linux (a leased pool VM), windows,windows (a VM) and
+# macos,macos (the hosted macOS runner the job itself runs on).
 #
-# The work happens in .github/ci/lane.sh (Linux) and lane-windows.sh
-# (Windows), which run the same way from a workstation; this file only maps
-# inputs onto them.
+# The work happens in .github/ci/lane.sh (Linux), lane-windows.sh (Windows)
+# and lane-macos.sh (macOS), which run the same way from a workstation; this
+# file only maps inputs onto them.
 
 on:
   workflow_dispatch:
@@ -25,7 +26,7 @@ on:
         required: false
         default: 'origin/main'
       slots:
-        description: 'Comma-separated slot platforms (e.g. linux,linux or windows,windows)'
+        description: 'Slot platforms: linux,linux, windows,windows or macos,macos'
         required: false
         default: 'linux,linux'
 
@@ -44,7 +45,9 @@ permissions:
 jobs:
   multinode:
     name: multinode
-    runs-on: ubuntu-latest
+    # The macOS slots run on the job's own runner; the others on a VM that an
+    # Ubuntu runner drives.
+    runs-on: ${{ inputs.slots == 'macos,macos' && 'macos-15' || 'ubuntu-latest' }}
     timeout-minutes: 90
     permissions:
       checks: write
@@ -55,7 +58,7 @@ jobs:
           SLOTS: ${{ inputs.slots }}
         run: |
           case "$SLOTS" in
-            linux,linux|windows,windows) echo "topology: $SLOTS" ;;
+            linux,linux|windows,windows|macos,macos) echo "topology: $SLOTS" ;;
             *) echo "::error::unsupported slot list: $SLOTS"; exit 1 ;;
           esac
 
@@ -74,10 +77,12 @@ jobs:
         run: .github/ci/run-manifest.sh --ref "$REF" --tests "$PLANS" --harness-ref "$HARNESS_REF"
 
       - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
+        if: inputs.slots != 'macos,macos'
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY_TACTILE }}
 
       - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2.2.1
+        if: inputs.slots != 'macos,macos'
 
       - name: Run the plans on a leased Linux VM
         if: inputs.slots == 'linux,linux'
@@ -106,16 +111,29 @@ jobs:
           --ref "$PRODUCT_SHA" --harness-ref "$HARNESS_REF" --tests "$PLANS"
           --exec-suffix "$EXEC_SUFFIX"
 
-      - name: Release the VM and pool
+      - name: Run the plans on this macOS runner
+        if: inputs.slots == 'macos,macos'
+        env:
+          HARNESS_DEPLOY_KEY: ${{ secrets.HARNESS_DEPLOY_KEY }}
+          PRODUCT_SHA: ${{ steps.manifest.outputs.product_sha }}
+          HARNESS_REF: ${{ inputs.harness_ref || 'origin/main' }}
+          PLANS: ${{ inputs.plans }}
+          EXEC_SUFFIX: 'mn-m-{pool}-r${{ github.run_number }}'
+        run: >-
+          .github/ci/lane-macos.sh run
+          --ref "$PRODUCT_SHA" --harness-ref "$HARNESS_REF" --tests "$PLANS"
+          --exec-suffix "$EXEC_SUFFIX"
+
+      - name: Release the host and pool
         if: always()
         env:
           SLOTS: ${{ inputs.slots }}
         run: |
-          if [ "$SLOTS" = windows,windows ]; then
-            .github/ci/lane-windows.sh cleanup
-          else
-            .github/ci/lane.sh cleanup
-          fi
+          case "$SLOTS" in
+            windows,windows) .github/ci/lane-windows.sh cleanup ;;
+            macos,macos) .github/ci/lane-macos.sh cleanup ;;
+            *) .github/ci/lane.sh cleanup ;;
+          esac
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
