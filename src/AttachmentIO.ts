@@ -5,6 +5,7 @@ import { watchRequestDeadlines, type RequestDeadlines } from "./NodeRequestDeadl
 import { S3ApiError, s3NetworkFailureFromUnknown } from "./S3Error";
 
 export const ATTACHMENT_CHUNK_BYTES = 1024 * 1024;
+export const ATTACHMENT_RETRY_DELAYS_MS: readonly number[] = [500, 2000];
 const ATTACHMENT_UPLOAD_WRITE_BYTES = 64 * 1024;
 // After the body enters the kernel, Node exposes no acknowledgement counter. A
 // separate bound lets a slow receiver drain that queue without hiding a stall forever.
@@ -70,35 +71,44 @@ export async function desktopAttachmentIO(vault: Vault) {
 
 export interface AttachmentVersion { hash: string; size: number; mtime: number }
 
-/** Bounded reads also bound snapshot writes; no unawaited writes retain chunks. */
-export async function snapshotAttachment(
-	vault: Vault, path: string, snapshot: string | undefined, signal: AbortSignal,
+export async function withAttachmentRetry<T>(
+	request: () => Promise<T>,
+	shouldRetry: (error: unknown) => boolean,
+	delays = ATTACHMENT_RETRY_DELAYS_MS,
+	wait: (delayMs: number, retry: number, error: unknown) => Promise<void> =
+		(delayMs) => new Promise((resolve) => window.setTimeout(resolve, delayMs)),
+): Promise<T> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return await request();
+		} catch (error) {
+			const delayCapMs = delays[attempt];
+			if (delayCapMs === undefined || !shouldRetry(error)) throw error;
+			// Full jitter within the round's cap.
+			const delayMs = Math.floor(Math.random() * (delayCapMs + 1));
+			await wait(delayMs, attempt + 1, error);
+		}
+	}
+}
+
+export async function hashAttachment(
+	vault: Vault, path: string, signal: AbortSignal,
 	progress: (bytes: number, total: number) => void = () => {},
 ): Promise<AttachmentVersion> {
 	const io = await desktopAttachmentIO(vault);
 	if (!io) throw new Error("Desktop file streaming is unavailable");
 	const source = await io.fs.promises.open(io.fullPath(path), "r");
-	let output: import("fs/promises").FileHandle | undefined;
 	const hash = await attachmentHasher();
 	try {
 		const before = await source.stat();
 		if (!before.isFile()) throw new Error("Attachment is not a file");
-		if (snapshot) output = await io.fs.promises.open(io.fullPath(snapshot), "wx");
 		const buffer = new Uint8Array(ATTACHMENT_CHUNK_BYTES);
 		let offset = 0;
 		while (offset < before.size) {
 			checkAttachmentAbort(signal);
 			const { bytesRead } = await source.read(buffer, 0, Math.min(buffer.length, before.size - offset), offset);
-			if (!bytesRead) throw new Error("Attachment changed while reading");
+			if (!bytesRead) throw new AttachmentChangedError("Attachment changed while reading");
 			hash.update(buffer.subarray(0, bytesRead));
-			if (output) {
-				let written = 0;
-				while (written < bytesRead) {
-					const result = await output.write(buffer, written, bytesRead - written, offset + written);
-					if (!result.bytesWritten) throw new Error("Unable to write attachment snapshot");
-					written += result.bytesWritten;
-				}
-			}
 			offset += bytesRead;
 			progress(offset, before.size);
 		}
@@ -107,13 +117,12 @@ export async function snapshotAttachment(
 		const current = await io.fs.promises.stat(io.fullPath(path));
 		if (before.size !== after.size || before.mtimeMs !== after.mtimeMs ||
 			before.ino !== current.ino || before.size !== current.size || before.mtimeMs !== current.mtimeMs) {
-			throw new Error("Attachment changed while reading");
+			throw new AttachmentChangedError("Attachment changed while reading");
 		}
 		return { hash: attachmentDigest(hash), size: offset, mtime: Math.round(before.mtimeMs) };
 	} finally {
 		hash.destroy();
 		await source.close();
-		await output?.close();
 	}
 }
 
@@ -121,9 +130,13 @@ export class AttachmentUploadTimeoutError extends S3ApiError {
 	constructor() { super({ code: "RequestTimeout", operation: "upload attachment" }); }
 }
 
+export class AttachmentChangedError extends Error {
+	constructor(message = "Attachment changed during upload") { super(message); }
+}
+
 /** Ordinary presigned PUT with a known length, not AWS chunk-signing or multipart. */
 export async function streamAttachmentPut(
-	vault: Vault, url: string, snapshot: string, size: number, contentType: string,
+	vault: Vault, url: string, path: string, version: AttachmentVersion, contentType: string,
 	signal: AbortSignal, progress: (bytes: number) => void, deadlines: RequestDeadlines = {},
 ): Promise<number> {
 	const io = await desktopAttachmentIO(vault);
@@ -131,8 +144,48 @@ export async function streamAttachmentPut(
 	checkAttachmentAbort(signal);
 	const target = new URL(url);
 	if (target.protocol !== "http:" && target.protocol !== "https:") throw new Error("Unsupported upload URL");
+	const fullPath = io.fullPath(path);
+	const before = await io.fs.promises.stat(fullPath);
+	if (before.size !== version.size || Math.round(before.mtimeMs) !== version.mtime) {
+		throw new AttachmentChangedError();
+	}
+	const { Transform } = await import("stream");
+	const hash = await attachmentHasher();
+	const { size } = version;
 	return new Promise((resolve, reject) => {
-		const source = io.fs.createReadStream(io.fullPath(snapshot), { highWaterMark: ATTACHMENT_UPLOAD_WRITE_BYTES });
+		const source = io.fs.createReadStream(fullPath, { highWaterMark: ATTACHMENT_UPLOAD_WRITE_BYTES });
+		let read = 0;
+		let tail: Buffer | undefined;
+		let verified = false;
+		// A presigned PUT commits when Content-Length bytes arrive. Hold the final
+		// chunk until EOF proves both the length and the hash of the outgoing body.
+		const verifier = new Transform({
+			transform(chunk: Buffer, _encoding, done) {
+				read += chunk.length;
+				if (read > size) return done(new AttachmentChangedError());
+				hash.update(chunk);
+				if (read === size) {
+					tail = chunk;
+					done();
+				} else {
+					progress(read);
+					done(null, chunk);
+				}
+			},
+			flush(done) {
+				if (read !== size || attachmentDigest(hash) !== version.hash) return done(new AttachmentChangedError());
+				// Detect edits to an already-sent chunk and replacement of the path.
+				void io.fs.promises.stat(fullPath).then(current => {
+					if (before.dev !== current.dev || before.ino !== current.ino || before.ctimeMs !== current.ctimeMs) {
+						return done(new AttachmentChangedError());
+					}
+					if (signal.aborted) return done(new AttachmentCancelledError());
+					verified = true;
+					progress(read);
+					done(null, tail);
+				}, done);
+			},
+		});
 		let settled = false;
 		const finish = (error?: Error, status?: number) => {
 			if (settled) return;
@@ -140,6 +193,8 @@ export async function streamAttachmentPut(
 			clearDeadlines();
 			signal.removeEventListener("abort", abort);
 			source.destroy();
+			verifier.destroy();
+			hash.destroy();
 			request.destroy();
 			if (error) reject(error); else resolve(status!);
 		};
@@ -148,7 +203,14 @@ export async function streamAttachmentPut(
 		}, response => {
 			response.on("error", error => finish(new S3ApiError({ code: "NetworkingError", operation: "upload attachment" }, error)));
 			response.resume();
-			response.on("end", () => finish(undefined, response.statusCode ?? 0));
+			response.on("end", () => {
+				const status = response.statusCode ?? 0;
+				if (status >= 200 && status < 300 && !verified) {
+					finish(new Error("Upload acknowledged before checksum verification"));
+				} else {
+					finish(undefined, status);
+				}
+			});
 		});
 		const clearDeadlines = watchRequestDeadlines(request, target, () => finish(new AttachmentUploadTimeoutError()), {
 			finishedWriteTimeoutMs: ATTACHMENT_UPLOAD_RESPONSE_TIMEOUT_MS,
@@ -158,8 +220,7 @@ export async function streamAttachmentPut(
 		signal.addEventListener("abort", abort, { once: true });
 		request.on("error", error => finish(s3NetworkFailureFromUnknown(error, "upload attachment") ?? error));
 		source.on("error", error => finish(error));
-		let sent = 0;
-		source.on("data", chunk => { sent += chunk.length; progress(sent); });
-		if (signal.aborted) abort(); else source.pipe(request);
+		verifier.on("error", error => finish(error));
+		if (signal.aborted) abort(); else source.pipe(verifier).pipe(request);
 	});
 }
