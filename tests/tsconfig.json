@@ -1,0 +1,7 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": ["svelte", "node", "jest"]
+  },
+  "include": ["../src/**/*.ts", "../relay-plugin-api.d.ts", "./**/*.ts"]
+}
